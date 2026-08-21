@@ -149,11 +149,6 @@
       meetingId = meetings[0].id;
       await loadOfferings();
     }
-    try {
-      donors = await listActiveDonors();
-    } catch {
-      donors = [];
-    }
     if (focusMeetingId && meetings.some((m) => m.id === focusMeetingId)) {
       meetingId = focusMeetingId;
       await loadOfferings();
@@ -166,6 +161,17 @@
         offeringId = o.id;
         await selectOffering();
       }
+    }
+  }
+
+  let donorsLoaded = $state(false);
+  async function ensureDonorsLoaded() {
+    if (donorsLoaded) return;
+    donorsLoaded = true;
+    try {
+      donors = await listActiveDonors();
+    } catch {
+      donors = [];
     }
   }
 
@@ -607,6 +613,9 @@
     }, 30);
   }
 
+  const FAV_DONORS_KEY = "or-fav-donors";
+  const DONOR_FREQ_KEY = "or-donor-freq";
+
   function donorName(id: string | null): string {
     if (!id) return "";
     const d = donors.find((x) => x.id === id);
@@ -672,13 +681,13 @@
   let favDonors = $state<string[]>(loadFavs());
   function loadFavs(): string[] {
     try {
-      return JSON.parse(localStorage.getItem("or-fav-donors") ?? "[]");
+      return JSON.parse(localStorage.getItem(FAV_DONORS_KEY) ?? "[]");
     } catch {
       return [];
     }
   }
   function saveFavs() {
-    localStorage.setItem("or-fav-donors", JSON.stringify(favDonors));
+    localStorage.setItem(FAV_DONORS_KEY, JSON.stringify(favDonors));
   }
   function toggleFav(id: string) {
     favDonors = favDonors.includes(id) ? favDonors.filter((f) => f !== id) : [...favDonors, id];
@@ -687,13 +696,13 @@
   let donorFreq = $state<Record<string, number>>(loadFreq());
   function loadFreq(): Record<string, number> {
     try {
-      return JSON.parse(localStorage.getItem("or-donor-freq") ?? "{}");
+      return JSON.parse(localStorage.getItem(DONOR_FREQ_KEY) ?? "{}");
     } catch {
       return {};
     }
   }
   function saveFreq() {
-    localStorage.setItem("or-donor-freq", JSON.stringify(donorFreq));
+    localStorage.setItem(DONOR_FREQ_KEY, JSON.stringify(donorFreq));
   }
   const isFav = (id: string) => favDonors.includes(id);
   function clearDonor() {
@@ -731,6 +740,7 @@
     }
   }
   function donorTyped() {
+    ensureDonorsLoaded();
     donorHighlight = 0;
     donorOpen = true;
     dDonor = "";
@@ -1068,7 +1078,7 @@
                 placeholder="Type to search name, address or postcode…"
                 oninput={donorTyped}
                 onkeydown={donorKeydown}
-                onfocus={() => (donorOpen = true)}
+                onfocus={() => { ensureDonorsLoaded(); donorOpen = true; }}
                 onblur={() => setTimeout(() => (donorOpen = false), 120)}
               />
               {#if donorVisible}

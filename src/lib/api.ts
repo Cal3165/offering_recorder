@@ -108,6 +108,7 @@ export const createOffering = (meeting_id: string, description: string | null) =
   run<Offering>("create_offering", { meetingId: meeting_id, description });
 export const listOfferings = (meeting_id: string) =>
   run<Offering[]>("list_offerings", { meetingId: meeting_id });
+export const listAllOfferings = () => run<Offering[]>("list_all_offerings");
 export const getOffering = (offering_id: string) =>
   run<Offering | null>("get_offering", { offeringId: offering_id });
 export const offeringReport = (offering_id: string) =>

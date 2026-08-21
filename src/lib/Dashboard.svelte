@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listBackups, listAuditEvents, listDeposits, listMeetings, listOfferings } from "./api";
+  import { listBackups, listAuditEvents, listDeposits, listMeetings, listOfferings, listAllOfferings } from "./api";
   import type { AuditEvent, Backup, BankDeposit, Meeting, Offering, User } from "./types";
   import { fmtPence } from "./types";
 
@@ -26,8 +26,8 @@
   onMount(async () => {
     try {
       meetings = await listMeetings();
-      const all = await Promise.all(meetings.map((m) => listOfferings(m.id)));
-      offerings = all.flat().sort((a, b) => b.created_at.localeCompare(a.created_at));
+      offerings = await listAllOfferings();
+      offerings.sort((a, b) => b.created_at.localeCompare(a.created_at));
       deposits = await listDeposits();
       backups = await listBackups();
       audit = await listAuditEvents();

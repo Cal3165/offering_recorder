@@ -1,6 +1,6 @@
+use crate::error::{unauthorized, AppResult};
 use offering_domain::entities::role::Role;
 use offering_domain::entities::user::User;
-use crate::error::{unauthorized, AppResult};
 
 pub fn require_role(user: &User, roles: &[Role]) -> AppResult<()> {
     if !user_is_active(user) {
@@ -10,10 +10,6 @@ pub fn require_role(user: &User, roles: &[Role]) -> AppResult<()> {
         return Err(unauthorized("insufficient permissions"));
     }
     Ok(())
-}
-
-pub fn require_any_role(user: &User, roles: &[Role]) -> AppResult<()> {
-    require_role(user, roles)
 }
 
 pub fn require_all_roles(user: &User, roles: &[Role]) -> AppResult<()> {
@@ -45,27 +41,19 @@ impl ViewPermission {
     pub fn required_roles(&self) -> &'static [Role] {
         match self {
             ViewPermission::ReadOfferings => &[
-                Role::Admin, Role::Counter, Role::Checker, Role::GiftAid,
-                Role::Bookkeeper, Role::Trustee,
+                Role::Admin,
+                Role::Counter,
+                Role::Checker,
+                Role::GiftAid,
+                Role::Bookkeeper,
+                Role::Trustee,
             ],
-            ViewPermission::ReadDonors => &[
-                Role::Admin, Role::Counter, Role::Trustee,
-            ],
-            ViewPermission::ReadGiftAid => &[
-                Role::Admin, Role::GiftAid, Role::Trustee,
-            ],
-            ViewPermission::ReadBanking => &[
-                Role::Admin, Role::Banker, Role::Trustee,
-            ],
-            ViewPermission::ReadGasdsClaims => &[
-                Role::Admin, Role::GiftAid, Role::Trustee,
-            ],
-            ViewPermission::ReadAudit => &[
-                Role::Admin, Role::Trustee,
-            ],
-            ViewPermission::ReadMeetings => &[
-                Role::Admin, Role::Counter, Role::Trustee,
-            ],
+            ViewPermission::ReadDonors => &[Role::Admin, Role::Counter, Role::Trustee],
+            ViewPermission::ReadGiftAid => &[Role::Admin, Role::GiftAid, Role::Trustee],
+            ViewPermission::ReadBanking => &[Role::Admin, Role::Banker, Role::Trustee],
+            ViewPermission::ReadGasdsClaims => &[Role::Admin, Role::GiftAid, Role::Trustee],
+            ViewPermission::ReadAudit => &[Role::Admin, Role::Trustee],
+            ViewPermission::ReadMeetings => &[Role::Admin, Role::Counter, Role::Trustee],
         }
     }
 

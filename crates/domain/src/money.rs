@@ -83,10 +83,6 @@ impl Money {
         Ok(Money { pence: result })
     }
 
-    pub fn checked_add(&self, other: &Money) -> DomainResult<Self> {
-        self.add(other)
-    }
-
     pub fn subtract(&self, other: &Money) -> DomainResult<Self> {
         if other.pence > self.pence {
             return Err(DomainError::NegativeValue);
@@ -124,7 +120,9 @@ impl Money {
     {
         let mut total = 0i64;
         for m in iter {
-            total = total.checked_add(m.pence).ok_or(DomainError::ArithmeticOverflow)?;
+            total = total
+                .checked_add(m.pence)
+                .ok_or(DomainError::ArithmeticOverflow)?;
         }
         Ok(Money { pence: total })
     }

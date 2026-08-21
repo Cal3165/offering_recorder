@@ -281,7 +281,10 @@ impl GasdsCalculator {
         result
     }
 
-    fn evaluate_donation(donation: &Donation, declarations: &[GiftAidDeclaration]) -> DonationEvaluation {
+    fn evaluate_donation(
+        donation: &Donation,
+        declarations: &[GiftAidDeclaration],
+    ) -> DonationEvaluation {
         Self::evaluate_donation_with_date(donation, declarations, donation.date)
     }
 
@@ -492,7 +495,8 @@ mod tests {
                 crate::payment_method::PaymentMethod::Cash,
                 None,
                 breakdown,
-            ).unwrap(),
+            )
+            .unwrap(),
             DonationClassification::Anonymous => Donation::anonymous(
                 offering_id,
                 amount,
@@ -500,8 +504,11 @@ mod tests {
                 crate::payment_method::PaymentMethod::Cash,
                 None,
                 breakdown,
-            ).unwrap(),
-            DonationClassification::LooseCash => Donation::loose_cash(offering_id, cash_total(amount_pence)),
+            )
+            .unwrap(),
+            DonationClassification::LooseCash => {
+                Donation::loose_cash(offering_id, cash_total(amount_pence))
+            }
         }
     }
 
@@ -520,7 +527,8 @@ mod tests {
                 crate::payment_method::PaymentMethod::Cheque,
                 Some("REF".to_string()),
                 None,
-            ).unwrap(),
+            )
+            .unwrap(),
             DonationClassification::Anonymous => Donation::anonymous(
                 offering_id,
                 amount,
@@ -528,8 +536,11 @@ mod tests {
                 crate::payment_method::PaymentMethod::Cheque,
                 Some("REF".to_string()),
                 None,
-            ).unwrap(),
-            DonationClassification::LooseCash => Donation::loose_cash(offering_id, cash_total(amount_pence)),
+            )
+            .unwrap(),
+            DonationClassification::LooseCash => {
+                Donation::loose_cash(offering_id, cash_total(amount_pence))
+            }
         }
     }
 
@@ -548,7 +559,8 @@ mod tests {
                 crate::payment_method::PaymentMethod::BankTransfer,
                 Some("REF".to_string()),
                 None,
-            ).unwrap(),
+            )
+            .unwrap(),
             DonationClassification::Anonymous => Donation::anonymous(
                 offering_id,
                 amount,
@@ -556,8 +568,11 @@ mod tests {
                 crate::payment_method::PaymentMethod::BankTransfer,
                 Some("REF".to_string()),
                 None,
-            ).unwrap(),
-            DonationClassification::LooseCash => Donation::loose_cash(offering_id, cash_total(amount_pence)),
+            )
+            .unwrap(),
+            DonationClassification::LooseCash => {
+                Donation::loose_cash(offering_id, cash_total(amount_pence))
+            }
         }
     }
 
@@ -696,14 +711,7 @@ mod tests {
         method: crate::payment_method::PaymentMethod,
     ) -> Donation {
         let amount = Money::from_pence(amount_pence).unwrap();
-        Donation::anonymous(
-            offering_id,
-            amount,
-            DonationType::Tithe,
-            method,
-            None,
-            None,
-        ).unwrap()
+        Donation::anonymous(offering_id, amount, DonationType::Tithe, method, None, None).unwrap()
     }
 
     #[test]
@@ -760,8 +768,7 @@ mod tests {
     fn named_non_gift_aid_donation_eligible() {
         let mut o = make_offering();
         let donor = Uuid::new_v4();
-        let amount = Money::from_pence(2000).unwrap();
-let donation = Donation::named(
+        let donation = Donation::named(
             o.id,
             donor,
             Money::from_pence(2000).unwrap(),
@@ -769,7 +776,8 @@ let donation = Donation::named(
             crate::payment_method::PaymentMethod::Cash,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         o.add_donation(donation).unwrap();
 
         let empty_decls: Vec<GiftAidDeclaration> = vec![];
@@ -790,7 +798,8 @@ let donation = Donation::named(
             crate::payment_method::PaymentMethod::Cash,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         o.add_donation(donation).unwrap();
 
         let from = dt(2024, 1, 1);
@@ -1031,7 +1040,8 @@ let donation = Donation::named(
             crate::payment_method::PaymentMethod::Cash,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         o.add_donation(donation.clone()).unwrap();
         let date = dt(2024, 6, 1);
         assert_eq!(
@@ -1039,10 +1049,7 @@ let donation = Donation::named(
             TaxTreatment::GiftAid
         );
         let result = GasdsCalculator::calculate_offering(&o, &[decl], &GasdsConfig::default());
-        assert_eq!(
-            result.evaluations[0].tax_treatment,
-            TaxTreatment::GiftAid
-        );
+        assert_eq!(result.evaluations[0].tax_treatment, TaxTreatment::GiftAid);
     }
 
     #[test]
@@ -1057,7 +1064,8 @@ let donation = Donation::named(
             crate::payment_method::PaymentMethod::Cash,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         o.add_donation(donation).unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         assert_eq!(result.evaluations[0].tax_treatment, TaxTreatment::Gasds);
@@ -1075,7 +1083,8 @@ let donation = Donation::named(
             crate::payment_method::PaymentMethod::Cheque,
             Some("REF".into()),
             None,
-        ).unwrap();
+        )
+        .unwrap();
         o.add_donation(donation).unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         assert_eq!(result.evaluations[0].tax_treatment, TaxTreatment::Neither);
@@ -1106,7 +1115,8 @@ let donation = Donation::named(
                 crate::payment_method::PaymentMethod::Cash,
                 None,
                 None,
-            ).unwrap()
+            )
+            .unwrap()
             .with_date(date);
             d.offering_id = Uuid::new_v4();
             d
@@ -1114,14 +1124,18 @@ let donation = Donation::named(
 
         let mut inside = make_offering();
         inside
-            .add_donation(named_cash(chrono::NaiveDate::from_ymd_opt(2024, 6, 1).unwrap()))
+            .add_donation(named_cash(
+                chrono::NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
+            ))
             .unwrap();
         let r_inside =
             GasdsCalculator::calculate_offering(&inside, &[decl.clone()], &GasdsConfig::default());
 
         let mut outside = make_offering();
         outside
-            .add_donation(named_cash(chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()))
+            .add_donation(named_cash(
+                chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap(),
+            ))
             .unwrap();
         let r_outside =
             GasdsCalculator::calculate_offering(&outside, &[decl.clone()], &GasdsConfig::default());

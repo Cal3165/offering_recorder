@@ -18,3 +18,6 @@ uuid.workspace = true
 offering-infrastructure = { path = "../infrastructure" }
 tokio = { version = "1", features = ["rt", "macros"] }
 tempfile = "3"
+
+[lints]
+workspace = true

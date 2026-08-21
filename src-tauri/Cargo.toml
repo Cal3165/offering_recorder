@@ -25,3 +25,6 @@ offering-domain = { path = "../crates/domain" }
 offering-application = { path = "../crates/application" }
 offering-persistence = { path = "../crates/persistence" }
 offering-infrastructure = { path = "../crates/infrastructure" }
+
+[lints]
+workspace = true

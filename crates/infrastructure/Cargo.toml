@@ -19,3 +19,6 @@ argon2.workspace = true
 aes-gcm.workspace = true
 rand_core.workspace = true
 tokio = { version = "1", features = ["rt", "macros"] }
+
+[lints]
+workspace = true

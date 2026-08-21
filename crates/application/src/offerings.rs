@@ -9,7 +9,7 @@ use offering_domain::gasds::{GasdsCalculator, GasdsConfig, GasdsResult};
 use offering_domain::money::Money;
 use offering_domain::payment_method::PaymentMethod;
 use offering_persistence::{
-    AmendmentRepository, AuditRepository, GiftAidRepository, GasdsClaimRepository,
+    AmendmentRepository, AuditRepository, GasdsClaimRepository, GiftAidRepository,
     MeetingRepository, OfferingRepository,
 };
 use uuid::Uuid;
@@ -128,7 +128,10 @@ impl<'a> OfferingService<'a> {
 
     pub async fn list_offerings(&self, actor: &User, meeting_id: Uuid) -> AppResult<Vec<Offering>> {
         ViewPermission::ReadOfferings.check(actor)?;
-        Ok(self.offerings.list_by_meeting(meeting_id, None, None).await?)
+        Ok(self
+            .offerings
+            .list_by_meeting(meeting_id, None, None)
+            .await?)
     }
 
     pub async fn list_all_offerings(&self, actor: &User) -> AppResult<Vec<Offering>> {
@@ -143,7 +146,10 @@ impl<'a> OfferingService<'a> {
         status: Option<OfferingStatus>,
     ) -> AppResult<Vec<Offering>> {
         ViewPermission::ReadOfferings.check(actor)?;
-        Ok(self.offerings.search(meeting_id, status, None, None).await?)
+        Ok(self
+            .offerings
+            .search(meeting_id, status, None, None)
+            .await?)
     }
 
     pub async fn set_attendance(
@@ -239,7 +245,8 @@ impl<'a> OfferingService<'a> {
                     input.payment_method,
                     input.reference,
                     breakdown,
-                ).map_err(|e| crate::error::AppError::Validation(e.to_string()))?
+                )
+                .map_err(|e| crate::error::AppError::Validation(e.to_string()))?
             }
             DonationClassification::Anonymous => Donation::anonymous(
                 offering_id,
@@ -248,7 +255,8 @@ impl<'a> OfferingService<'a> {
                 input.payment_method,
                 input.reference,
                 breakdown,
-            ).map_err(|e| crate::error::AppError::Validation(e.to_string()))?,
+            )
+            .map_err(|e| crate::error::AppError::Validation(e.to_string()))?,
             DonationClassification::LooseCash => {
                 let bd = breakdown.ok_or_else(|| {
                     crate::error::AppError::Validation(
@@ -258,7 +266,11 @@ impl<'a> OfferingService<'a> {
                 Donation::loose_cash(offering_id, bd)
             }
         };
-        let donation = donation.with_date(input.date.unwrap_or_else(|| offering.created_at.date_naive()));
+        let donation = donation.with_date(
+            input
+                .date
+                .unwrap_or_else(|| offering.created_at.date_naive()),
+        );
         offering.add_donation(donation.clone())?;
         let updated = self.offerings.update(offering).await?;
         self.audit
@@ -307,10 +319,15 @@ impl<'a> OfferingService<'a> {
         Ok(updated)
     }
 
-    fn signature_for(user: &User, guest_name: Option<String>) -> offering_domain::signature::Signature {
+    fn signature_for(
+        user: &User,
+        guest_name: Option<String>,
+    ) -> offering_domain::signature::Signature {
         match guest_name {
             Some(name) => offering_domain::signature::Signature::guest_for(user.id, name),
-            None => offering_domain::signature::Signature::from_user(user.id, user.display_name.clone()),
+            None => {
+                offering_domain::signature::Signature::from_user(user.id, user.display_name.clone())
+            }
         }
     }
 
@@ -390,11 +407,7 @@ impl<'a> OfferingService<'a> {
 
     /// Withdraw the most recent signature, returning a signed-but-not-locked
     /// offering to the previous state so its data can be corrected.
-    pub async fn withdraw_signature(
-        &self,
-        actor: &User,
-        offering_id: Uuid,
-    ) -> AppResult<Offering> {
+    pub async fn withdraw_signature(&self, actor: &User, offering_id: Uuid) -> AppResult<Offering> {
         if !can_sign_offering(actor) {
             return Err(unauthorized("sign offering"));
         }
@@ -451,13 +464,21 @@ impl<'a> OfferingService<'a> {
         Ok(updated)
     }
 
-    pub async fn reconstruction(&self, offering_id: Uuid) -> AppResult<Option<OfferingReconstruction>> {
+    pub async fn reconstruction(
+        &self,
+        offering_id: Uuid,
+    ) -> AppResult<Option<OfferingReconstruction>> {
         let offering = match self.offerings.get(offering_id).await? {
             Some(o) => o,
             None => return Ok(None),
         };
-        let approved = self.amendments.approved_amendments_for_offering(offering_id).await?;
-        Ok(Some(OfferingReconstruction::from_amendments(offering, approved)))
+        let approved = self
+            .amendments
+            .approved_amendments_for_offering(offering_id)
+            .await?;
+        Ok(Some(OfferingReconstruction::from_amendments(
+            offering, approved,
+        )))
     }
 
     pub async fn gasds_for_offering(
@@ -471,13 +492,16 @@ impl<'a> OfferingService<'a> {
             .get_offering(actor, offering_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("offering not found".into()))?;
-        let tax_year = offering_domain::tax_year::TaxYear::from_date(offering.created_at.date_naive());
+        let tax_year =
+            offering_domain::tax_year::TaxYear::from_date(offering.created_at.date_naive());
         let existing_claims = self.gasds_claims.list_by_tax_year(tax_year.clone()).await?;
         let claimed_ga: Money = existing_claims
             .iter()
-            .filter(|c| c.status != offering_domain::entities::gasds_claim::GasdsClaimStatus::Rejected)
+            .filter(|c| {
+                c.status != offering_domain::entities::gasds_claim::GasdsClaimStatus::Rejected
+            })
             .map(|c| c.gift_aid_claimed.clone())
-            .fold(Money::zero(), |acc, ga| acc.saturating_add(&ga));
+            .try_fold(Money::zero(), |acc, ga| acc.add(&ga))?;
         let mut config_with_claimed = config.clone();
         config_with_claimed.gift_aid_claimed = claimed_ga;
         let declarations = self.gift_aid.list_by_tax_year(tax_year, None, None).await?;
@@ -493,7 +517,10 @@ impl<'a> OfferingService<'a> {
             Some(o) => o,
             None => return Ok(None),
         };
-        let approved = self.amendments.approved_amendments_for_offering(offering_id).await?;
+        let approved = self
+            .amendments
+            .approved_amendments_for_offering(offering_id)
+            .await?;
         let current = if approved.is_empty() {
             stored
         } else {
@@ -503,10 +530,7 @@ impl<'a> OfferingService<'a> {
         };
         let meeting = self.meetings.get(current.meeting_id).await?;
         let meeting_name = meeting.map(|m| m.name).unwrap_or_else(|| "Unknown".into());
-        let meeting_date = current
-            .created_at
-            .format("%Y-%m-%d")
-            .to_string();
+        let meeting_date = current.created_at.format("%Y-%m-%d").to_string();
         Ok(Some(OfferingReport {
             offering: current,
             meeting_name,
@@ -558,10 +582,13 @@ mod tests {
         o.set_attendance(10).unwrap();
         let counted = cash(&[(Denomination::Note2000p, 1)]);
         o.set_cash_denominations(counted).unwrap();
-        o.add_donation(cash_donation(&o, &[(Denomination::Note1000p, 2)])).unwrap();
+        o.add_donation(cash_donation(&o, &[(Denomination::Note1000p, 2)]))
+            .unwrap();
         let issues = ValidationService::validate(&o);
         assert!(
-            issues.iter().any(|i| i.code == "cash_denomination_mismatch"),
+            issues
+                .iter()
+                .any(|i| i.code == "cash_denomination_mismatch"),
             "expected per-denomination mismatch: {issues:?}"
         );
     }
@@ -572,10 +599,13 @@ mod tests {
         o.set_attendance(10).unwrap();
         let counted = cash(&[(Denomination::Note2000p, 1)]);
         o.set_cash_denominations(counted).unwrap();
-        o.add_donation(cash_donation(&o, &[(Denomination::Note2000p, 1)])).unwrap();
+        o.add_donation(cash_donation(&o, &[(Denomination::Note2000p, 1)]))
+            .unwrap();
         let issues = ValidationService::validate(&o);
         assert!(
-            !issues.iter().any(|i| i.code == "cash_denomination_mismatch"),
+            !issues
+                .iter()
+                .any(|i| i.code == "cash_denomination_mismatch"),
             "expected no mismatch: {issues:?}"
         );
     }
@@ -586,14 +616,17 @@ mod tests {
         o.set_attendance(10).unwrap();
         let counted = cash(&[(Denomination::Note2000p, 1)]);
         o.set_cash_denominations(counted).unwrap();
-        o.add_donation(Donation::anonymous(
-            o.id,
-            Money::from_pence(2000).unwrap(),
-            DonationType::Offering,
-            PaymentMethod::Cash,
-            None,
-            None,
-        ).unwrap())
+        o.add_donation(
+            Donation::anonymous(
+                o.id,
+                Money::from_pence(2000).unwrap(),
+                DonationType::Offering,
+                PaymentMethod::Cash,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
         .unwrap();
         let issues = ValidationService::validate(&o);
         assert!(issues.iter().any(|i| i.code == "cash_denomination_missing"));
