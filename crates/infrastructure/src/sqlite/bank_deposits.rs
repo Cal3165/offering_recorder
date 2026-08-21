@@ -1,0 +1,233 @@
+use super::map_db_err;
+use async_trait::async_trait;
+use offering_domain::entities::bank_deposit::{BankDeposit, BankDepositItem};
+use offering_domain::money::Money;
+use offering_persistence::{BankDepositRepository, RepoError, RepoResult};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Pool, Row, Sqlite};
+use uuid::Uuid;
+use crate::SharedPool;
+
+#[derive(Debug, Clone)]
+pub struct SqliteBankDepositRepository {
+    pool: SharedPool,
+}
+
+impl SqliteBankDepositRepository {
+    pub fn new(pool: SharedPool) -> Self {
+        SqliteBankDepositRepository { pool }
+    }
+}
+
+fn row_to_item(row: &SqliteRow) -> Result<BankDepositItem, RepoError> {
+    Ok(BankDepositItem {
+        offering_id: row.get("offering_id"),
+        cash_amount: Money::from_pence_unchecked(row.get("cash_amount_pence")),
+        cheque_amount: Money::from_pence_unchecked(row.get("cheque_amount_pence")),
+        other_amount: Money::from_pence_unchecked(row.get("other_amount_pence")),
+        donor_count: row.get("donor_count"),
+        donation_count: row.get("donation_count"),
+    })
+}
+
+fn row_to_deposit_base(row: &SqliteRow) -> Result<BankDeposit, RepoError> {
+    Ok(BankDeposit {
+        id: row.get("id"),
+        deposit_date: row.get("deposit_date"),
+        banker_id: row.get("banker_id"),
+        items: Vec::new(),
+        actual_cash: Money::from_pence_unchecked(row.get("actual_cash_pence")),
+        actual_cheques: Money::from_pence_unchecked(row.get("actual_cheques_pence")),
+        actual_other: Money::from_pence_unchecked(row.get("actual_other_pence")),
+        reference: row.get("reference"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+async fn load_items(pool: &Pool<Sqlite>, deposit_id: Uuid) -> RepoResult<Vec<BankDepositItem>> {
+    let rows = sqlx::query("SELECT * FROM bank_deposit_items WHERE deposit_id = ?")
+        .bind(deposit_id)
+        .fetch_all(pool)
+        .await
+        .map_err(map_db_err)?;
+    rows.iter().map(row_to_item).collect()
+}
+
+/// Batch load items for multiple deposits (avoids N+1).
+async fn load_items_batch(
+    pool: &Pool<Sqlite>,
+    deposit_ids: &[Uuid],
+) -> RepoResult<std::collections::HashMap<Uuid, Vec<BankDepositItem>>> {
+    if deposit_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = super::in_placeholders(deposit_ids.len());
+    let query = format!(
+        "SELECT * FROM bank_deposit_items WHERE deposit_id IN ({}) ORDER BY deposit_id",
+        placeholders
+    );
+    let mut q = sqlx::query(&query);
+    for id in deposit_ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
+    let mut map: std::collections::HashMap<Uuid, Vec<BankDepositItem>> = std::collections::HashMap::new();
+    for row in rows {
+        let did: Uuid = row.get("deposit_id");
+        map.entry(did).or_default().push(row_to_item(&row)?);
+    }
+    Ok(map)
+}
+
+#[async_trait]
+impl BankDepositRepository for SqliteBankDepositRepository {
+    async fn create(&self, deposit: BankDeposit) -> RepoResult<BankDeposit> {
+        let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
+        sqlx::query(
+            "INSERT INTO bank_deposits (id, deposit_date, banker_id, actual_cash_pence, actual_cheques_pence, actual_other_pence, reference, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(deposit.id)
+        .bind(deposit.deposit_date)
+        .bind(deposit.banker_id)
+        .bind(deposit.actual_cash.pence())
+        .bind(deposit.actual_cheques.pence())
+        .bind(deposit.actual_other.pence())
+        .bind(&deposit.reference)
+        .bind(deposit.created_at)
+        .bind(deposit.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db_err)?;
+
+        for item in &deposit.items {
+            sqlx::query(
+                "INSERT INTO bank_deposit_items (offering_id, deposit_id, cash_amount_pence, cheque_amount_pence, other_amount_pence, donor_count, donation_count)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(item.offering_id)
+            .bind(deposit.id)
+            .bind(item.cash_amount.pence())
+            .bind(item.cheque_amount.pence())
+            .bind(item.other_amount.pence())
+            .bind(item.donor_count)
+            .bind(item.donation_count)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db_err)?;
+        }
+
+        tx.commit().await.map_err(map_db_err)?;
+        Ok(deposit)
+    }
+
+    async fn get(&self, id: Uuid) -> RepoResult<Option<BankDeposit>> {
+        let row = sqlx::query("SELECT * FROM bank_deposits WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool.get())
+            .await
+            .map_err(map_db_err)?;
+        match row {
+            Some(row) => {
+                let mut deposit = row_to_deposit_base(&row)?;
+                deposit.items = load_items(&self.pool.get(), id).await?;
+                Ok(Some(deposit))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list(&self) -> RepoResult<Vec<BankDeposit>> {
+        let rows = sqlx::query("SELECT * FROM bank_deposits ORDER BY deposit_date DESC")
+            .fetch_all(&self.pool.get())
+            .await
+            .map_err(map_db_err)?;
+        let deposit_ids: Vec<Uuid> = rows.iter().map(|r| r.get("id")).collect();
+        let items_by_deposit = load_items_batch(&self.pool.get(), &deposit_ids).await?;
+        let mut deposits = Vec::new();
+        for row in rows {
+            let id: Uuid = row.get("id");
+            let mut deposit = row_to_deposit_base(&row)?;
+            deposit.items = items_by_deposit.get(&id).cloned().unwrap_or_default();
+            deposits.push(deposit);
+        }
+        Ok(deposits)
+    }
+
+    async fn update(&self, deposit: BankDeposit) -> RepoResult<BankDeposit> {
+        let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
+        sqlx::query(
+            "UPDATE bank_deposits SET deposit_date = ?, actual_cash_pence = ?, actual_cheques_pence = ?, actual_other_pence = ?, reference = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(deposit.deposit_date)
+        .bind(deposit.actual_cash.pence())
+        .bind(deposit.actual_cheques.pence())
+        .bind(deposit.actual_other.pence())
+        .bind(&deposit.reference)
+        .bind(deposit.updated_at)
+        .bind(deposit.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db_err)?;
+
+        sqlx::query("DELETE FROM bank_deposit_items WHERE deposit_id = ?")
+            .bind(deposit.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db_err)?;
+        for item in &deposit.items {
+            sqlx::query(
+                "INSERT INTO bank_deposit_items (offering_id, deposit_id, cash_amount_pence, cheque_amount_pence, donor_count, donation_count)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(item.offering_id)
+            .bind(deposit.id)
+            .bind(item.cash_amount.pence())
+            .bind(item.cheque_amount.pence())
+            .bind(item.donor_count)
+            .bind(item.donation_count)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db_err)?;
+        }
+
+        tx.commit().await.map_err(map_db_err)?;
+        Ok(deposit)
+    }
+
+    async fn delete(&self, id: Uuid) -> RepoResult<()> {
+        sqlx::query("DELETE FROM bank_deposits WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool.get())
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+
+    async fn list_by_offering(&self, offering_id: Uuid) -> RepoResult<Vec<BankDeposit>> {
+        let rows = sqlx::query(
+            "SELECT b.* FROM bank_deposits b JOIN bank_deposit_items i ON i.deposit_id = b.id WHERE i.offering_id = ?",
+        )
+        .bind(offering_id)
+        .fetch_all(&self.pool.get())
+        .await
+        .map_err(map_db_err)?;
+        let mut deposits = Vec::new();
+        for row in rows {
+            let id: Uuid = row.get("id");
+            let mut deposit = row_to_deposit_base(&row)?;
+            deposit.items = load_items(&self.pool.get(), id).await?;
+            deposits.push(deposit);
+        }
+        Ok(deposits)
+    }
+
+    async fn delete_all(&self) -> RepoResult<()> {
+        sqlx::query("DELETE FROM bank_deposits")
+            .execute(&self.pool.get())
+            .await
+            .map_err(map_db_err)?;
+        Ok(())
+    }
+}

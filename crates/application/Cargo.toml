@@ -1,0 +1,20 @@
+[package]
+name = "offering-application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+offering-domain = { path = "../domain" }
+offering-persistence = { path = "../persistence" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+offering-infrastructure = { path = "../infrastructure" }
+tokio = { version = "1", features = ["rt", "macros"] }
+tempfile = "3"

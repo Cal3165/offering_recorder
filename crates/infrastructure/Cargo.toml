@@ -1,0 +1,21 @@
+[package]
+name = "offering-infrastructure"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+offering-domain = { path = "../domain" }
+offering-persistence = { path = "../persistence" }
+offering-application = { path = "../application" }
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+argon2.workspace = true
+aes-gcm.workspace = true
+rand_core.workspace = true
+tokio = { version = "1", features = ["rt", "macros"] }

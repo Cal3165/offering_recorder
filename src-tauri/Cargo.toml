@@ -1,0 +1,27 @@
+[package]
+name = "offering_recorder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A Tauri App"
+authors = ["you"]
+
+[lib]
+name = "offering_recorder_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri.workspace = true
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json = "1"
+chrono.workspace = true
+uuid.workspace = true
+tokio = { version = "1", features = ["rt", "macros"] }
+offering-domain = { path = "../crates/domain" }
+offering-application = { path = "../crates/application" }
+offering-persistence = { path = "../crates/persistence" }
+offering-infrastructure = { path = "../crates/infrastructure" }

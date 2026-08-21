@@ -1,0 +1,3 @@
+ALTER TABLE community_buildings ADD COLUMN local_authority TEXT;
+
+CREATE INDEX idx_community_buildings_local_authority ON community_buildings(local_authority);
