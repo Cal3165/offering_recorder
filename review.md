@@ -18,12 +18,15 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 
 ## Critical
 
-- [ ] **C1. GASDS matching cap wrong ~5× — statutory multiplier is 10:1, code uses 2:1**
+- [x] **C1. GASDS matching cap wrong ~5× — statutory multiplier is 10:1, code uses 2:1**
   `crates/domain/src/entities/gasds_claim.rs:8-22`, `crates/domain/src/gasds.rs:20-32`
   Comment claims the rate "dropped to 2:1" in 2016/17; per HMRC/GOV.UK and SCDA 2012 s.6 the match
   has been 10:1 since 2013 (2016 changed the £5k→£8k ceiling only). Every modern GASDS readiness
   figure/claim is understated up to 5× (e.g. £800 GA donations ⇒ true cap £8,000, code computes £1,600).
   Remedy: both constants = 10 (or delete legacy/current split), fix comments, update tests asserting 2× caps.
+  **FIXED 2026-08-24:** single `GASDS_MATCHING_MULTIPLIER = 10`; kept year-aware fn for API stability;
+  rewrote statutory comments; updated 9 test assertions across gasds_claim.rs, gasds.rs, workflows.rs.
+  All 295 tests pass.
 - [ ] **C2. Recording deposit actuals silently destroys non-cash item amounts**
   `crates/infrastructure/src/sqlite/bank_deposits.rs:181-189` vs `create()` :106-115
   `update()` omits `other_amount_pence` from the item re-insert (column is NOT NULL DEFAULT 0).
@@ -219,3 +222,4 @@ Suggested fix batches:
 Append entries here as fixes land (date · finding IDs · commit/branch · notes):
 
 - 2026-08-24 · initial full-repo review logged · verdict Request changes
+- 2026-08-24 · C1 fixed · single 10:1 multiplier constant, statutory comments corrected, tests updated (gasds_claim.rs, gasds.rs, workflows.rs) · cargo test 295 pass

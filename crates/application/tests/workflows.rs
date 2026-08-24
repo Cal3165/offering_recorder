@@ -1025,7 +1025,7 @@ async fn gasds_claim_workflow_and_readiness() {
     assert_eq!(readiness.gift_aid_amount.pence(), 5000);
     assert_eq!(readiness.gasds_eligible_amount.pence(), 2000);
     assert_eq!(readiness.unbanked_cash_amount.pence(), 500);
-    assert_eq!(readiness.matching_limit.pence(), 10_000);
+    assert_eq!(readiness.matching_limit.pence(), 50_000);
     assert_eq!(readiness.claimable_amount.pence(), 2000);
     assert!(readiness.warnings.iter().any(|w| w.contains("unbanked")));
 

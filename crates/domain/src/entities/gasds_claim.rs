@@ -5,20 +5,18 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Before 6 April 2016 the government matched GASDS donations at 10:1; from the
-/// 2016/17 tax year the rate dropped to 2:1. The £8,000 annual limit and the
-/// £30 per-donation threshold used elsewhere are the post-2016 values, so the
-/// multiplier must follow the tax year or the matching cap is overstated ~5×.
-pub const GASDS_MATCHING_MULTIPLIER_LEGACY: i64 = 10;
-pub const GASDS_MATCHING_MULTIPLIER_CURRENT: i64 = 2;
+/// The government match has been 10:1 since the scheme began on 6 April 2013
+/// (Small Charitable Donations Act 2012 s.6; HMRC Charities Detailed Guidance
+/// Ch. 8): a claim cannot exceed ten times the gross Gift Aid donations
+/// claimed in the same tax year. The April 2016 change raised the annual
+/// ceiling from £5,000 to £8,000; it never altered this ratio.
+pub const GASDS_MATCHING_MULTIPLIER: i64 = 10;
 
-/// GASDS government-matching multiplier for a tax year.
-pub fn gasds_matching_multiplier(tax_year: &TaxYear) -> i64 {
-    if tax_year.start_year() >= 2016 {
-        GASDS_MATCHING_MULTIPLIER_CURRENT
-    } else {
-        GASDS_MATCHING_MULTIPLIER_LEGACY
-    }
+/// GASDS government-matching multiplier for a tax year. Always 10:1; kept as
+/// a function taking a tax year so callers can stay year-aware if legislation
+/// ever changes.
+pub fn gasds_matching_multiplier(_tax_year: &TaxYear) -> i64 {
+    GASDS_MATCHING_MULTIPLIER
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,9 +222,8 @@ impl GasdsClaim {
     }
 }
 
-/// Automatic matching limit: the GASDS matching multiplier (tax-year
-/// dependent) times the Gift Aid claimed in the same tax year, capped by the
-/// annual limit (default £8,000).
+/// Automatic matching limit: ten times the Gift Aid claimed in the same tax
+/// year (statutory 10:1 match), capped by the annual limit (default £8,000).
 pub fn matching_limit(gift_aid_claimed: &Money, annual_limit: &Money, tax_year: &TaxYear) -> Money {
     let multiplier = gasds_matching_multiplier(tax_year);
     let raw = gift_aid_claimed
@@ -265,23 +262,23 @@ mod tests {
         ).unwrap();
         assert_eq!(claim.status, GasdsClaimStatus::Draft);
         assert_eq!(claim.total_amount.pence(), 1000);
-        // Tax year 2024/25 uses the 2:1 matching rate: £1000 Gift Aid -> £2000 cap.
-        assert_eq!(claim.matching_limit.pence(), 200_000);
+        // Matching rule is 10:1: £1000 Gift Aid -> £10,000 cap, limited by the £8,000 ceiling.
+        assert_eq!(claim.matching_limit.pence(), 800_000);
         assert_eq!(claim.claimable_amount.pence(), 1000);
     }
 
     #[test]
-    fn matching_cap_two_times_gift_aid() {
+    fn matching_cap_ten_times_gift_aid() {
         let claim = GasdsClaim::create(
             TaxYear::new(2024),
             GasdsClaimMethod::Nationwide,
             vec![item(5000)],
-            Money::from_pence(1000).unwrap(), // £10 Gift Aid -> £20 matching cap (2:1)
+            Money::from_pence(1000).unwrap(), // £10 Gift Aid -> £100 matching cap (10:1)
             annual_limit(),
             Uuid::new_v4(),
         ).unwrap();
-        assert_eq!(claim.matching_limit.pence(), 2_000);
-        assert_eq!(claim.claimable_amount.pence(), 2_000);
+        assert_eq!(claim.matching_limit.pence(), 10_000);
+        assert_eq!(claim.claimable_amount.pence(), 5_000);
     }
 
     #[test]
@@ -290,19 +287,21 @@ mod tests {
             TaxYear::new(2024),
             GasdsClaimMethod::Nationwide,
             vec![item(5000)],
-            Money::from_pence(100_000).unwrap(), // £1000 -> £2000 cap, limited by £8000
+            Money::from_pence(100_000).unwrap(), // £1000 Gift Aid -> £10,000, limited by £8,000
             annual_limit(),
             Uuid::new_v4(),
         ).unwrap();
-        assert_eq!(claim.matching_limit.pence(), 200_000);
+        assert_eq!(claim.matching_limit.pence(), 800_000);
     }
 
     #[test]
-    fn matching_multiplier_is_tax_year_dependent() {
-        // GASDS dropped from 10:1 to 2:1 from the 2016/17 tax year.
+    fn matching_multiplier_is_always_ten_to_one() {
+        // The match has been 10:1 since the scheme began in April 2013
+        // (SCDA 2012 s.6); no tax year uses a different ratio.
+        assert_eq!(gasds_matching_multiplier(&TaxYear::new(2013)), 10);
         assert_eq!(gasds_matching_multiplier(&TaxYear::new(2015)), 10);
-        assert_eq!(gasds_matching_multiplier(&TaxYear::new(2016)), 2);
-        assert_eq!(gasds_matching_multiplier(&TaxYear::new(2024)), 2);
+        assert_eq!(gasds_matching_multiplier(&TaxYear::new(2016)), 10);
+        assert_eq!(gasds_matching_multiplier(&TaxYear::new(2024)), 10);
     }
 
     #[test]
@@ -325,12 +324,12 @@ mod tests {
             TaxYear::new(2024),
             GasdsClaimMethod::Nationwide,
             vec![item(1000), item(2000)],
-            Money::from_pence(100).unwrap(), // £1 -> £2 matching cap (2:1)
+            Money::from_pence(100).unwrap(), // £1 -> £10 matching cap (10:1)
             annual_limit(),
             Uuid::new_v4(),
         ).unwrap();
         assert_eq!(claim.total_amount.pence(), 3000);
-        assert_eq!(claim.claimable_amount.pence(), 200);
+        assert_eq!(claim.claimable_amount.pence(), 1000);
     }
 
     #[test]

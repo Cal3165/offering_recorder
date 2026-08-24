@@ -17,8 +17,9 @@ fn donation_datetime(date: NaiveDate) -> DateTime<Utc> {
 pub struct GasdsConfig {
     pub annual_limit: Money,
     pub gift_aid_claimed: Money,
-    /// Government-matching multiplier (tax-year dependent: 10 before 2016/17,
-    /// 2 from 2016/17). Callers must set this from the relevant tax year.
+    /// Government-matching multiplier: statutory 10:1 since the scheme began
+    /// in April 2013 (SCDA 2012 s.6). Callers may override if legislation
+    /// ever changes.
     pub matching_multiplier: i64,
 }
 
@@ -27,9 +28,8 @@ impl Default for GasdsConfig {
         GasdsConfig {
             annual_limit: Money::from_pence_unchecked(DEFAULT_ANNUAL_LIMIT_PENCE),
             gift_aid_claimed: Money::zero(),
-            // Modern (post-2016) rate; callers with a known tax year should
-            // override this via `gasds_matching_multiplier`.
-            matching_multiplier: crate::entities::gasds_claim::GASDS_MATCHING_MULTIPLIER_CURRENT,
+            matching_multiplier:
+                crate::entities::gasds_claim::GASDS_MATCHING_MULTIPLIER,
         }
     }
 }
@@ -877,11 +877,11 @@ mod tests {
         }
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(800_000),
-            gift_aid_claimed: Money::from_pence_unchecked(100_000), // £1000 Gift Aid → £2000 cap
-            matching_multiplier: 2,
+            gift_aid_claimed: Money::from_pence_unchecked(100_000), // £1000 Gift Aid → £10,000 cap
+            matching_multiplier: 10,
         };
         let result = GasdsCalculator::calculate_offering(&o, &[], &config);
-        // 20 * £20 = £400, limits are £2000 and £8000, so all eligible
+        // 20 * £20 = £400, limits are £10,000 and £8,000, so all eligible
         assert_eq!(result.eligible_amount.pence(), 40_000);
         assert_eq!(result.claimable_amount().pence(), 40_000);
     }
@@ -895,14 +895,14 @@ mod tests {
         }
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(800_000),
-            gift_aid_claimed: Money::from_pence_unchecked(100_000), // £1000 → £2000 cap
-            matching_multiplier: 2,
+            gift_aid_claimed: Money::from_pence_unchecked(100_000), // £1000 → £10,000 cap, capped by £8,000
+            matching_multiplier: 10,
         };
         let result = GasdsCalculator::calculate_offering(&o, &[], &config);
         // 270 * £30 = £8100, annual limit is £8000
         assert_eq!(result.eligible_amount.pence(), 810_000);
-        assert_eq!(result.maximum_allowed.pence(), 200_000);
-        assert_eq!(result.claimable_amount().pence(), 200_000);
+        assert_eq!(result.maximum_allowed.pence(), 800_000);
+        assert_eq!(result.claimable_amount().pence(), 800_000);
     }
 
     #[test]
@@ -914,12 +914,12 @@ mod tests {
         }
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(800_000),
-            gift_aid_claimed: Money::from_pence_unchecked(1000), // £10 Gift Aid → £20 GASDS max
-            matching_multiplier: 2,
+            gift_aid_claimed: Money::from_pence_unchecked(1000), // £10 Gift Aid → £100 GASDS max (10:1)
+            matching_multiplier: 10,
         };
         let result = GasdsCalculator::calculate_offering(&o, &[], &config);
-        assert_eq!(result.maximum_allowed.pence(), 2_000);
-        assert_eq!(result.claimable_amount().pence(), 2_000);
+        assert_eq!(result.maximum_allowed.pence(), 10_000);
+        assert_eq!(result.claimable_amount().pence(), 10_000);
     }
 
     #[test]
@@ -931,11 +931,11 @@ mod tests {
         }
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(800_000),
-            gift_aid_claimed: Money::from_pence_unchecked(100_000), // £1000 Gift Aid → £2000 GASDS cap
-            matching_multiplier: 2,
+            gift_aid_claimed: Money::from_pence_unchecked(100_000), // £1000 Gift Aid → £10,000, capped by £8,000
+            matching_multiplier: 10,
         };
         let result = GasdsCalculator::calculate_offering(&o, &[], &config);
-        assert_eq!(result.maximum_allowed.pence(), 200_000);
+        assert_eq!(result.maximum_allowed.pence(), 800_000);
         assert_eq!(result.claimable_amount().pence(), 60_000);
     }
 
@@ -1017,7 +1017,7 @@ mod tests {
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(500), // £5 limit
             gift_aid_claimed: Money::from_pence_unchecked(1000),
-            matching_multiplier: 2,
+            matching_multiplier: 10,
         };
         let result = GasdsCalculator::calculate_offering(&o, &[], &config);
         assert_eq!(result.eligible_amount.pence(), 1000);
