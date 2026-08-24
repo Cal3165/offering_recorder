@@ -182,7 +182,13 @@ impl GiftAidDeclaration {
         if self.status == DeclarationStatus::Revoked {
             return false;
         }
-        date >= self.effective_from && self.effective_until.is_none_or(|until| date <= until)
+        if date < self.effective_from {
+            return false;
+        }
+        match self.effective_until {
+            None => true,
+            Some(until) => date <= until,
+        }
     }
 
     pub fn end(&mut self, at: DateTime<Utc>) -> DomainResult<()> {

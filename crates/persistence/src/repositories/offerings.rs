@@ -7,6 +7,10 @@ use crate::RepoResult;
 #[async_trait]
 pub trait OfferingRepository: Send + Sync {
     async fn create(&self, offering: Offering) -> RepoResult<Offering>;
+    /// Create an offering, allocating its offering number atomically inside the
+    /// insert transaction (`BEGIN IMMEDIATE`) so concurrent creates for the same
+    /// meeting/year cannot allocate the same number.
+    async fn create_with_generated_number(&self, offering: Offering, year: i32) -> RepoResult<Offering>;
     async fn get(&self, id: Uuid) -> RepoResult<Option<Offering>>;
     async fn list(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Offering>>;
     async fn list_by_meeting(&self, meeting_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Offering>>;

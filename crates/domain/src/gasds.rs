@@ -507,7 +507,7 @@ mod tests {
             )
             .unwrap(),
             DonationClassification::LooseCash => {
-                Donation::loose_cash(offering_id, cash_total(amount_pence))
+                Donation::loose_cash(offering_id, cash_total(amount_pence)).unwrap()
             }
         }
     }
@@ -539,7 +539,7 @@ mod tests {
             )
             .unwrap(),
             DonationClassification::LooseCash => {
-                Donation::loose_cash(offering_id, cash_total(amount_pence))
+                Donation::loose_cash(offering_id, cash_total(amount_pence)).unwrap()
             }
         }
     }
@@ -571,7 +571,7 @@ mod tests {
             )
             .unwrap(),
             DonationClassification::LooseCash => {
-                Donation::loose_cash(offering_id, cash_total(amount_pence))
+                Donation::loose_cash(offering_id, cash_total(amount_pence)).unwrap()
             }
         }
     }
@@ -815,7 +815,7 @@ mod tests {
         ct.set(Denomination::Note2000p, 3);
         ct.set(Denomination::Note1000p, 14);
         ct.set(Denomination::Note5000p, 3);
-        o.add_donation(Donation::loose_cash(o.id, ct)).unwrap();
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap()).unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         // 3×£20 + 14×£10 = £200 eligible; 3×£50 = £150 excluded
         assert_eq!(result.eligible_amount.pence(), 20_000);
@@ -835,7 +835,7 @@ mod tests {
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Note2000p, 3);
         ct.set(Denomination::Note1000p, 14);
-        o.add_donation(Donation::loose_cash(o.id, ct)).unwrap();
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap()).unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         // 3×£20 + 14×£10 = £200 eligible, nothing excluded
         assert_eq!(result.eligible_amount.pence(), 20_000);
@@ -862,7 +862,7 @@ mod tests {
         let mut o = make_offering();
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Note5000p, 1);
-        o.add_donation(Donation::loose_cash(o.id, ct)).unwrap();
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap()).unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         assert_eq!(result.eligible_amount.pence(), 0);
         assert_eq!(result.excluded_amount.pence(), 5000);
@@ -1095,7 +1095,7 @@ mod tests {
         let mut o = make_offering();
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Coin100p, 5);
-        o.add_donation(Donation::loose_cash(o.id, ct)).unwrap();
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap()).unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         assert_eq!(result.evaluations[0].tax_treatment, TaxTreatment::Gasds);
     }
@@ -1118,7 +1118,6 @@ mod tests {
             )
             .unwrap()
             .with_date(date);
-            d.offering_id = Uuid::new_v4();
             d
         };
 

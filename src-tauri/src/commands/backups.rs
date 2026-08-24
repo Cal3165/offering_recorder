@@ -36,10 +36,6 @@ pub async fn restore_backup(
     backup_path: String,
     passphrase: String,
 ) -> Result<(), String> {
-    // Reject a second concurrent restore.
-    if *state.restoring.lock().map_err(|e| e.to_string())? {
-        return Err("a backup restore is already in progress; please retry shortly".into());
-    }
     // Authenticate directly. We cannot use `with_actor!` here because it rejects
     // every request once the `restoring` flag is raised, and this command is the
     // one that raises it.
@@ -65,8 +61,18 @@ pub async fn restore_backup(
     let safety_dir = app_data.join("pre_restore");
     let backup_path = std::path::PathBuf::from(&backup_path);
 
-    // Block any new database-touching request for the duration of the pool swap.
-    *state.restoring.lock().map_err(|e| e.to_string())? = true;
+    // Atomically claim the restore lock: check-and-set in a single lock
+    // acquisition so two concurrent `restore_backup` calls cannot both pass
+    // the guard. Every other database-touching command already bails via
+    // `with_actor!` while this flag is set.
+    {
+        let mut guard = state.restoring.lock().map_err(|e| e.to_string())?;
+        if *guard {
+            return Err("a backup restore is already in progress; please retry shortly".into());
+        }
+        *guard = true;
+    }
+
     let outcome = async {
         state
             .services

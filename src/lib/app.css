@@ -11,8 +11,24 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
+  min-height: 100vh;
+  background-color: #f6f6f6;
+}
+
+#app {
+  /* Promote to own composited layer — primary fix for Tauri/WebKit
+     repaint bug. The JS MutationObserver in repaint.ts is the fallback. */
+  transform: translateZ(0);
+  /* contain: layout avoids re-calculating layout outside #app on each
+     forced reflow fallback, keeping the fallback cheap if it fires. */
+  contain: layout;
 }
 
 main {
@@ -154,6 +170,17 @@ th {
 .ok {
   color: #0a0;
   font-size: 0.9rem;
+}
+
+.sign-error {
+  background: #fdeaea;
+  border: 1px solid #e09a9a;
+  color: #a00;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
 }
 
 .badge {
@@ -392,7 +419,9 @@ ul.plain li {
 }
 
 .qbtn {
-  padding: 0.1rem 0.4rem;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.1rem 0;
   font-size: 0.75rem;
   background: #eee;
   color: #333;

@@ -65,9 +65,6 @@ impl RoleSet {
         roles.iter().any(|r| self.has(r))
     }
 
-    pub fn contains(&self, role: &Role) -> bool {
-        self.has(role)
-    }
 
     pub fn iter(&self) -> impl Iterator<Item = &Role> {
         self.roles.iter()

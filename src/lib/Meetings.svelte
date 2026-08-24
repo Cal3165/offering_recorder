@@ -29,6 +29,7 @@
   let mName = $state("");
   let mDay = $state(0);
   let mTime = $state("10:30");
+  let mAttendance = $state("");
 
   let editing = $state<Record<string, { name: string; day: number; time: string } | undefined>>({});
   let details = $state<
@@ -92,14 +93,15 @@
     ok = "";
     const row = details[m.id];
     if (!row) return;
-    const attendance = row.estimated_attendance.trim();
+    const raw = row.estimated_attendance;
+    const attendanceStr = raw === null || raw === undefined || raw === "" ? "" : String(raw).trim();
+    const attendance = attendanceStr === "" ? null : Number(attendanceStr);
+    if (attendance !== null && (!Number.isFinite(attendance) || attendance < 0)) {
+      error = "Enter a valid estimated attendance.";
+      return;
+    }
     try {
-      await setMeetingEventDetails(
-        m.id,
-        row.community_building_id,
-        row.event_type,
-        attendance === "" ? null : Number(attendance),
-      );
+      await setMeetingEventDetails(m.id, row.community_building_id, row.event_type, attendance);
       ok = "Event details updated.";
       details = { ...details, [m.id]: undefined };
       await load();
@@ -122,10 +124,17 @@
   async function submitCreate() {
     error = "";
     ok = "";
+    const attendanceStr = mAttendance.trim();
+    const attendance = attendanceStr === "" ? null : Number(attendanceStr);
+    if (attendance !== null && (!Number.isFinite(attendance) || attendance < 0)) {
+      error = "Enter a valid estimated attendance.";
+      return;
+    }
     try {
-      await createMeeting(mName.trim(), mDay, mTime.trim());
+      await createMeeting(mName.trim(), mDay, mTime.trim(), attendance);
       createOpen = false;
       mName = "";
+      mAttendance = "";
       ok = "Meeting created.";
       await load();
     } catch (e) {
@@ -217,6 +226,10 @@
       <div class="field">
         <label for="meeting-time">Time</label>
         <input id="meeting-time" bind:value={mTime} style="width: 110px" />
+      </div>
+      <div class="field">
+        <label for="meeting-attendance">Est. attendance</label>
+        <input id="meeting-attendance" type="number" min="0" bind:value={mAttendance} style="width: 110px" placeholder="optional" />
       </div>
       <button onclick={submitCreate}>Create</button>
     </div>

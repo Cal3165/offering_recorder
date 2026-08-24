@@ -24,7 +24,7 @@ pub struct AppState {
 /// This is a local single-user desktop app, so the in-app session has no idle
 /// timeout by design; the trust boundary is the OS user, not the session.
 async fn actor(state: &AppState) -> AppResult<User> {
-    if *state.restoring.lock().unwrap() {
+    if *state.restoring.lock().unwrap_or_else(|e| e.into_inner()) {
         return Err(AppError::Unauthorized(
             "a backup restore is in progress; please retry shortly".into(),
         ));
@@ -32,7 +32,7 @@ async fn actor(state: &AppState) -> AppResult<User> {
     let id = state
         .session
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .map(|u| u.id)
         .ok_or_else(|| AppError::Unauthorized("not logged in".into()))?;

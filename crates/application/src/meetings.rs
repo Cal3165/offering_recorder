@@ -28,11 +28,13 @@ impl<'a> MeetingService<'a> {
         name: &str,
         day_of_week: u8,
         time_of_day: &str,
+        estimated_attendance: Option<u32>,
     ) -> AppResult<Meeting> {
         if !can_record_offering(actor) {
             return Err(unauthorized("record offering"));
         }
-        let meeting = Meeting::create(name, day_of_week, time_of_day)?;
+        let mut meeting = Meeting::create(name, day_of_week, time_of_day)?;
+        meeting.set_estimated_attendance(estimated_attendance);
         let meeting = self.meetings.create(meeting).await?;
         self.audit
             .record(

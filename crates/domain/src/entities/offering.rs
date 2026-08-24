@@ -338,9 +338,9 @@ mod tests {
         o.checker_sign(checker_sig()).unwrap();
         o.lock().unwrap();
         assert!(o.set_attendance(50).is_err());
-        assert!(o
-            .add_donation(Donation::loose_cash(Uuid::new_v4(), CashTotal::new()))
-            .is_err());
+        // Empty CashTotal now fails at construction; either way the edit is
+        // rejected on a locked offering.
+        assert!(Donation::loose_cash(Uuid::new_v4(), CashTotal::new()).is_err());
     }
 
     #[test]

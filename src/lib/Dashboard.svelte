@@ -25,12 +25,19 @@
 
   onMount(async () => {
     try {
-      meetings = await listMeetings();
-      offerings = await listAllOfferings();
+      const [m, offs, dep, bk, aud] = await Promise.all([
+        listMeetings(),
+        listAllOfferings(),
+        listDeposits(),
+        listBackups(),
+        listAuditEvents(),
+      ]);
+      meetings = m;
+      offerings = offs;
       offerings.sort((a, b) => b.created_at.localeCompare(a.created_at));
-      deposits = await listDeposits();
-      backups = await listBackups();
-      audit = await listAuditEvents();
+      deposits = dep;
+      backups = bk;
+      audit = aud;
     } finally {
       loaded = true;
     }

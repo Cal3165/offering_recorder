@@ -83,6 +83,11 @@ impl Amendment {
                 "amendment must have at least one change".into(),
             ));
         }
+        for change in &changes {
+            if let AmendmentChange::AddDonation(d) = change {
+                d.validate_cash_consistency()?;
+            }
+        }
         let now = Utc::now();
         Ok(Amendment {
             id: Uuid::new_v4(),
@@ -264,6 +269,8 @@ impl OfferingReconstruction {
 mod tests {
     use super::*;
     use crate::donation_type::DonationType;
+    use crate::entities::cash_denomination::{CashTotal, Denomination};
+    use crate::entities::donation::{Donation, DonationClassification};
     use crate::money::Money;
     use crate::offering_number::OfferingNumber;
     use crate::payment_method::PaymentMethod;
@@ -307,6 +314,38 @@ mod tests {
             Amendment::create(o.id, "reason", vec![], Uuid::new_v4()),
             Err(DomainError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn amendment_rejects_inconsistent_cash_donation() {
+        // A cash donation whose amount does not match its breakdown must be
+        // rejected even when supplied via an amendment (which bypasses the
+        // Donation constructors, e.g. from deserialised client JSON).
+        // Regression for the amount/breakdown gap.
+        let o = make_offering();
+        let mut ct = CashTotal::new();
+        ct.add(Denomination::Note500p, 2);
+        let inconsistent = Donation {
+            id: Uuid::new_v4(),
+            donor_id: Some(Uuid::new_v4()),
+            offering_id: o.id,
+            amount: Money::from_pence(9999).unwrap(),
+            donation_type: DonationType::Offering,
+            payment_method: PaymentMethod::Cash,
+            classification: DonationClassification::Named,
+            reference: None,
+            cash_denominations: Some(ct),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            date: chrono::Utc::now().date_naive(),
+        };
+        let result = Amendment::create(
+            o.id,
+            "correct amount",
+            vec![AmendmentChange::AddDonation(inconsistent)],
+            Uuid::new_v4(),
+        );
+        assert!(matches!(result, Err(DomainError::Validation(_))));
     }
 
     fn counter_sig() -> Signature {

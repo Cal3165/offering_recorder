@@ -11,6 +11,7 @@
     reviewConfirmed,
     reviewGuest,
     reviewGuestName,
+    error,
     cashReconciled,
     cashDiff,
     donationTotal,
@@ -32,6 +33,7 @@
     reviewConfirmed: boolean;
     reviewGuest: boolean;
     reviewGuestName: string;
+    error: string;
     cashReconciled: boolean;
     cashDiff: number;
     donationTotal: number;
@@ -53,6 +55,20 @@
       <h3>{reviewAction === "lock" ? `Confirm & lock offering ${offering.offering_number}` : `Review offering ${offering.offering_number}`}</h3>
       <button class="secondary" onclick={onClose}>Close</button>
     </div>
+    {#if error}
+      <div class="sign-error" role="alert">
+        <strong>Could not complete the signature.</strong>
+        {#if error.toLowerCase().includes("different users") || error.toLowerCase().includes("different people")}
+          <div style="margin-top:0.3rem;">
+            The counter and checker must be different people. If you counted the offering yourself and someone
+            else checked it, choose <em>“Signed by someone else”</em> and enter their name so they are recorded
+            as a distinct signer.
+          </div>
+        {:else}
+          <div style="margin-top:0.3rem;">{error}</div>
+        {/if}
+      </div>
+    {/if}
     <div class="row">
       <span class="total">Cash: {fmtPence(cashDonationTotal)}</span>
       <span class="total">Cheques: {fmtPence(chequeDonationTotal)}</span>

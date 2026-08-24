@@ -196,7 +196,7 @@
     error = "";
     ok = "";
     try {
-      const m = await createMeeting(mName.trim(), mDay, mTime.trim());
+      const m = await createMeeting(mName.trim(), mDay, mTime.trim(), null);
       meetings = await listMeetings();
       meetingId = m.id;
       await loadOfferings();
@@ -223,10 +223,16 @@
 
   async function refresh() {
     if (!offeringId) return;
-    offering = await getOffering(offeringId);
-    amendments = await listAmendments(offeringId);
-    issues = await validateOffering(offeringId);
-    gasds = await gasdsForOffering(offeringId);
+    const [o, a, i, g] = await Promise.all([
+      getOffering(offeringId),
+      listAmendments(offeringId),
+      validateOffering(offeringId),
+      gasdsForOffering(offeringId),
+    ]);
+    offering = o;
+    amendments = a;
+    issues = i;
+    gasds = g;
   }
 
   async function openReport() {
@@ -283,6 +289,8 @@
   async function submitDonation() {
     error = "";
     ok = "";
+    // Loose cash must always be recorded as a cash donation.
+    if (dClass === "LooseCash") dMethod = "Cash";
     try {
       let pence: number;
       let breakdown: CashTotal | null = null;
@@ -470,6 +478,8 @@
     reviewConfirmed = false;
     reviewGuest = false;
     reviewGuestName = "";
+    error = "";
+    ok = "";
     reviewOpen = true;
   }
   function setReviewAction(action: "counter" | "checker" | "lock") {
@@ -1063,10 +1073,10 @@
             <legend>What was given?</legend>
             <div class="row">
               <button class={dClass === 'Named' ? '' : 'secondary'} onclick={() => setClass("Named")}>Named donor</button>
-              <button class={dClass === 'Anonymous' ? '' : 'secondary'} onclick={() => setClass("Anonymous")}>Anonymous envelope</button>
+              <button class={dClass === 'Anonymous' ? '' : 'secondary'} onclick={() => setClass("Anonymous")}>Anonymous</button>
               <button class={dClass === 'LooseCash' ? '' : 'secondary'} onclick={() => setClass("LooseCash")}>Loose cash</button>
             </div>
-            <div class="hint-block">Named donors can be Gift Aid eligible. Anonymous envelopes and loose cash are never Gift Aid eligible but may count towards the GASDS.</div>
+            <div class="hint-block">Named donors can be Gift Aid eligible. Anonymous donations and loose cash are never Gift Aid eligible but may count towards the GASDS.</div>
           </fieldset>
           {#if dClass === "Named"}
             <div class="field donor-field">
@@ -1152,7 +1162,10 @@
           <div class="row">
             {#if dMethod === "Cash"}
             <div class="field" style="flex:1 1 100%;">
-              <span style="display:block; font-size:0.85rem; color:#555; margin-bottom:0.25rem;">Denominations <span class="hint" title="Record how the cash was given, note by note. The total is added up for you, and each denomination is reconciled against the loose cash count.">ⓘ</span></span>
+              <span style="display:block; font-size:0.85rem; color:#555; margin-bottom:0.25rem;">
+                Denominations <span class="hint" title="Record how the cash was given, note by note. The total is added up for you, and each denomination is reconciled against the loose cash count.">ⓘ</span>
+                {#if dClass === "LooseCash"}<span class="muted"> · cash only</span>{/if}
+              </span>
               <DenominationGrid bind:counts={dCounts} onKeydown={(e) => { if (e.key === "Enter") submitDonation(); }} />
               <div class="row" style="margin-top:0.3rem;">
                 <span class="total">Total: {fmtPence(DENOMINATIONS.reduce((s, d) => s + d.pence * (dCounts[d.name] ?? 0), 0))}</span>
@@ -1435,23 +1448,24 @@
   <OfferingReportModal {report} onClose={closeReport} />
 {/if}
 
-{#if reviewOpen && offering}
-  <ReviewModal
-    {offering}
-    {issues}
-    {user}
-    {canSign}
-    {reviewAction}
-    {reviewConfirmed}
-    {reviewGuest}
-    {reviewGuestName}
-    {cashReconciled}
-    {cashDiff}
-    {donationTotal}
-    {cashDonationTotal}
-    {chequeDonationTotal}
-    {bankDonationTotal}
-    onAction={setReviewAction}
+  {#if reviewOpen && offering}
+    <ReviewModal
+      {offering}
+      {issues}
+      {user}
+      {canSign}
+      {reviewAction}
+      {reviewConfirmed}
+      {reviewGuest}
+      {reviewGuestName}
+      {error}
+      {cashReconciled}
+      {cashDiff}
+      {donationTotal}
+      {cashDonationTotal}
+      {chequeDonationTotal}
+      {bankDonationTotal}
+      onAction={setReviewAction}
     onConfirmedChange={setReviewConfirmed}
     onGuestChange={setReviewGuest}
     onGuestNameChange={setReviewGuestName}

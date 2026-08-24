@@ -15,9 +15,8 @@ pub async fn create_deposit(
     let actor = with_actor!(state);
     let ids = offering_ids
         .iter()
-        .map(|s| uuid::Uuid::parse_str(s))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .map(|s| parse_uuid(s))
+        .collect::<Result<Vec<_>, _>>()?;
     state.services.banking.create_deposit(&actor, ids, deposit_date, reference).await.map_err(|e| e.to_string())
 }
 

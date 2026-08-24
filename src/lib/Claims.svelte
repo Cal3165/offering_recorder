@@ -34,8 +34,12 @@
   async function load() {
     error = "";
     try {
-      readiness = await gasdsClaimReadiness(taxYear);
-      claims = await listGasdsClaims(taxYear);
+      const [r, c] = await Promise.all([
+        gasdsClaimReadiness(taxYear),
+        listGasdsClaims(taxYear),
+      ]);
+      readiness = r;
+      claims = c;
     } catch (e) {
       error = String(e);
     }

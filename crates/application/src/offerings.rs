@@ -7,6 +7,7 @@ use offering_domain::entities::offering::{Offering, OfferingStatus};
 use offering_domain::entities::user::User;
 use offering_domain::gasds::{GasdsCalculator, GasdsConfig, GasdsResult};
 use offering_domain::money::Money;
+use offering_domain::offering_number::OfferingNumber;
 use offering_domain::payment_method::PaymentMethod;
 use offering_persistence::{
     AmendmentRepository, AuditRepository, GasdsClaimRepository, GiftAidRepository,
@@ -89,9 +90,15 @@ impl<'a> OfferingService<'a> {
             .ok_or_else(|| crate::error::AppError::NotFound("meeting not found".into()))?;
         let now = chrono::Utc::now();
         let year = now.year();
-        let number = self.meetings.next_offering_number(meeting_id, year).await?;
-        let offering = Offering::create_with_time(meeting_id, number, description, now)?;
-        let offering = self.offerings.create(offering).await?;
+        // The offering number is allocated atomically inside the repository's
+        // insert transaction (BEGIN IMMEDIATE) so concurrent creates cannot
+        // collide on the same number. The placeholder below is overwritten.
+        let placeholder = OfferingNumber::new("pending")?;
+        let offering = Offering::create_with_time(meeting_id, placeholder, description, now)?;
+        let offering = self
+            .offerings
+            .create_with_generated_number(offering, year)
+            .await?;
         self.audit
             .record(
                 actor,
@@ -263,7 +270,7 @@ impl<'a> OfferingService<'a> {
                         "loose cash requires a denomination breakdown".into(),
                     )
                 })?;
-                Donation::loose_cash(offering_id, bd)
+                Donation::loose_cash(offering_id, bd).map_err(|e| crate::error::AppError::Validation(e.to_string()))?
             }
         };
         let donation = donation.with_date(
@@ -573,7 +580,7 @@ mod tests {
 
     fn cash_donation(o: &Offering, breakdown: &[(Denomination, u32)]) -> Donation {
         let bd = cash(breakdown);
-        Donation::loose_cash(o.id, bd)
+        Donation::loose_cash(o.id, bd).unwrap()
     }
 
     #[test]

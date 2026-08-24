@@ -39,10 +39,21 @@ impl Signature {
     }
 
     pub fn is_same_person_as(&self, other: &Signature) -> bool {
-        if !self.user_id.is_nil() && self.user_id == other.user_id {
+        // A guest signature recorded under an authenticated user belongs to
+        // that user for segregation-of-duties purposes: mixing a real
+        // signature and a guest signature with the same non-nil user id is
+        // the same person. Two guest entries by one operator stay distinct
+        // people unless the typed names match.
+        if (!self.is_guest || !other.is_guest)
+            && !self.user_id.is_nil()
+            && self.user_id == other.user_id
+        {
             return true;
         }
-        self.is_guest && other.is_guest && self.user_name == other.user_name
+        if self.is_guest && other.is_guest {
+            return self.user_name.to_lowercase() == other.user_name.to_lowercase();
+        }
+        false
     }
 }
 
@@ -65,5 +76,25 @@ mod tests {
         assert!(sig.is_guest);
         assert_eq!(sig.user_name, "Guest Counter");
         assert_eq!(sig.user_id, Uuid::nil());
+    }
+
+    #[test]
+    fn different_guest_names_same_operator_are_different_people() {
+        // Regression: a guest signature records the signer by name. Two different
+        // guest names entered by the same operator (same user id) must not be
+        // treated as the same person, otherwise guest counter/checker signing is
+        // impossible for a single operator.
+        let operator = Uuid::new_v4();
+        let counter = Signature::guest_for(operator, "Guest Counter".to_string());
+        let checker = Signature::guest_for(operator, "Guest Checker".to_string());
+        assert!(!counter.is_same_person_as(&checker));
+    }
+
+    #[test]
+    fn same_guest_name_same_operator_is_same_person() {
+        let operator = Uuid::new_v4();
+        let a = Signature::guest_for(operator, "Guest Al".to_string());
+        let b = Signature::guest_for(operator, "Guest Al".to_string());
+        assert!(a.is_same_person_as(&b));
     }
 }

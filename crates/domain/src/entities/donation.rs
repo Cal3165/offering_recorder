@@ -41,6 +41,26 @@ pub struct Donation {
 }
 
 impl Donation {
+    /// Validate the amount/breakdown invariant for this donation.
+    ///
+    /// Cash donations must carry a denomination breakdown whose total equals
+    /// the amount; non-cash donations must not carry one.
+    pub fn validate_cash_consistency(&self) -> DomainResult<()> {
+        match self.cash_denominations {
+            Some(_) => {
+                if self.payment_method != PaymentMethod::Cash {
+                    return Err(DomainError::Validation(
+                        "only cash donations may carry a denomination breakdown".into(),
+                    ));
+                }
+                cash_amount(self.amount, &self.cash_denominations).map(|_| ())
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+impl Donation {
     pub fn named(
         offering_id: Uuid,
         donor_id: Uuid,
@@ -94,9 +114,14 @@ impl Donation {
         })
     }
 
-    pub fn loose_cash(offering_id: Uuid, cash_denominations: CashTotal) -> Self {
+    pub fn loose_cash(offering_id: Uuid, cash_denominations: CashTotal) -> DomainResult<Self> {
+        if cash_denominations.total().is_zero() {
+            return Err(DomainError::Validation(
+                "loose cash must have non-zero denominations".into(),
+            ));
+        }
         let now = Utc::now();
-        Donation {
+        Ok(Donation {
             id: Uuid::new_v4(),
             donor_id: None,
             offering_id,
@@ -109,7 +134,7 @@ impl Donation {
             created_at: now,
             updated_at: now,
             date: now.date_naive(),
-        }
+        })
     }
 
     pub fn with_date(mut self, date: NaiveDate) -> Self {
@@ -193,7 +218,7 @@ mod tests {
         let mut ct = CashTotal::new();
         ct.add(Denomination::Coin200p, 1);
         ct.add(Denomination::Coin50p, 1);
-        let d = Donation::loose_cash(offering_id, ct);
+        let d = Donation::loose_cash(offering_id, ct).unwrap();
         assert!(d.is_loose_cash());
         assert_eq!(d.donation_type, DonationType::Offering);
         assert_eq!(d.payment_method, PaymentMethod::Cash);

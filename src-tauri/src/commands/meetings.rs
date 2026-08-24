@@ -10,12 +10,13 @@ pub async fn create_meeting(
     name: String,
     day_of_week: u8,
     time_of_day: String,
+    estimated_attendance: Option<u32>,
 ) -> Result<Meeting, String> {
     let actor = with_actor!(state);
     state
         .services
         .meetings
-        .create_meeting(&actor, &name, day_of_week, &time_of_day)
+        .create_meeting(&actor, &name, day_of_week, &time_of_day, estimated_attendance)
         .await
         .map_err(|e| e.to_string())
 }
@@ -68,9 +69,8 @@ pub async fn set_meeting_event_details(
     let actor = with_actor!(state);
     let id = parse_uuid(&meeting_id)?;
     let building_id = community_building_id
-        .map(|s| uuid::Uuid::parse_str(&s))
-        .transpose()
-        .map_err(|e| e.to_string())?;
+        .map(|s| parse_uuid(&s))
+        .transpose()?;
     state
         .services
         .meetings

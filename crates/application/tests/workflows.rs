@@ -131,7 +131,7 @@ async fn full_offering_workflow_end_to_end() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday Morning", 0, "10:30")
+        .create_meeting(&admin, "Sunday Morning", 0, "10:30", None)
         .await
         .unwrap();
 
@@ -337,7 +337,7 @@ async fn user_permissions_are_enforced() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services
@@ -665,7 +665,7 @@ async fn declaration_amendment_flow_for_used_declaration() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services
@@ -823,7 +823,7 @@ async fn ending_used_declaration_with_past_date_requires_amendment() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services
@@ -912,7 +912,7 @@ async fn gasds_claim_workflow_and_readiness() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services
@@ -1075,7 +1075,7 @@ async fn gasds_claim_reject_requires_reason_and_is_terminal() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services
@@ -1156,7 +1156,7 @@ async fn prepare_claim_fails_without_banked_gasds_donations() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services
@@ -1235,7 +1235,7 @@ async fn community_building_and_meeting_event_details() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Tuesday Group", 0, "19:00")
+        .create_meeting(&admin, "Tuesday Group", 0, "19:00", None)
         .await
         .unwrap();
     let updated = services
@@ -1280,7 +1280,7 @@ async fn retention_report_counts_records_and_never_expires_current() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services
@@ -1363,7 +1363,7 @@ async fn remove_donation_on_locked_offering_is_rejected() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services
@@ -1548,7 +1548,7 @@ async fn gift_aid_report_excludes_revoked_declarations() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services
@@ -1654,7 +1654,7 @@ async fn deposit_report_respects_date_range() {
 
     let meeting = services
         .meetings
-        .create_meeting(&admin, "Sunday", 0, "10:00")
+        .create_meeting(&admin, "Sunday", 0, "10:00", None)
         .await
         .unwrap();
     let offering = services

@@ -18,10 +18,14 @@ pub async fn bookkeeping_report(
 ) -> Result<Vec<BookkeepingEntry>, String> {
     let actor = with_actor!(state);
     let meeting_id = meeting_id
-        .map(|s| uuid::Uuid::parse_str(&s))
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    state.services.reports.bookkeeping_report(&actor, start, end, meeting_id).await.map_err(|e| e.to_string())
+        .map(|s| parse_uuid(&s))
+        .transpose()?;
+    state
+        .services
+        .reports
+        .bookkeeping_report(&actor, start, end, meeting_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -2,7 +2,7 @@ use crate::errors::{DomainError, DomainResult};
 use serde::{Deserialize, Serialize};
 use std::ops::{Add, Sub};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Money {
     pence: i64,
 }
@@ -24,17 +24,17 @@ impl Money {
     }
 
     pub fn from_decimal(pounds: i64, pence: i64) -> DomainResult<Self> {
+        if pence >= 100 || pence < 0 {
+            return Err(DomainError::Validation(
+                "pence component must be between 0 and 99".into(),
+            ));
+        }
         let total = pounds
             .checked_mul(100)
             .and_then(|t| t.checked_add(pence))
             .ok_or(DomainError::ArithmeticOverflow)?;
         if total < 0 {
             return Err(DomainError::NegativeValue);
-        }
-        if pence >= 100 || pence < 0 {
-            return Err(DomainError::Validation(
-                "pence component must be between 0 and 99".into(),
-            ));
         }
         Ok(Money { pence: total })
     }
@@ -61,12 +61,12 @@ impl Money {
 
     pub fn abs(&self) -> Self {
         Money {
-            pence: self.pence.abs(),
+            pence: self.pence.checked_abs().unwrap_or(i64::MAX),
         }
     }
 
     pub fn display(&self) -> String {
-        format!("£{}.{:02}", self.pence / 100, self.pence.abs() % 100)
+        self.to_string()
     }
 
     pub fn saturating_add(&self, other: &Money) -> Self {
@@ -166,7 +166,11 @@ impl Default for Money {
 
 impl std::fmt::Display for Money {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "£{}.{:02}", self.pence / 100, self.pence.abs() % 100)
+        if self.pence < 0 {
+            write!(f, "-£{}.{:02}", self.pence.abs() / 100, self.pence.abs() % 100)
+        } else {
+            write!(f, "£{}.{:02}", self.pence / 100, self.pence % 100)
+        }
     }
 }
 

@@ -175,76 +175,64 @@ fn offering_row_query() -> &'static str {
 #[async_trait]
 impl OfferingRepository for SqliteOfferingRepository {
     async fn create(&self, offering: Offering) -> RepoResult<Offering> {
-        let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
+        let mut conn = self.pool.get().acquire().await.map_err(map_db_err)?;
+        sqlx::query("BEGIN")
+            .execute(&mut *conn)
+            .await
+            .map_err(map_db_err)?;
+        if let Err(e) = self.insert_offering(&mut *conn, &offering).await {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(e);
+        }
+        sqlx::query("COMMIT")
+            .execute(&mut *conn)
+            .await
+            .map_err(map_db_err)?;
+        Ok(offering)
+    }
 
-        let counter = offering.counter_signature.as_ref().map(to_json).transpose()?;
-        let checker = offering.checker_signature.as_ref().map(to_json).transpose()?;
+    async fn create_with_generated_number(
+        &self,
+        mut offering: Offering,
+        year: i32,
+    ) -> RepoResult<Offering> {
+        let mut conn = self.pool.get().acquire().await.map_err(map_db_err)?;
+        // IMMEDIATE takes the write lock at transaction start so two concurrent
+        // creates for the same meeting/year serialise instead of both reading
+        // the same offering count before either inserts (offering-number race).
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *conn)
+            .await
+            .map_err(map_db_err)?;
 
-        sqlx::query(
-            "INSERT INTO offerings (id, meeting_id, offering_number, description, attendance, counter_signature, checker_signature, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        let seq: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) + 1 FROM meetings WHERE rowid < (SELECT rowid FROM meetings WHERE id = ?)",
         )
-        .bind(offering.id)
         .bind(offering.meeting_id)
-        .bind(offering.offering_number.as_str())
-        .bind(&offering.description)
-        .bind(offering.attendance)
-        .bind(&counter)
-        .bind(&checker)
-        .bind(super::to_json(&offering.status)?)
-        .bind(offering.created_at)
-        .bind(offering.updated_at)
-        .execute(&mut *tx)
+        .fetch_one(&mut *conn)
         .await
         .map_err(map_db_err)?;
 
-        for (denom, count) in offering.cash_denominations.iter() {
-            sqlx::query(
-                "INSERT INTO offering_cash_denominations (offering_id, denomination, count) VALUES (?, ?, ?)",
-            )
-            .bind(offering.id)
-            .bind(super::to_json(&denom)?)
-            .bind(*count)
-            .execute(&mut *tx)
+        let prefix = format!("{}/", year);
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM offerings WHERE meeting_id = ? AND offering_number LIKE ?",
+        )
+        .bind(offering.meeting_id)
+        .bind(format!("{}%", prefix))
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(map_db_err)?;
+
+        offering.offering_number = OfferingNumber::generated(year, seq as u32, count as u32 + 1);
+
+        if let Err(e) = self.insert_offering(&mut *conn, &offering).await {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            return Err(e);
+        }
+        sqlx::query("COMMIT")
+            .execute(&mut *conn)
             .await
             .map_err(map_db_err)?;
-        }
-
-        for donation in &offering.donations {
-            sqlx::query(
-                "INSERT INTO donations (id, offering_id, donor_id, amount_pence, donation_type, payment_method, classification, reference, created_at, updated_at, date)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(donation.id)
-            .bind(donation.offering_id)
-            .bind(donation.donor_id)
-            .bind(donation.amount.pence())
-            .bind(super::to_json(&donation.donation_type)?)
-            .bind(super::to_json(&donation.payment_method)?)
-            .bind(super::to_json(&donation.classification)?)
-            .bind(&donation.reference)
-            .bind(donation.created_at)
-            .bind(donation.updated_at)
-            .bind(donation.date)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_err)?;
-            if let Some(breakdown) = &donation.cash_denominations {
-                for (denom, count) in breakdown.iter() {
-                    sqlx::query(
-                        "INSERT INTO donation_cash_denominations (donation_id, denomination, count) VALUES (?, ?, ?)",
-                    )
-                    .bind(donation.id)
-                    .bind(super::to_json(denom)?)
-                    .bind(*count)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(map_db_err)?;
-                }
-            }
-        }
-
-        tx.commit().await.map_err(map_db_err)?;
         Ok(offering)
     }
 
@@ -477,5 +465,82 @@ impl SqliteOfferingRepository {
             offerings.push(offering);
         }
         Ok(offerings)
+    }
+
+    /// Insert a fully-formed offering (and its cash denominations and donations)
+    /// into the open transaction owned by `conn`.
+    async fn insert_offering(
+        &self,
+        conn: &mut sqlx::sqlite::SqliteConnection,
+        offering: &Offering,
+    ) -> RepoResult<()> {
+        let counter = offering.counter_signature.as_ref().map(to_json).transpose()?;
+        let checker = offering.checker_signature.as_ref().map(to_json).transpose()?;
+
+        sqlx::query(
+            "INSERT INTO offerings (id, meeting_id, offering_number, description, attendance, counter_signature, checker_signature, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(offering.id)
+        .bind(offering.meeting_id)
+        .bind(offering.offering_number.as_str())
+        .bind(&offering.description)
+        .bind(offering.attendance)
+        .bind(&counter)
+        .bind(&checker)
+        .bind(super::to_json(&offering.status)?)
+        .bind(offering.created_at)
+        .bind(offering.updated_at)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_db_err)?;
+
+        for (denom, count) in offering.cash_denominations.iter() {
+            sqlx::query(
+                "INSERT INTO offering_cash_denominations (offering_id, denomination, count) VALUES (?, ?, ?)",
+            )
+            .bind(offering.id)
+            .bind(super::to_json(&denom)?)
+            .bind(*count)
+            .execute(&mut *conn)
+            .await
+            .map_err(map_db_err)?;
+        }
+
+        for donation in &offering.donations {
+            sqlx::query(
+                "INSERT INTO donations (id, offering_id, donor_id, amount_pence, donation_type, payment_method, classification, reference, created_at, updated_at, date)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(donation.id)
+            .bind(donation.offering_id)
+            .bind(donation.donor_id)
+            .bind(donation.amount.pence())
+            .bind(super::to_json(&donation.donation_type)?)
+            .bind(super::to_json(&donation.payment_method)?)
+            .bind(super::to_json(&donation.classification)?)
+            .bind(&donation.reference)
+            .bind(donation.created_at)
+            .bind(donation.updated_at)
+            .bind(donation.date)
+            .execute(&mut *conn)
+            .await
+            .map_err(map_db_err)?;
+            if let Some(breakdown) = &donation.cash_denominations {
+                for (denom, count) in breakdown.iter() {
+                    sqlx::query(
+                        "INSERT INTO donation_cash_denominations (donation_id, denomination, count) VALUES (?, ?, ?)",
+                    )
+                    .bind(donation.id)
+                    .bind(super::to_json(denom)?)
+                    .bind(*count)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(map_db_err)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }

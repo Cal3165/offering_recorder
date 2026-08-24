@@ -91,10 +91,7 @@ impl CashTotal {
             return;
         }
         let entry = self.counts.entry(denomination).or_insert(0);
-        *entry += count;
-        if *entry == 0 {
-            self.counts.remove(&denomination);
-        }
+        *entry = entry.checked_add(count).expect("CashTotal count overflow");
     }
 
     pub fn set(&mut self, denomination: Denomination, count: u32) {

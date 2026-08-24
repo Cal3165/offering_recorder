@@ -14,10 +14,8 @@ pub fn run() {
             let app_data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data)?;
             let db_path = app_data.join("offering_recorder.sqlite");
-            let store = tauri::async_runtime::block_on(SqliteStore::open(db_path.to_str().unwrap()))?;
-            // Box::leak is intentional: tauri::State requires 'static, and for a
-            // desktop app the one-time startup leak is acceptable. The store and
-            // services live for the lifetime of the process.
+            let db_str = db_path.to_string_lossy().to_string();
+            let store = tauri::async_runtime::block_on(SqliteStore::open(&db_str))?;
             // Box::leak is intentional: tauri::State requires 'static, and for a
             // desktop app the one-time startup leak is acceptable. The store and
             // services live for the lifetime of the process.
