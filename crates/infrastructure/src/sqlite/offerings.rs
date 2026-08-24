@@ -302,14 +302,20 @@ impl OfferingRepository for SqliteOfferingRepository {
         self.assemble(rows).await
     }
 
-    async fn update(&self, offering: Offering) -> RepoResult<Offering> {
+    async fn update(
+        &self,
+        offering: Offering,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<Offering> {
         let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
 
         let counter = offering.counter_signature.as_ref().map(to_json).transpose()?;
         let checker = offering.checker_signature.as_ref().map(to_json).transpose()?;
 
-        sqlx::query(
-            "UPDATE offerings SET meeting_id = ?, offering_number = ?, description = ?, attendance = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ?",
+        // Optimistic concurrency: the WHERE clause rejects the write when the
+        // row changed since the caller loaded it (review R4).
+        let result = sqlx::query(
+            "UPDATE offerings SET meeting_id = ?, offering_number = ?, description = ?, attendance = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(offering.meeting_id)
         .bind(offering.offering_number.as_str())
@@ -320,9 +326,15 @@ impl OfferingRepository for SqliteOfferingRepository {
         .bind(super::to_json(&offering.status)?)
         .bind(offering.updated_at)
         .bind(offering.id)
+        .bind(expected_updated_at)
         .execute(&mut *tx)
         .await
         .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::Conflict(
+                "offering was modified by another operation; reload and retry".into(),
+            ));
+        }
 
         sqlx::query("DELETE FROM offering_cash_denominations WHERE offering_id = ?")
             .bind(offering.id)
@@ -538,5 +550,71 @@ impl SqliteOfferingRepository {
         }
 
         Ok(())
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect_in_memory;
+    use offering_domain::offering_number::OfferingNumber;
+
+    async fn setup() -> (SqliteOfferingRepository, Uuid) {
+        let pool = connect_in_memory().await.unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let meeting = Uuid::new_v4();
+        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, ?, ?)")
+            .bind(meeting).bind(&now).bind(&now)
+            .execute(&pool).await.unwrap();
+        (SqliteOfferingRepository::new(SharedPool::new(pool)), meeting)
+    }
+
+    #[tokio::test]
+    async fn stale_update_conflicts_instead_of_losing_writes() {
+        // Regression (review R4): a save based on a stale read must be
+        // rejected rather than silently overwriting the newer state.
+        let (repo, meeting_id) = setup().await;
+        let num = OfferingNumber::new("2024/01/0001").unwrap();
+        let offering = Offering::create(meeting_id, num, None).unwrap();
+        let created = repo.create(offering).await.unwrap();
+
+        let first = repo.get(created.id).await.unwrap().unwrap();
+        assert_eq!(first.attendance, None);
+
+        // A concurrent writer saves first.
+        let mut winner = repo.get(created.id).await.unwrap().unwrap();
+        let winner_expected = winner.updated_at;
+        winner.set_attendance(50).unwrap();
+        repo.update(winner, winner_expected).await.unwrap();
+
+        // The stale snapshot (loaded before the winner's save) must conflict.
+        let loser_expected = first.updated_at;
+        let mut loser = first;
+        loser.set_attendance(99).unwrap();
+        let result = repo.update(loser, loser_expected).await;
+        assert!(
+            matches!(result, Err(RepoError::Conflict(_))),
+            "stale write must be rejected with Conflict, got {result:?}"
+        );
+
+        // The winner's value survived.
+        let final_state = repo.get(created.id).await.unwrap().unwrap();
+        assert_eq!(final_state.attendance, Some(50));
+    }
+
+    #[tokio::test]
+    async fn update_with_fresh_snapshot_succeeds() {
+        let (repo, meeting_id) = setup().await;
+        let num = OfferingNumber::new("2024/01/0002").unwrap();
+        let created = repo
+            .create(Offering::create(meeting_id, num, None).unwrap())
+            .await
+            .unwrap();
+        let loaded = repo.get(created.id).await.unwrap().unwrap();
+        let expected = loaded.updated_at;
+        let mut fresh = loaded;
+        fresh.set_attendance(10).unwrap();
+        repo.update(fresh, expected).await.unwrap();
+        let reloaded = repo.get(created.id).await.unwrap().unwrap();
+        assert_eq!(reloaded.attendance, Some(10));
     }
 }

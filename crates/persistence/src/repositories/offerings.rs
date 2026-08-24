@@ -21,7 +21,15 @@ pub trait OfferingRepository: Send + Sync {
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> RepoResult<Vec<Offering>>;
-    async fn update(&self, offering: Offering) -> RepoResult<Offering>;
+    /// Persist an offering aggregate. `expected_updated_at` must be the
+    /// `updated_at` of the row as last read; the update is conditional on it,
+    /// so a concurrent write between load and save yields
+    /// [`RepoError::Conflict`] instead of a silent lost update (review R4).
+    async fn update(
+        &self,
+        offering: Offering,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<Offering>;
     async fn delete(&self, id: Uuid) -> RepoResult<()>;
     async fn search(&self, meeting_id: Option<Uuid>, status: Option<OfferingStatus>, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Offering>>;
     async fn delete_all(&self) -> RepoResult<()>;

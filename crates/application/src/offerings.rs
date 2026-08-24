@@ -169,8 +169,10 @@ impl<'a> OfferingService<'a> {
             return Err(unauthorized("record offering"));
         }
         let mut offering = self.require_stored(offering_id).await?;
+        // Snapshot for optimistic-concurrency check at save time (review R4).
+        let expected_updated_at = offering.updated_at;
         offering.set_attendance(attendance)?;
-        let updated = self.offerings.update(offering).await?;
+        let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -195,8 +197,10 @@ impl<'a> OfferingService<'a> {
             return Err(unauthorized("record offering"));
         }
         let mut offering = self.require_stored(offering_id).await?;
+        // Snapshot for optimistic-concurrency check at save time (review R4).
+        let expected_updated_at = offering.updated_at;
         offering.set_cash_denominations(denominations)?;
-        let updated = self.offerings.update(offering).await?;
+        let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -221,6 +225,8 @@ impl<'a> OfferingService<'a> {
             return Err(unauthorized("record offering"));
         }
         let mut offering = self.require_stored(offering_id).await?;
+        // Snapshot for optimistic-concurrency check at save time (review R4).
+        let expected_updated_at = offering.updated_at;
         let amount = Money::from_pence(input.amount_pence)?;
         let breakdown = input.cash_denominations.clone();
         if input.payment_method == PaymentMethod::Cash {
@@ -279,7 +285,7 @@ impl<'a> OfferingService<'a> {
                 .unwrap_or_else(|| offering.created_at.date_naive()),
         );
         offering.add_donation(donation.clone())?;
-        let updated = self.offerings.update(offering).await?;
+        let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -304,6 +310,8 @@ impl<'a> OfferingService<'a> {
             return Err(unauthorized("record offering"));
         }
         let mut offering = self.require_stored(offering_id).await?;
+        // Snapshot for optimistic-concurrency check at save time (review R4).
+        let expected_updated_at = offering.updated_at;
         offering.require_editable()?;
         if !offering.donations.iter().any(|d| d.id == donation_id) {
             return Err(crate::error::AppError::NotFound(
@@ -311,7 +319,7 @@ impl<'a> OfferingService<'a> {
             ));
         }
         offering.donations.retain(|d| d.id != donation_id);
-        let updated = self.offerings.update(offering).await?;
+        let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -348,6 +356,8 @@ impl<'a> OfferingService<'a> {
             return Err(unauthorized("sign offering"));
         }
         let mut offering = self.require_stored(offering_id).await?;
+        // Snapshot for optimistic-concurrency check at save time (review R4).
+        let expected_updated_at = offering.updated_at;
         let issues = ValidationService::validate(&offering);
         if !issues.is_empty() {
             return Err(crate::error::AppError::Validation(format!(
@@ -360,7 +370,7 @@ impl<'a> OfferingService<'a> {
             )));
         }
         offering.counter_sign(Self::signature_for(actor, guest_name))?;
-        let updated = self.offerings.update(offering).await?;
+        let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -385,6 +395,8 @@ impl<'a> OfferingService<'a> {
             return Err(unauthorized("sign offering"));
         }
         let mut offering = self.require_stored(offering_id).await?;
+        // Snapshot for optimistic-concurrency check at save time (review R4).
+        let expected_updated_at = offering.updated_at;
         let issues = ValidationService::validate(&offering);
         if !issues.is_empty() {
             return Err(crate::error::AppError::Validation(format!(
@@ -397,7 +409,7 @@ impl<'a> OfferingService<'a> {
             )));
         }
         offering.checker_sign(Self::signature_for(actor, guest_name))?;
-        let updated = self.offerings.update(offering).await?;
+        let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -419,9 +431,11 @@ impl<'a> OfferingService<'a> {
             return Err(unauthorized("sign offering"));
         }
         let mut offering = self.require_stored(offering_id).await?;
+        // Snapshot for optimistic-concurrency check at save time (review R4).
+        let expected_updated_at = offering.updated_at;
         let old = crate::audit::state_json(&offering);
         offering.withdraw_signature()?;
-        let updated = self.offerings.update(offering).await?;
+        let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -444,6 +458,8 @@ impl<'a> OfferingService<'a> {
             return Err(unauthorized("sign offering"));
         }
         let mut offering = self.require_stored(offering_id).await?;
+        // Snapshot for optimistic-concurrency check at save time (review R4).
+        let expected_updated_at = offering.updated_at;
         let issues = ValidationService::validate(&offering);
         if !issues.is_empty() {
             return Err(crate::error::AppError::Validation(format!(
@@ -456,7 +472,7 @@ impl<'a> OfferingService<'a> {
             )));
         }
         offering.lock()?;
-        let updated = self.offerings.update(offering).await?;
+        let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
                 actor,

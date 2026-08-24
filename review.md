@@ -69,10 +69,15 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** centralized `page_binds()` in sqlite/mod.rs — None ⇒ LIMIT -1 (SQLite
   unbounded); replaced at all 11 sites across offerings/gift_aid/donors repos; explicit Some(n) paging
   still honored; regression test with 1050 donor rows. 302 tests pass.
-- [ ] **R4. Whole-aggregate load→mutate→save has no concurrency guard**
+- [x] **R4. Whole-aggregate load→mutate→save has no concurrency guard**
   e.g. `application/offerings.rs:171-173` + rewrite-all repo update (`sqlite/offerings.rs:330-351`).
   Concurrent commands lose writes last-writer-wins. Conditional updates (`WHERE id=? AND status=? AND
   updated_at=?`, 0 rows ⇒ Conflict) or per-offering write serialization.
+  **FIXED 2026-08-24:** OfferingRepository::update now takes expected_updated_at; SQL guards
+  `WHERE id = ? AND updated_at = ?`, 0 rows ⇒ RepoError::Conflict (maps to AppError::Conflict); all 8
+  service call sites snapshot updated_at at load. Repo tests prove stale write ⇒ Conflict and fresh
+  write ⇒ ok. NOTE: single-row Amendment/DeclarationAmendment updates still blind (bounded blast
+  radius, state-machine guarded) — tracked as O27. 304 tests pass.
 - [ ] **R5. Inconsistent report boundaries + raw JSON enums in IIF memos**
   `sqlite/reports.rs:122,169` use `<=` against exclusive bound (bookkeeping correctly `<` at :84) ⇒
   double-counting at next-day midnight. Also :195-196 feed JSON-quoted enums into IIF memos —
@@ -186,6 +191,9 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   (`meetings.rs:117-123`, `offerings.rs:208-214`); `next_offering_number` port has no callers.
 - [ ] **O26.** Stale per-offering UI state survives offering switch (`selectOffering` resets only some state)
   — reset addDonationOpen, dCounts, dRef, amendRemoveId etc. (`OfferingEntry.svelte:210-222`).
+- [ ] **O27.** (follow-up from R4) Apply the same expected_updated_at conditional-update guard to
+  AmendmentRepository::update and DeclarationAmendmentRepository::update (single-row status
+  transitions; lower severity than the offering aggregate but same TOCTOU pattern).
 
 ## Nit (batch when convenient)
 
@@ -241,3 +249,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R1 fixed · covers_date window-based for Revoked; report SQL status filters removed (reports.rs) · regression tests · cargo test 298 pass
 - 2026-08-24 · R2 fixed · apply_amendment guards (approved/identity/removal-exists) + DomainResult propagation; 3 guard tests · cargo test 301 pass
 - 2026-08-24 · R3 fixed · page_binds() helper: None ⇒ unbounded (was silent LIMIT 1000) at 11 repo sites; 1050-row regression test · cargo test 302 pass
+- 2026-08-24 · R4 fixed · optimistic concurrency on Offering aggregate saves (expected_updated_at + Conflict); stale-write regression tests; amendment repos deferred to new O27 · cargo test 304 pass
