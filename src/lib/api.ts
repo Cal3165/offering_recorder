@@ -79,8 +79,18 @@ export const setUserActive = (user_id: string, active: boolean) =>
   run<User>("set_user_active", { userId: user_id, active });
 
 // meetings
-export const createMeeting = (name: string, day_of_week: number, time_of_day: string) =>
-  run<Meeting>("create_meeting", { name, dayOfWeek: day_of_week, timeOfDay: time_of_day });
+export const createMeeting = (
+  name: string,
+  day_of_week: number,
+  time_of_day: string,
+  estimated_attendance: number | null,
+) =>
+  run<Meeting>("create_meeting", {
+    name,
+    dayOfWeek: day_of_week,
+    timeOfDay: time_of_day,
+    estimatedAttendance: estimated_attendance,
+  });
 export const listMeetings = () => run<Meeting[]>("list_meetings");
 export const setMeetingActive = (meeting_id: string, active: boolean) =>
   run<Meeting>("set_meeting_active", { meetingId: meeting_id, active });
