@@ -123,7 +123,7 @@ impl<'a> OfferingService<'a> {
         if approved.is_empty() {
             Ok(Some(offering))
         } else {
-            let reconstruction = OfferingReconstruction::from_amendments(offering, approved);
+            let reconstruction = OfferingReconstruction::from_amendments(offering, approved)?;
             Ok(Some(reconstruction.current().clone()))
         }
     }
@@ -485,7 +485,7 @@ impl<'a> OfferingService<'a> {
             .await?;
         Ok(Some(OfferingReconstruction::from_amendments(
             offering, approved,
-        )))
+        )?))
     }
 
     pub async fn gasds_for_offering(
@@ -531,7 +531,7 @@ impl<'a> OfferingService<'a> {
         let current = if approved.is_empty() {
             stored
         } else {
-            OfferingReconstruction::from_amendments(stored, approved.clone())
+            OfferingReconstruction::from_amendments(stored, approved.clone())?
                 .current()
                 .clone()
         };

@@ -190,7 +190,10 @@ impl Amendment {
 }
 
 impl Offering {
-    pub fn apply_change(&self, change: &AmendmentChange) -> Self {
+    /// Apply a single change without validation. Package-internal building
+    /// block; use [`Self::apply_amendment`], which enforces the amendment
+    /// protocol (approved, matching offering, removable donations exist).
+    pub(crate) fn apply_change(&self, change: &AmendmentChange) -> Self {
         let mut clone = self.clone();
         match change {
             AmendmentChange::AddDonation(d) => {
@@ -213,12 +216,37 @@ impl Offering {
         clone
     }
 
-    pub fn apply_amendment(&self, amendment: &Amendment) -> Self {
+    /// Apply an approved amendment belonging to this offering. Guards the
+    /// append-only correction protocol: only approved amendments may be
+    /// applied, only to the offering they target, and a removal must name an
+    /// existing donation (a typo'd id must fail loudly, not silently no-op).
+    pub fn apply_amendment(&self, amendment: &Amendment) -> DomainResult<Self> {
+        if !amendment.is_approved() {
+            return Err(DomainError::InvalidTransition(format!(
+                "cannot apply amendment in status {}",
+                amendment.status
+            )));
+        }
+        if amendment.offering_id != self.id {
+            return Err(DomainError::Validation(
+                "amendment targets a different offering".into(),
+            ));
+        }
+        for change in &amendment.changes {
+            if let AmendmentChange::RemoveDonation(id) = change {
+                if !self.donations.iter().any(|d| &d.id == id) {
+                    return Err(DomainError::Validation(format!(
+                        "amendment removes donation {} which does not exist",
+                        id
+                    )));
+                }
+            }
+        }
         let mut result = self.clone();
         for change in &amendment.changes {
             result = result.apply_change(change);
         }
-        result
+        Ok(result)
     }
 }
 
@@ -230,22 +258,22 @@ pub struct OfferingReconstruction {
 }
 
 impl OfferingReconstruction {
-    pub fn from_amendments(original: Offering, amendments: Vec<Amendment>) -> Self {
+    pub fn from_amendments(original: Offering, amendments: Vec<Amendment>) -> DomainResult<Self> {
         let mut states = vec![original.clone()];
         let mut amendment_ids = Vec::new();
 
         let mut current = original.clone();
         for amendment in &amendments {
-            current = current.apply_amendment(amendment);
+            current = current.apply_amendment(amendment)?;
             states.push(current.clone());
             amendment_ids.push(amendment.id);
         }
 
-        OfferingReconstruction {
+        Ok(OfferingReconstruction {
             original,
             states,
             amendment_ids,
-        }
+        })
     }
 
     pub fn at_index(&self, index: usize) -> Option<&Offering> {
@@ -355,6 +383,76 @@ mod tests {
 
     fn checker_sig() -> Signature {
         Signature::from_user(Uuid::new_v4(), "Checker".to_string())
+    }
+
+    /// Create a fully signed + approved amendment ready to be applied.
+    fn approved_amendment(
+        offering_id: Uuid,
+        changes: Vec<AmendmentChange>,
+    ) -> Amendment {
+        let mut a = Amendment::create(offering_id, "reason", changes, Uuid::new_v4()).unwrap();
+        a.counter_sign(counter_sig()).unwrap();
+        a.checker_sign(checker_sig()).unwrap();
+        a.approve().unwrap();
+        a
+    }
+
+    #[test]
+    fn apply_rejects_unapproved_amendment() {
+        // Regression (review R2): a draft/unsigned amendment must not be
+        // applicable to an offering.
+        let o = make_offering();
+        let a = Amendment::create(
+            o.id,
+            "reason",
+            vec![AmendmentChange::SetAttendance(100)],
+            Uuid::new_v4(),
+        )
+        .unwrap();
+        assert!(matches!(
+            o.apply_amendment(&a),
+            Err(DomainError::InvalidTransition(_))
+        ));
+    }
+
+    #[test]
+    fn apply_rejects_amendment_for_different_offering() {
+        let o = make_offering();
+        let other = make_offering();
+        let a = approved_amendment(
+            other.id,
+            vec![AmendmentChange::SetAttendance(100)],
+        );
+        assert!(matches!(
+            o.apply_amendment(&a),
+            Err(DomainError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn apply_rejects_removing_nonexistent_donation() {
+        // A removal naming an unknown donation id must fail loudly instead of
+        // silently no-oping.
+        let mut o = make_offering();
+        let keep = Donation::named(
+            o.id,
+            Uuid::new_v4(),
+            Money::from_pence(500).unwrap(),
+            DonationType::Tithe,
+            PaymentMethod::Cash,
+            None,
+            None,
+        )
+        .unwrap();
+        o.add_donation(keep).unwrap();
+        let a = approved_amendment(
+            o.id,
+            vec![AmendmentChange::RemoveDonation(Uuid::new_v4())],
+        );
+        assert!(matches!(
+            o.apply_amendment(&a),
+            Err(DomainError::Validation(_))
+        ));
     }
 
     #[test]
@@ -476,7 +574,7 @@ mod tests {
             AmendmentChange::RemoveDonation(original_donations[0]),
             AmendmentChange::AddDonation(new_donation),
         ];
-        let a1 = Amendment::create(
+        let mut a1 = Amendment::create(
             original.id,
             "Correct amount to £120",
             changes1,
@@ -484,8 +582,13 @@ mod tests {
         )
         .unwrap();
 
+        // Amendments only take effect once fully signed and approved.
+        a1.counter_sign(counter_sig()).unwrap();
+        a1.checker_sign(checker_sig()).unwrap();
+        a1.approve().unwrap();
+
         // Amendment 2: replace £120 donation with £115 donation
-        let state_after_a1 = original.apply_amendment(&a1);
+        let state_after_a1 = original.apply_amendment(&a1).unwrap();
         let donation_after_a1: Vec<Uuid> = state_after_a1.donations.iter().map(|d| d.id).collect();
         let newer_donation = Donation::named(
             original.id,
@@ -500,16 +603,20 @@ mod tests {
             AmendmentChange::RemoveDonation(donation_after_a1[0]),
             AmendmentChange::AddDonation(newer_donation),
         ];
-        let a2 = Amendment::create(
+        let mut a2 = Amendment::create(
             original.id,
             "Correct amount to £115",
             changes2,
             Uuid::new_v4(),
         )
         .unwrap();
+        a2.counter_sign(counter_sig()).unwrap();
+        a2.checker_sign(checker_sig()).unwrap();
+        a2.approve().unwrap();
 
         // Reconstruct
-        let reconstruction = OfferingReconstruction::from_amendments(original, vec![a1, a2]);
+        let reconstruction =
+            OfferingReconstruction::from_amendments(original, vec![a1, a2]).unwrap();
 
         // Original → £100
         let original_state = reconstruction.at_index(0).unwrap();

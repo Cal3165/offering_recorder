@@ -56,9 +56,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** covers_date now window-based for all statuses (revoke/end stamp effective_until);
   removed `status <> 'Revoked'` filters + binds from donor_report/gift_aid_report SQL in sqlite/reports.rs;
   flipped wrongly-encoded unit test, added boundary regression tests. 298 tests pass.
-- [ ] **R2. Domain-level amendment application unguarded**
+- [x] **R2. Domain-level amendment application unguarded**
   `crates/domain/src/entities/amendment.rs:192-222` — `apply_amendment` checks neither approval nor
   `offering_id`; `RemoveDonation` of unknown id silently no-ops. Add approval + identity guards in domain.
+  **FIXED 2026-08-24:** apply_amendment returns DomainResult enforcing approved-only, offering identity,
+  and existing-donation removals; from_amendments propagates (4 app-layer call sites updated);
+  apply_change now pub(crate). Guard regression tests added. 301 tests pass.
 - [ ] **R3. Silent `LIMIT 1000` truncation feeds statutory outputs**
   `sqlite/offerings.rs:257`, `sqlite/gift_aid.rs:149`; callers pass None expecting "all"
   (`gasds_claims.rs:91-93`, `retention.rs`, `banking.rs:213`, `offerings.rs:514`). Newest records vanish
@@ -233,3 +236,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · C2 fixed · other_amount_pence persisted on deposit update(); 2 repo roundtrip regression tests (bank_deposits.rs) · cargo test 297 pass
 - 2026-08-24 · C3 fixed · api.ts createMeeting forwards estimatedAttendance · svelte-check 0 errors
 - 2026-08-24 · R1 fixed · covers_date window-based for Revoked; report SQL status filters removed (reports.rs) · regression tests · cargo test 298 pass
+- 2026-08-24 · R2 fixed · apply_amendment guards (approved/identity/removal-exists) + DomainResult propagation; 3 guard tests · cargo test 301 pass

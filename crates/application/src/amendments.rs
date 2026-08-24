@@ -245,6 +245,8 @@ impl<'a> AmendmentService<'a> {
             None => return Ok(None),
         };
         let approved = self.amendments.approved_amendments_for_offering(offering_id).await?;
-        Ok(Some(OfferingReconstruction::from_amendments(offering, approved)))
+        Ok(Some(OfferingReconstruction::from_amendments(
+            offering, approved,
+        )?))
     }
 }
