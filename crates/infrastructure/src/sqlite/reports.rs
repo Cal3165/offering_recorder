@@ -1,11 +1,11 @@
-use super::{from_json, map_db_err, to_json};
+use super::{from_json, map_db_err};
 use super::donors::row_to_address;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use offering_domain::donation_type::DonationType;
 use offering_domain::entities::amendment::Amendment;
 use offering_domain::entities::audit_event::AuditEvent;
-use offering_domain::entities::gift_aid::{DeclarationStatus, GiftAidDeclaration};
+use offering_domain::entities::gift_aid::GiftAidDeclaration;
 use offering_domain::money::Money;
 use offering_domain::offering_number::OfferingNumber;
 use offering_domain::tax_year::TaxYear;
@@ -57,11 +57,15 @@ fn tax_year_bounds(year: &TaxYear) -> (NaiveDate, NaiveDate) {
     (start, end)
 }
 
+/// Coverage is determined purely by the declaration window: `end`/`revoke`
+/// stamp `effective_until`, so donations received before cancellation stay
+/// covered (HMRC rules) while later ones do not. Status must not be filtered
+/// here — a Revoked declaration with `effective_until >= d.date` still covers
+/// the donation (review R1).
 fn declaration_covers_donation_sql() -> &'static str {
     "EXISTS (
         SELECT 1 FROM gift_aid_declarations ga
         WHERE ga.donor_id = donors.id
-          AND ga.status <> ?
           AND date(ga.effective_from) <= d.date
           AND (ga.effective_until IS NULL OR date(ga.effective_until) >= d.date)
     )"
@@ -125,7 +129,6 @@ impl ReportRepository for SqliteReportRepository {
         );
 
         let rows = sqlx::query(&sql)
-            .bind(to_json(&DeclarationStatus::Revoked)?)
             .bind(start_dt)
             .bind(end_dt)
             .fetch_all(&self.pool.get())
@@ -215,7 +218,6 @@ impl ReportRepository for SqliteReportRepository {
              LEFT JOIN gift_aid_declarations ga ON ga.id = (
                 SELECT ga2.id FROM gift_aid_declarations ga2
                 WHERE ga2.donor_id = donors.id
-                  AND ga2.status <> ?
                   AND date(ga2.effective_from) <= d.date
                   AND (ga2.effective_until IS NULL OR date(ga2.effective_until) >= d.date)
                 ORDER BY ga2.version DESC LIMIT 1
@@ -227,10 +229,8 @@ impl ReportRepository for SqliteReportRepository {
         );
 
         let rows = sqlx::query(&sql)
-            .bind(to_json(&DeclarationStatus::Revoked)?)
             .bind(&start_str)
             .bind(&end_str)
-            .bind(to_json(&DeclarationStatus::Revoked)?)
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;

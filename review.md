@@ -49,10 +49,13 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 
 *Correctness & data integrity*
 
-- [ ] **R1. Revoking a Gift Aid declaration retroactively voids past coverage**
+- [x] **R1. Revoking a Gift Aid declaration retroactively voids past coverage**
   `crates/domain/src/entities/gift_aid.rs:181-192` — `covers_date` returns false for ALL dates once
   Revoked; HMRC rules keep pre-revocation-window donations claimable. Honor recorded window like the
   `Ended` branch; regression test that historical donations stay eligible after revoke.
+  **FIXED 2026-08-24:** covers_date now window-based for all statuses (revoke/end stamp effective_until);
+  removed `status <> 'Revoked'` filters + binds from donor_report/gift_aid_report SQL in sqlite/reports.rs;
+  flipped wrongly-encoded unit test, added boundary regression tests. 298 tests pass.
 - [ ] **R2. Domain-level amendment application unguarded**
   `crates/domain/src/entities/amendment.rs:192-222` — `apply_amendment` checks neither approval nor
   `offering_id`; `RemoveDonation` of unknown id silently no-ops. Add approval + identity guards in domain.
@@ -229,3 +232,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · C1 fixed · single 10:1 multiplier constant, statutory comments corrected, tests updated (gasds_claim.rs, gasds.rs, workflows.rs) · cargo test 295 pass
 - 2026-08-24 · C2 fixed · other_amount_pence persisted on deposit update(); 2 repo roundtrip regression tests (bank_deposits.rs) · cargo test 297 pass
 - 2026-08-24 · C3 fixed · api.ts createMeeting forwards estimatedAttendance · svelte-check 0 errors
+- 2026-08-24 · R1 fixed · covers_date window-based for Revoked; report SQL status filters removed (reports.rs) · regression tests · cargo test 298 pass

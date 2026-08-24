@@ -200,13 +200,17 @@ mod tests {
     }
 
     #[test]
-    fn revoked_declaration_not_eligible() {
+    fn revoked_declaration_covers_only_pre_revocation_dates() {
         let donor = Uuid::new_v4();
         let user = Uuid::new_v4();
         let start = dt(2024, 1, 1);
         let mut d = make_declaration(donor, start, user);
         d.revoke(dt(2024, 6, 1)).unwrap();
-        assert!(!GiftAidService::is_gift_aid_eligible(&[d], dt(2024, 3, 1)));
+        // Donations received while the declaration was live remain Gift Aid
+        // eligible after revocation (review R1)…
+        assert!(GiftAidService::is_gift_aid_eligible(&[d.clone()], dt(2024, 3, 1)));
+        // …but anything received after the revocation date is not covered.
+        assert!(!GiftAidService::is_gift_aid_eligible(&[d], dt(2024, 7, 1)));
     }
 
     #[test]

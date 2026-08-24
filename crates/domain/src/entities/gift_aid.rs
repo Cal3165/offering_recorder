@@ -178,10 +178,12 @@ impl GiftAidDeclaration {
         self.status == DeclarationStatus::Active
     }
 
+    /// A declaration covers donations received inside its recorded window.
+    /// Revocation ends coverage from the revocation date onward but does NOT
+    /// retroactively void donations received while the declaration was live
+    /// (HMRC rules); `revoke`/`end` stamp `effective_until`, so the window
+    /// check below is authoritative for every status.
     pub fn covers_date(&self, date: DateTime<Utc>) -> bool {
-        if self.status == DeclarationStatus::Revoked {
-            return false;
-        }
         if date < self.effective_from {
             return false;
         }
@@ -353,7 +355,24 @@ mod tests {
         let now = Utc::now();
         d.revoke(now).unwrap();
         assert_eq!(d.status, DeclarationStatus::Revoked);
-        assert!(!d.covers_date(now));
+        // Revocation stops coverage from the revocation date onward, but the
+        // boundary itself stays covered (donation received at revocation time).
+        assert!(d.covers_date(now));
+        assert!(!d.covers_date(now + chrono::Duration::days(1)));
+    }
+
+    #[test]
+    fn revoked_declaration_still_covers_dates_before_revocation() {
+        // Regression (review R1): revoking today must not retroactively void
+        // donations received while the declaration was live.
+        let mut d =
+            GiftAidDeclaration::create(Uuid::new_v4(), base_time(), Uuid::new_v4()).unwrap();
+        let revoke_at = base_time() + chrono::Duration::days(100);
+        d.revoke(revoke_at).unwrap();
+        assert!(d.covers_date(base_time()));
+        assert!(d.covers_date(revoke_at - chrono::Duration::days(1)));
+        assert!(d.covers_date(revoke_at));
+        assert!(!d.covers_date(revoke_at + chrono::Duration::days(1)));
     }
 
     #[test]
