@@ -113,8 +113,7 @@ impl GiftAidRepository for SqliteGiftAidRepository {
     }
 
     async fn list_by_donor(&self, donor_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<GiftAidDeclaration>> {
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
             "SELECT * FROM gift_aid_declarations WHERE donor_id = ? ORDER BY effective_from, version LIMIT ? OFFSET ?",
         )
@@ -128,8 +127,7 @@ impl GiftAidRepository for SqliteGiftAidRepository {
     }
 
     async fn list_active_by_donor(&self, donor_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<GiftAidDeclaration>> {
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
             "SELECT * FROM gift_aid_declarations WHERE donor_id = ? AND status = ? ORDER BY effective_from, version LIMIT ? OFFSET ?",
         )
@@ -144,8 +142,7 @@ impl GiftAidRepository for SqliteGiftAidRepository {
     }
 
     async fn list(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<GiftAidDeclaration>> {
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query("SELECT * FROM gift_aid_declarations ORDER BY effective_from, version LIMIT ? OFFSET ?")
             .bind(limit)
             .bind(offset)
@@ -199,8 +196,7 @@ impl GiftAidRepository for SqliteGiftAidRepository {
     }
 
     async fn list_by_tax_year(&self, tax_year: TaxYear, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<GiftAidDeclaration>> {
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let start = tax_year.start_date().and_hms_opt(0, 0, 0).unwrap().and_utc();
         let end = tax_year.end_date().and_hms_opt(23, 59, 59).unwrap().and_utc();
         let rows = sqlx::query(

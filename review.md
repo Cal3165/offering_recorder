@@ -62,10 +62,13 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** apply_amendment returns DomainResult enforcing approved-only, offering identity,
   and existing-donation removals; from_amendments propagates (4 app-layer call sites updated);
   apply_change now pub(crate). Guard regression tests added. 301 tests pass.
-- [ ] **R3. Silent `LIMIT 1000` truncation feeds statutory outputs**
+- [x] **R3. Silent `LIMIT 1000` truncation feeds statutory outputs**
   `sqlite/offerings.rs:257`, `sqlite/gift_aid.rs:149`; callers pass None expecting "all"
   (`gasds_claims.rs:91-93`, `retention.rs`, `banking.rs:213`, `offerings.rs:514`). Newest records vanish
   from claims/reports with no error. Paginate internally or drop implicit cap when caller passes None.
+  **FIXED 2026-08-24:** centralized `page_binds()` in sqlite/mod.rs — None ⇒ LIMIT -1 (SQLite
+  unbounded); replaced at all 11 sites across offerings/gift_aid/donors repos; explicit Some(n) paging
+  still honored; regression test with 1050 donor rows. 302 tests pass.
 - [ ] **R4. Whole-aggregate load→mutate→save has no concurrency guard**
   e.g. `application/offerings.rs:171-173` + rewrite-all repo update (`sqlite/offerings.rs:330-351`).
   Concurrent commands lose writes last-writer-wins. Conditional updates (`WHERE id=? AND status=? AND
@@ -237,3 +240,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · C3 fixed · api.ts createMeeting forwards estimatedAttendance · svelte-check 0 errors
 - 2026-08-24 · R1 fixed · covers_date window-based for Revoked; report SQL status filters removed (reports.rs) · regression tests · cargo test 298 pass
 - 2026-08-24 · R2 fixed · apply_amendment guards (approved/identity/removal-exists) + DomainResult propagation; 3 guard tests · cargo test 301 pass
+- 2026-08-24 · R3 fixed · page_binds() helper: None ⇒ unbounded (was silent LIMIT 1000) at 11 repo sites; 1050-row regression test · cargo test 302 pass

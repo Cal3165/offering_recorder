@@ -62,3 +62,17 @@ pub fn parse_enum<T: DeserializeOwned>(name: &str) -> Result<T, RepoError> {
 pub fn in_placeholders(count: usize) -> String {
     std::iter::repeat("?").take(count).collect::<Vec<_>>().join(",")
 }
+
+/// Resolve optional paging arguments into SQL `LIMIT ? OFFSET ?` binds.
+///
+/// `None` means *unbounded*: SQLite treats a negative LIMIT as "no upper
+/// bound". Callers that pass `None` (statutory reports, GASDS claims,
+/// reconciliation pickers) must see every matching row — silently capping at
+/// an arbitrary page size understated claim figures (review R3).
+pub fn page_binds(limit: Option<u32>, offset: Option<u32>) -> (i64, i64) {
+    let limit = match limit {
+        Some(n) => n as i64,
+        None => -1,
+    };
+    (limit, offset.unwrap_or(0) as i64)
+}

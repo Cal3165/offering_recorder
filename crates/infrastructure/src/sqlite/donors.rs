@@ -93,8 +93,7 @@ impl DonorRepository for SqliteDonorRepository {
     }
 
     async fn list(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Donor>> {
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query("SELECT * FROM donors ORDER BY last_name, first_name LIMIT ? OFFSET ?")
             .bind(limit)
             .bind(offset)
@@ -105,8 +104,7 @@ impl DonorRepository for SqliteDonorRepository {
     }
 
     async fn list_active(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Donor>> {
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
             "SELECT * FROM donors WHERE is_active = 1 ORDER BY last_name, first_name LIMIT ? OFFSET ?",
         )
@@ -152,8 +150,7 @@ impl DonorRepository for SqliteDonorRepository {
 
     async fn search(&self, query: &str, include_inactive: bool, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Donor>> {
         let like = format!("%{}%", query.trim());
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let rows = if include_inactive {
             sqlx::query(
                 "SELECT * FROM donors WHERE first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ORDER BY last_name, first_name LIMIT ? OFFSET ?",
@@ -200,5 +197,39 @@ impl DonorRepository for SqliteDonorRepository {
             .await
             .map_err(map_db_err)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect_in_memory;
+
+    #[tokio::test]
+    async fn list_without_limit_returns_all_rows() {
+        // Regression (review R3): list(None, None) previously capped at 1000
+        // rows silently, truncating statutory reports and claim inputs.
+        let pool = connect_in_memory().await.unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut tx = pool.begin().await.unwrap();
+        for i in 0..1050u32 {
+            sqlx::query("INSERT INTO donors (id, first_name, last_name, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)")
+                .bind(Uuid::new_v4())
+                .bind(format!("First{i}"))
+                .bind(format!("Last{:04}", i))
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        let repo = SqliteDonorRepository::new(SharedPool::new(pool));
+        let all = repo.list(None, None).await.unwrap();
+        assert_eq!(all.len(), 1050, "None must mean unbounded, not a silent cap");
+
+        let paged = repo.list(Some(10), None).await.unwrap();
+        assert_eq!(paged.len(), 10, "explicit limits must still be honored");
     }
 }

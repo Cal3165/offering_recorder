@@ -254,8 +254,7 @@ impl OfferingRepository for SqliteOfferingRepository {
     }
 
     async fn list(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Offering>> {
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query("SELECT * FROM offerings ORDER BY created_at LIMIT ? OFFSET ?")
             .bind(limit)
             .bind(offset)
@@ -266,8 +265,7 @@ impl OfferingRepository for SqliteOfferingRepository {
     }
 
     async fn list_by_meeting(&self, meeting_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Offering>> {
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query("SELECT * FROM offerings WHERE meeting_id = ? ORDER BY created_at LIMIT ? OFFSET ?")
             .bind(meeting_id)
             .bind(limit)
@@ -290,8 +288,7 @@ impl OfferingRepository for SqliteOfferingRepository {
             .succ_opt()
             .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(9999, 12, 31).unwrap());
         let end_dt = end_exclusive.and_hms_opt(0, 0, 0).unwrap().and_utc();
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
             "SELECT * FROM offerings WHERE created_at >= ? AND created_at < ? ORDER BY created_at LIMIT ? OFFSET ?",
         )
@@ -412,8 +409,7 @@ impl OfferingRepository for SqliteOfferingRepository {
         }
         sql.push_str(" ORDER BY created_at LIMIT ? OFFSET ?");
 
-        let limit = limit.unwrap_or(1000) as i64;
-        let offset = offset.unwrap_or(0) as i64;
+        let (limit, offset) = super::page_binds(limit, offset);
 
         let mut query = sqlx::query(&sql);
         if let Some(mid) = meeting_id {
