@@ -27,12 +27,14 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** single `GASDS_MATCHING_MULTIPLIER = 10`; kept year-aware fn for API stability;
   rewrote statutory comments; updated 9 test assertions across gasds_claim.rs, gasds.rs, workflows.rs.
   All 295 tests pass.
-- [ ] **C2. Recording deposit actuals silently destroys non-cash item amounts**
+- [x] **C2. Recording deposit actuals silently destroys non-cash item amounts**
   `crates/infrastructure/src/sqlite/bank_deposits.rs:181-189` vs `create()` :106-115
   `update()` omits `other_amount_pence` from the item re-insert (column is NOT NULL DEFAULT 0).
   `BankingService::record_actuals` (`crates/application/src/banking.rs:148`) get→mutate→update ⇒ every
   reconciliation zeroes item other-tender amounts ⇒ phantom discrepancies + permanent data loss.
   Remedy: add column/bind; roundtrip test asserting `other_amount` survives update.
+  **FIXED 2026-08-24:** column added to update(); regression tests `update_preserves_item_other_amount`
+  and `create_roundtrips_all_item_amounts` added (FK-seeded parents). 297 tests pass.
 - [ ] **C3. Frontend type-check fails; meeting attendance silently discarded**
   `src/lib/api.ts:82-83` passes `{name, dayOfWeek, timeOfDay}` while callers
   (`Meetings.svelte:134`, `OfferingEntry.svelte:199`) pass a 4th attendance arg and
@@ -223,3 +225,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 
 - 2026-08-24 · initial full-repo review logged · verdict Request changes
 - 2026-08-24 · C1 fixed · single 10:1 multiplier constant, statutory comments corrected, tests updated (gasds_claim.rs, gasds.rs, workflows.rs) · cargo test 295 pass
+- 2026-08-24 · C2 fixed · other_amount_pence persisted on deposit update(); 2 repo roundtrip regression tests (bank_deposits.rs) · cargo test 297 pass
