@@ -163,10 +163,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 
 *Architecture / hygiene*
 
-- [ ] **R16. Dead file with latent build-breaker**
+- [x] **R16. Dead file with latent build-breaker**
   `crates/domain/src/entities/mod.rs` never compiled (lib.rs:15 declares module inline) and contains broken
   re-export of nonexistent `CashDenomination` (:39). Delete duplicated declarations or switch lib.rs to
   file-based modules.
+  **FIXED 2026-08-24:** dead mod.rs deleted; the inline declaration in lib.rs is the single source of
+  module structure. All suites green.
 - [ ] **R17. Dead frontend files**
   Verified unreferenced: `money-helpers.ts`, `AddDonationDialog.svelte` (legacy syntax; latent money bug
   `"10.5"` ⇒ £1.05), unwired `repaint.ts` (compositor workaround hack — install where needed or delete).
@@ -302,3 +304,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R13 fixed · generation tokens on meeting/offering/donor-eligibility loads discard stale responses
 - 2026-08-24 · R14 fixed · Backups: newest-completed for overdue logic; prompt Cancel aborts instead of creating unencrypted backups / failing decrypt
 - 2026-08-24 · R15 fixed · set_active refuses self-deactivation and last-active-admin deactivation (defense-in-depth); regression test · cargo test 309 pass
+- 2026-08-24 · R16 fixed · deleted never-compiled entities/mod.rs with broken CashDenomination re-export
