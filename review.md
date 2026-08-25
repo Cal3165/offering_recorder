@@ -137,9 +137,11 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   (`OfferingEntry.svelte:403`). Use `$bindable` or ReviewModal's callback pattern. Audit-integrity bug.
   **FIXED 2026-08-24:** prop is now `$bindable("")` and the parent uses `bind:`; guest names typed into
   the amendment-sign modal reach doAmendSign and are recorded on the signature. svelte-check 0 errors.
-- [ ] **R12. Autosave/manual-save race loses denomination edits**
+- [x] **R12. Autosave/manual-save race loses denomination edits**
   `OfferingEntry.svelte:273-278` clears dirty then returns if saving; autosaveCash lacks in-flight guard.
   Single-flight queue (pendingSave flag; never clear dirty before dispatch).
+  **FIXED 2026-08-24:** unified saveCash/autosaveCash into dispatchCashSave — in-flight requests queue
+  one follow-up, dirty cleared only at payload snapshot, queued run re-sends post-await edits.
 - [ ] **R13. Stale async responses render wrong entities**
   Rapid meeting/offering/donor switches let slow responses overwrite newer ones
   (`selectOffering`, `loadElig`). Sequence-token guard after each await.
@@ -287,3 +289,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R9 fixed · ViewPermission enforced on 11 read endpoints across meetings/offerings/amendments/gift_aid/gasds/banking; denial regression test · cargo test 307 pass
 - 2026-08-24 · R10 fixed · backup staging TempFileGuard + accurate restore audit events (start/complete/fail) + replace_draining pool swap + panic-safe RestoreGuard with session ordering + backup_path confined to backups dir; Windows rename caveat → O28 · cargo test 308 pass
 - 2026-08-24 · R11 fixed · AmendmentSignModal guest name now $bindable + parent bind: so signatures record the typed guest identity · svelte-check 0 errors
+- 2026-08-24 · R12 fixed · single-flight dispatchCashSave queues follow-up saves; no dropped or racing denomination writes

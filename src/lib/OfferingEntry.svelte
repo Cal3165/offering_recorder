@@ -273,17 +273,7 @@
   async function saveCash() {
     if (!offering || offering.status !== "Draft" || !canRecord) return;
     if (denomTimer) clearTimeout(denomTimer);
-    denomDirty = false;
-    if (saving) return;
-    saving = true;
-    try {
-      await setCashDenominations(offeringId!, { counts });
-      await refresh();
-    } catch (e) {
-      error = String(e);
-    } finally {
-      saving = false;
-    }
+    await dispatchCashSave();
   }
 
   async function submitDonation() {
@@ -526,6 +516,7 @@
   let denomTimer: ReturnType<typeof setTimeout> | null = null;
   let denomDirty = false;
   let saving = $state(false);
+  let saveQueued = false;
   function markDenomsDirty() {
     if (!offering || offering.status !== "Draft" || !canRecord) return;
     denomDirty = true;
@@ -533,9 +524,24 @@
     denomTimer = setTimeout(autosaveCash, 600);
   }
   async function autosaveCash() {
-    if (!denomDirty) return;
-    denomDirty = false;
+    await dispatchCashSave();
+  }
+  /**
+   * Single-flight denomination save (review R12). While a save is in
+   * flight, further requests queue exactly one follow-up instead of being
+   * dropped or racing the in-flight request; the dirty flag is cleared only
+   * when a save's payload snapshot is taken, so edits made during the await
+   * are re-sent by the queued run.
+   */
+  async function dispatchCashSave() {
+    if (!offering || offering.status !== "Draft" || !canRecord) return;
+    if (saving) {
+      denomDirty = true;
+      saveQueued = true;
+      return;
+    }
     saving = true;
+    denomDirty = false;
     try {
       await setCashDenominations(offeringId!, { counts });
       await refresh();
@@ -543,6 +549,10 @@
       error = String(e);
     } finally {
       saving = false;
+    }
+    if (saveQueued) {
+      saveQueued = false;
+      await dispatchCashSave();
     }
   }
   function focusAmount() {
