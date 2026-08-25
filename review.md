@@ -245,7 +245,9 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   violation (`banking.rs:54-59`, `sqlite/mod.rs:35-40`). Related: RepoError::Conflict never produced anywhere.
   **FIXED 2026-08-24:** map_db_err detects unique violations → RepoError::Conflict (→ AppError::Conflict);
   create_deposit maps deposit-insert conflicts to the precise AppError::AlreadyDeposited.
-- [ ] **O10.** Donor search doesn't escape LIKE wildcards (`sqlite/donors.rs:154`).
+- [x] **O10.** Donor search doesn't escape LIKE wildcards (`sqlite/donors.rs:154`).
+  **FIXED 2026-08-24:** search escapes `\`, `%`, `_` and uses `ESCAPE '\'` in both search queries —
+  literal matching, no pattern surprises feeding duplicate detection.
 - [ ] **O11.** UTF-8 BOM breaks CSV header detection (`application/migration.rs:109-153`) — strip `\u{feff}`.
 - [ ] **O12.** Blocking Argon2/crypto on tokio workers — `spawn_blocking` (`infrastructure/auth.rs:13-19`,
   `backup.rs:67,102`).

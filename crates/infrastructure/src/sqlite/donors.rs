@@ -149,11 +149,18 @@ impl DonorRepository for SqliteDonorRepository {
     }
 
     async fn search(&self, query: &str, include_inactive: bool, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Donor>> {
-        let like = format!("%{}%", query.trim());
+        // Escape LIKE metacharacters so a search for "50%" or "O_Brian"
+        // matches literally instead of as a pattern (review O10).
+        let escaped = query
+            .trim()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let like = format!("%{escaped}%");
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = if include_inactive {
             sqlx::query(
-                "SELECT * FROM donors WHERE first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ORDER BY last_name, first_name LIMIT ? OFFSET ?",
+                "SELECT * FROM donors WHERE first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\' ORDER BY last_name, first_name LIMIT ? OFFSET ?",
             )
             .bind(&like)
             .bind(&like)
@@ -171,7 +178,7 @@ impl DonorRepository for SqliteDonorRepository {
             .map_err(map_db_err)?
         } else {
             sqlx::query(
-                "SELECT * FROM donors WHERE is_active = 1 AND (first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ?) ORDER BY last_name, first_name LIMIT ? OFFSET ?",
+                "SELECT * FROM donors WHERE is_active = 1 AND (first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\') ORDER BY last_name, first_name LIMIT ? OFFSET ?",
             )
             .bind(&like)
             .bind(&like)
