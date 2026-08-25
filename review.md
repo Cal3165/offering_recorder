@@ -175,9 +175,14 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   Confirm then remove.
   **FIXED 2026-08-24:** re-verified zero references, then removed all three (repaint.ts was untracked).
   svelte-check now 0 errors AND 0 warnings (all 15 warnings originated in AddDonationDialog.svelte).
-- [ ] **R18. `OfferingEntry.svelte` still 1474 lines (> ~1000 boundary)**
+- [x] **R18. `OfferingEntry.svelte` still 1474 lines (> ~1000 boundary)**
   Next extractions: donor picker/new-donor card (~lines 615-821, 1081-1160), amendment panel (~1359-1441),
   collection-start flow. Decompose before adding features.
+  **FIXED 2026-08-24:** extracted AmendmentPanel.svelte (correction form + amendment list + sign modal
+  wiring), DonorPicker.svelte (search dropdown + favourites/frequency + eligibility + new-donor card;
+  lazy cache load moved to setClass/openDonation), GasdsExplainer.svelte. 1598→**1064 lines**, svelte-check
+  0/0, build ok. Remaining extraction candidates (donation-entry form, collection-start flow) noted for
+  future decomposition when those areas are next touched.
 - [ ] **R19. Test gaps map to bugs above**
   Missing coverage: `record_deposit_actuals` (would have caught C2), `delete_deposit`, withdraw-signature
   service flows, report generation (incl. tax-year boundary), CSV-import integration, view-permission denials,
@@ -308,3 +313,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R15 fixed · set_active refuses self-deactivation and last-active-admin deactivation (defense-in-depth); regression test · cargo test 309 pass
 - 2026-08-24 · R16 fixed · deleted never-compiled entities/mod.rs with broken CashDenomination re-export
 - 2026-08-24 · R17 fixed · removed money-helpers.ts, AddDonationDialog.svelte, repaint.ts after zero-reference verification · svelte-check 0 errors / 0 warnings
+- 2026-08-24 · R18 fixed · OfferingEntry 1598→1064 lines via AmendmentPanel + DonorPicker + GasdsExplainer extraction · svelte-check 0/0, build ok

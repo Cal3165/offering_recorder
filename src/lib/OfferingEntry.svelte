@@ -1,19 +1,18 @@
 <script lang="ts">
   import OfferingReportModal from "./offering-entry/OfferingReportModal.svelte";
   import ReviewModal from "./offering-entry/ReviewModal.svelte";
-  import AmendmentSignModal from "./offering-entry/AmendmentSignModal.svelte";
+  import AmendmentPanel from "./offering-entry/AmendmentPanel.svelte";
+  import DonorPicker from "./offering-entry/DonorPicker.svelte";
+  import GasdsExplainer from "./offering-entry/GasdsExplainer.svelte";
 
   import { onDestroy, onMount } from "svelte";
   import {
     addDonation,
-    approveAmendment,
     checkerSign,
     counterSign,
     createAmendment,
-    createDonor,
     createMeeting,
     createOffering,
-    donorEligibilitySummary,
     gasdsForOffering,
     getOffering,
     listActiveDonors,
@@ -24,13 +23,9 @@
     removeDonation,
     setAttendance,
     setCashDenominations,
-    signAmendmentChecker,
-    signAmendmentCounter,
     validateOffering,
     listOfferings,
     withdrawSignature,
-    withdrawAmendmentSignature,
-    deleteAmendment,
   } from "./api";
   import type {
     Amendment,
@@ -83,31 +78,8 @@
   let dRef = $state("");
   let dCounts = $state<Record<string, number>>({});
 
-  let amendReason = $state("");
-  let amendAttendance = $state(0);
-  let amendOpen = $state(false);
-  let amendMode = $state<"attendance" | "denoms" | "description">("attendance");
-  let amendCounts = $state<CashTotal["counts"]>({});
-  let amendDescription = $state("");
   let amendRemoveId = $state<string | null>(null);
   let removeReason = $state("");
-  let amendSignFor = $state<string | null>(null);
-  let amendSignKind = $state<"counter" | "checker">("counter");
-  let amendSignGuestName = $state("");
-
-  let donorQuery = $state("");
-  let donorOpen = $state(false);
-  let donorHighlight = $state(0);
-  let elig = $state<DonorEligibilitySummary | null>(null);
-
-  let newDonorOpen = $state(false);
-  let ndFirst = $state("");
-  let ndLast = $state("");
-  let ndLine1 = $state("");
-  let ndPostcode = $state("");
-  let ndEmail = $state("");
-  let ndDuplicates = $state<string[]>([]);
-  let ndSaving = $state(false);
 
   let startOpen = $state(false);
   let startAttendance = $state(0);
@@ -283,7 +255,6 @@
   let collectionMode = $state(false);
   let denomPasteOpen = $state(false);
   let denomPaste = $state("");
-  let gasdsOpen = $state(false);
   let denomHelp = $state(false);
 
   async function saveCash() {
@@ -362,26 +333,6 @@
     }
   }
 
-  async function submitAmendment() {
-    error = "";
-    if (!amendReason.trim()) {
-      error = "Enter a reason";
-      return;
-    }
-    try {
-      let changes: AmendmentChange[];
-      if (amendMode === "attendance") changes = [{ SetAttendance: amendAttendance }];
-      else if (amendMode === "denoms") changes = [{ SetCashDenominations: { counts: amendCounts } }];
-      else changes = [{ SetDescription: amendDescription.trim() || null }];
-      await createAmendment(offeringId!, amendReason, changes);
-      amendReason = "";
-      amendOpen = false;
-      await refresh();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
   async function submitRemoveDonation() {
     error = "";
     if (!removeReason.trim() || !amendRemoveId) {
@@ -393,55 +344,6 @@
       await createAmendment(offeringId!, removeReason, changes);
       removeReason = "";
       amendRemoveId = null;
-      await refresh();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function startAmendSign(amendment: Amendment, kind: "counter" | "checker") {
-    amendSignFor = amendment.id;
-    amendSignKind = kind;
-    amendSignGuestName = "";
-  }
-  async function doAmendSign() {
-    error = "";
-    const guestName = amendSignGuestName.trim() || null;
-    try {
-      if (amendSignKind === "counter") await signAmendmentCounter(amendSignFor!, guestName);
-      else await signAmendmentChecker(amendSignFor!, guestName);
-      amendSignFor = null;
-      await refresh();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function approveAmend(amendment: Amendment) {
-    error = "";
-    try {
-      await approveAmendment(amendment.id);
-      await refresh();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function amendWithdraw(amendment: Amendment) {
-    error = "";
-    try {
-      await withdrawAmendmentSignature(amendment.id);
-      await refresh();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function amendDelete(amendment: Amendment) {
-    error = "";
-    if (!confirm("Delete this amendment? This cannot be undone.")) return;
-    try {
-      await deleteAmendment(amendment.id);
       await refresh();
     } catch (e) {
       error = String(e);
@@ -631,7 +533,10 @@
   }
   function setClass(c: DonationClassification) {
     dClass = c;
-    if (c === "LooseCash") {
+    if (c === "Named") {
+      // Lazy-load the donor cache for the picker (review R18 extraction).
+      ensureDonorsLoaded();
+    } else if (c === "LooseCash") {
       dMethod = "Cash";
       suggestRemaining();
     } else if (c === "Anonymous") {
@@ -641,6 +546,7 @@
   function openDonation() {
     addDonationOpen = true;
     dClass = "Named";
+    ensureDonorsLoaded();
     error = "";
     ok = "";
     setTimeout(() => {
@@ -648,9 +554,6 @@
       else document.getElementById("donation-amount")?.focus();
     }, 30);
   }
-
-  const FAV_DONORS_KEY = "or-fav-donors";
-  const DONOR_FREQ_KEY = "or-donor-freq";
 
   function donorName(id: string | null): string {
     if (!id) return "";
@@ -705,149 +608,6 @@
     if (issue.code === "no_donations") return "No donations have been recorded yet.";
     return issue.message;
   }
-  function pickDonor(d: Donor) {
-    dDonor = d.id;
-    donorQuery = `${d.first_name} ${d.last_name}`;
-    donorOpen = false;
-    donorHighlight = 0;
-    donorFreq = { ...donorFreq, [d.id]: (donorFreq[d.id] ?? 0) + 1 };
-    saveFreq();
-    loadElig(d.id);
-  }
-  let favDonors = $state<string[]>(loadFavs());
-  function loadFavs(): string[] {
-    try {
-      return JSON.parse(localStorage.getItem(FAV_DONORS_KEY) ?? "[]");
-    } catch {
-      return [];
-    }
-  }
-  function saveFavs() {
-    localStorage.setItem(FAV_DONORS_KEY, JSON.stringify(favDonors));
-  }
-  function toggleFav(id: string) {
-    favDonors = favDonors.includes(id) ? favDonors.filter((f) => f !== id) : [...favDonors, id];
-    saveFavs();
-  }
-  let donorFreq = $state<Record<string, number>>(loadFreq());
-  function loadFreq(): Record<string, number> {
-    try {
-      return JSON.parse(localStorage.getItem(DONOR_FREQ_KEY) ?? "{}");
-    } catch {
-      return {};
-    }
-  }
-  function saveFreq() {
-    localStorage.setItem(DONOR_FREQ_KEY, JSON.stringify(donorFreq));
-  }
-  const isFav = (id: string) => favDonors.includes(id);
-  function clearDonor() {
-    dDonor = "";
-    donorQuery = "";
-    donorOpen = false;
-    elig = null;
-  }
-  async function loadElig(id: string) {
-    const req = ++eligSeq;
-    elig = null;
-    try {
-      const summary = await donorEligibilitySummary(id);
-      if (req !== eligSeq) return;
-      elig = summary;
-    } catch {
-      if (req === eligSeq) elig = null;
-    }
-  }
-  function donorKeydown(e: KeyboardEvent) {
-    if (donorList.length === 0) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      donorOpen = true;
-      donorHighlight = Math.min(donorHighlight + 1, donorList.length - 1);
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      donorOpen = true;
-      donorHighlight = Math.max(donorHighlight - 1, 0);
-    } else if (e.key === "Enter") {
-      const item = donorList[donorHighlight];
-      if (donorVisible && item) {
-        e.preventDefault();
-        pickDonor(item);
-      }
-    } else if (e.key === "Escape") {
-      donorOpen = false;
-    }
-  }
-  function donorTyped() {
-    ensureDonorsLoaded();
-    donorHighlight = 0;
-    donorOpen = true;
-    dDonor = "";
-    elig = null;
-  }
-
-  function newDonorInput(): CreateDonorInput {
-    return {
-      first_name: ndFirst.trim(),
-      last_name: ndLast.trim(),
-      preferred_name: null,
-      donor_type: "Unknown",
-      address_line1: ndLine1.trim() || null,
-      address_line2: null,
-      address_line3: null,
-      postcode: ndPostcode.trim() || null,
-      email: ndEmail.trim() || null,
-      phone: null,
-    };
-  }
-  async function saveNewDonor() {
-    error = "";
-    if (!ndFirst.trim() || !ndLast.trim()) {
-      error = "Enter a first and last name.";
-      return;
-    }
-    ndSaving = true;
-    try {
-      const d = await createDonor(newDonorInput(), false);
-      await finishNewDonor(d);
-    } catch (e) {
-      const msg = String(e);
-      if (msg.toLowerCase().includes("duplicate")) {
-        ndDuplicates = msg
-          .replace(/^.*possible duplicate donor:\s*/i, "")
-          .split(", ")
-          .filter(Boolean);
-      } else {
-        error = msg;
-      }
-    } finally {
-      ndSaving = false;
-    }
-  }
-  async function confirmNewDonor(createAnyway: boolean) {
-    error = "";
-    ndSaving = true;
-    try {
-      const d = await createDonor(newDonorInput(), createAnyway);
-      await finishNewDonor(d);
-    } catch (e) {
-      error = String(e);
-    } finally {
-      ndSaving = false;
-    }
-  }
-  async function finishNewDonor(d: Donor) {
-    donors = await listActiveDonors();
-    pickDonor(d);
-    newDonorOpen = false;
-    ndFirst = "";
-    ndLast = "";
-    ndLine1 = "";
-    ndPostcode = "";
-    ndEmail = "";
-    ndDuplicates = [];
-    ok = "Donor created.";
-  }
 
   const cashDonationTotal = $derived(
     (offering?.donations ?? [])
@@ -892,35 +652,6 @@
     !cashWithNoBreakdown && DENOMINATIONS.every((d) => (denomDiff[d.name] ?? 0) === 0),
   );
 
-  const donorMatches = $derived.by(() => {
-    const q = donorQuery.trim().toLowerCase();
-    if (!q) return [];
-    return donors
-      .filter((d) => {
-        const name = `${d.first_name} ${d.last_name}`.toLowerCase();
-        const pref = (d.preferred_name ?? "").toLowerCase();
-        const addr = [d.address?.line1, d.address?.line2, d.address?.line3, d.address?.postcode]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        return name.includes(q) || pref.includes(q) || addr.includes(q);
-      })
-      .slice(0, 8);
-  });
-  const recentDonors = $derived(
-    [...new Set((offering?.donations ?? []).map((d) => d.donor_id).filter((id): id is string => !!id))]
-      .map((id) => donors.find((d) => d.id === id))
-      .filter((d): d is Donor => !!d)
-      .slice(-5),
-  );
-  const favDonorList = $derived(donors.filter((d) => favDonors.includes(d.id)));
-  const donorList = $derived(
-    donorQuery.trim()
-      ? donorMatches.sort((a, b) => (favDonors.includes(b.id) ? 1 : 0) - (favDonors.includes(a.id) ? 1 : 0))
-      : [...favDonorList, ...recentDonors.filter((d) => !favDonors.includes(d.id))],
-  );
-  const donorVisible = $derived(donorOpen && donorList.length > 0);
-  const selectedDonor = $derived(donors.find((d) => d.id === dDonor) ?? null);
   const gasdsByDonation = $derived(new Map((gasds?.evaluations ?? []).map((e) => [e.donation_id, e])));
 </script>
 
@@ -1108,85 +839,13 @@
             <div class="hint-block">Named donors can be Gift Aid eligible. Anonymous donations and loose cash are never Gift Aid eligible but may count towards the GASDS.</div>
           </fieldset>
           {#if dClass === "Named"}
-            <div class="field donor-field">
-              <label for="donor-search">Donor</label>
-              <input
-                id="donor-search"
-                type="text"
-                bind:value={donorQuery}
-                placeholder="Type to search name, address or postcode…"
-                oninput={donorTyped}
-                onkeydown={donorKeydown}
-                onfocus={() => { ensureDonorsLoaded(); donorOpen = true; }}
-                onblur={() => setTimeout(() => (donorOpen = false), 120)}
-              />
-              {#if donorVisible}
-                <div class="donor-dropdown">
-                  {#if !donorQuery.trim() && favDonorList.length > 0}
-                    <div class="drop-hint">Favourites</div>
-                  {/if}
-                  {#each donorList as d, i (d.id)}
-                    <div class="drop-row">
-                      <button
-                        type="button"
-                        class="drop-item {i === donorHighlight ? 'active' : ''}"
-                        onmousedown={(e) => { e.preventDefault(); pickDonor(d); }}
-                        onclick={() => pickDonor(d)}
-                      >{d.first_name} {d.last_name}{donorSummary(d.id)}{#if (donorFreq[d.id] ?? 0) > 0}<span class="drop-hint"> • {donorFreq[d.id]}×</span>{/if}</button>
-                      <button
-                        type="button"
-                        class="drop-star"
-                        title={isFav(d.id) ? "Remove from favourites" : "Add to favourites"}
-                        onclick={() => toggleFav(d.id)}
-                      >{isFav(d.id) ? "★" : "☆"}</button>
-                    </div>
-                  {/each}
-                  {#if !donorQuery.trim() && recentDonors.some((r) => !favDonors.includes(r.id))}
-                    <div class="drop-hint">Recently used in this collection</div>
-                  {/if}
-                </div>
-              {/if}
-              <div class="row" style="margin-top:0.35rem;">
-                {#if selectedDonor}
-                  {#if elig}
-                    {#if elig.has_active_declaration}
-                      <span class="elig-ok">✓ Gift Aid eligible</span>
-                    {:else}
-                      <span class="elig-warn">⚠ No valid Gift Aid declaration</span>
-                    {/if}
-                  {/if}
-                  <button class="secondary" onclick={clearDonor}>Clear</button>
-                {/if}
-                <button class="secondary" onclick={() => { newDonorOpen = true; ndDuplicates = []; }}>+ New donor</button>
-              </div>
-            </div>
-            {#if newDonorOpen}
-              <div class="card">
-                <h4>New donor</h4>
-                {#if ndDuplicates.length > 0}
-                  <div class="dupe-warn">
-                    A donor with this name may already exist: <strong>{ndDuplicates.join(", ")}</strong>
-                    <div class="row" style="margin-top:0.5rem;">
-                      <button onclick={() => confirmNewDonor(true)} disabled={ndSaving}>Create anyway</button>
-                      <button class="secondary" onclick={() => (ndDuplicates = [])}>Edit details</button>
-                    </div>
-                  </div>
-                {/if}
-                <div class="row">
-                  <div class="field"><label for="nd-first">First name</label><input id="nd-first" bind:value={ndFirst} /></div>
-                  <div class="field"><label for="nd-last">Last name</label><input id="nd-last" bind:value={ndLast} /></div>
-                </div>
-                <div class="row">
-                  <div class="field" style="flex:1"><label for="nd-addr">Address</label><input id="nd-addr" bind:value={ndLine1} /></div>
-                  <div class="field"><label for="nd-postcode">Postcode</label><input id="nd-postcode" bind:value={ndPostcode} /></div>
-                </div>
-                <div class="row">
-                  <div class="field" style="flex:1"><label for="nd-email">Email</label><input id="nd-email" bind:value={ndEmail} /></div>
-                  <button onclick={saveNewDonor} disabled={ndSaving}>Create donor</button>
-                  <button class="secondary" onclick={() => { newDonorOpen = false; ndDuplicates = []; }}>Cancel</button>
-                </div>
-              </div>
-            {/if}
+            <DonorPicker
+              {donors}
+              {offering}
+              bind:value={dDonor}
+              onError={(m) => (error = m)}
+              onOk={(m) => (ok = m)}
+            />
           {/if}
           <div class="row">
             {#if dMethod === "Cash"}
@@ -1354,119 +1013,21 @@
         {/if}
       </div>
       {#if gasds}
-        <p class="muted">
-          GASDS eligible: {fmtPence(gasds.eligible_amount.pence)} • Claimable:
-          {fmtPence(Math.min(gasds.eligible_amount.pence, gasds.maximum_allowed.pence))}
-          <button class="secondary" onclick={() => (gasdsOpen = !gasdsOpen)} style="font-size:0.8rem; padding:0.1rem 0.5rem; margin-left:0.5rem;">
-            {gasdsOpen ? "Hide" : "Why?"}
-          </button>
-        </p>
-        {#if gasdsOpen}
-          <ul class="plain">
-            {#each gasds.evaluations as e (e.donation_id)}
-              {@const label = e.classification === 'Named' ? 'named' : e.classification === 'Anonymous' ? 'anonymous' : 'loose cash'}
-              <li class={e.eligible ? 'elig-ok' : 'elig-warn'}>
-                {#if e.excluded_amount.pence > 0 && e.eligible_amount.pence > 0}
-                  ✓ {fmtPence(e.eligible_amount.pence)} eligible, ✕ {fmtPence(e.excluded_amount.pence)} excluded
-                {:else if e.eligible}
-                  ✓ {fmtPence(e.amount.pence)}
-                {:else}
-                  ✕ {fmtPence(e.amount.pence)}
-                {/if}
-                {label} donation
-                {#if !e.eligible && e.exclusion_reason} — {e.exclusion_reason}{/if}
-              </li>
-            {/each}
-            {#if gasds.excluded_amount.pence > 0}
-              <li class="muted">Excluded total: {fmtPence(gasds.excluded_amount.pence)}</li>
-            {/if}
-          </ul>
-        {/if}
+        <GasdsExplainer {gasds} />
       {/if}
     </div>
 
-    {#if !collectionMode && offering.status === 'Locked'}
-      <div class="card">
-        <h3>Correct an offering <span class="hint" title="Fix a locked offering. Corrections need a reason and a counter + checker signature before they're applied.">ⓘ</span></h3>
-        {#if canRecord && !amendOpen}
-          <button onclick={() => {
-            amendOpen = true;
-            amendMode = "attendance";
-            amendAttendance = attendance;
-            amendCounts = offering!.cash_denominations.counts;
-            amendDescription = offering!.description ?? "";
-          }}>Correct offering</button>
-        {/if}
-        {#if amendOpen}
-          <div class="row">
-            <button class={amendMode === 'attendance' ? '' : 'secondary'} onclick={() => (amendMode = "attendance")}>Attendance</button>
-            <button class={amendMode === 'denoms' ? '' : 'secondary'} onclick={() => (amendMode = "denoms")}>Cash denominations</button>
-            <button class={amendMode === 'description' ? '' : 'secondary'} onclick={() => (amendMode = "description")}>Description</button>
-          </div>
-          <div class="row">
-            {#if amendMode === "attendance"}
-              <div class="field">
-                <label for="amend-attendance">Corrected attendance</label>
-                <input id="amend-attendance" type="number" bind:value={amendAttendance} min="0" />
-              </div>
-            {:else if amendMode === "denoms"}
-              <DenominationGrid bind:counts={amendCounts} />
-            {:else}
-              <div class="field" style="flex:1">
-                <label for="amend-description">Corrected description</label>
-                <input id="amend-description" type="text" bind:value={amendDescription} style="width:100%" />
-              </div>
-            {/if}
-            <div class="field" style="flex:1">
-              <label for="amend-reason">Reason</label>
-              <input id="amend-reason" type="text" bind:value={amendReason} placeholder="Why is this being corrected?" style="width:100%" />
-            </div>
-          </div>
-          <div class="row">
-            <button onclick={submitAmendment}>Submit correction</button>
-            <button class="secondary" onclick={() => (amendOpen = false)}>Cancel</button>
-          </div>
-        {/if}
-        <ul class="plain">
-          {#each amendments as a (a.id)}
-            <li>
-              <div class="row" style="justify-content: space-between;">
-                <span>
-                  <span class="badge">{a.status}</span> {a.reason}
-                  {#if a.counter_signature} • Counter: {a.counter_signature.user_name}{#if a.counter_signature.is_guest} (guest){/if}{/if}
-                  {#if a.checker_signature} • Checker: {a.checker_signature.user_name}{#if a.checker_signature.is_guest} (guest){/if}{/if}
-                </span>
-                <span class="row">
-                  {#if canSign && a.status === 'Draft'}
-                    <button onclick={() => startAmendSign(a, "counter")}>Counter</button>
-                  {/if}
-                  {#if canSign && a.status === 'CounterSigned'}
-                    <button onclick={() => startAmendSign(a, "checker")}>Checker</button>
-                  {/if}
-                  {#if canSign && (a.status === 'CounterSigned' || a.status === 'CheckerSigned')}
-                    <button class="secondary" onclick={() => amendWithdraw(a)}>Withdraw</button>
-                  {/if}
-                  {#if canRecord && a.status === 'CheckerSigned'}
-                    <button onclick={() => approveAmend(a)}>Approve</button>
-                  {/if}
-                  {#if canRecord && a.status !== 'Approved'}
-                    <button class="secondary" onclick={() => amendDelete(a)}>Delete</button>
-                  {/if}
-                </span>
-              </div>
-            </li>
-          {/each}
-        </ul>
-        {#if amendSignFor}
-          <AmendmentSignModal
-            {amendSignKind}
-            bind:amendSignGuestName
-            {user}
-            onConfirm={doAmendSign}
-            onClose={() => (amendSignFor = null)}
-          />
-        {/if}
-      </div>
+    {#if !collectionMode && offering.status === 'Locked' && offeringId}
+      <AmendmentPanel
+        {offeringId}
+        {offering}
+        {amendments}
+        {canRecord}
+        {canSign}
+        {user}
+        onChanged={refresh}
+        onError={(m) => (error = m)}
+      />
     {/if}
   {:else if meetingId}
     <p class="muted">Select or create an offering to begin.</p>
