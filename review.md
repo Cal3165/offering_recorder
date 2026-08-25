@@ -276,8 +276,10 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   types.ts used by report modal + DonorDetail (dead third copy removed with money-helpers.ts); shared
   depositExpectedTotals() replaces per-component item sums, and Dashboard's discrepancy check now includes
   actual_other (matching Banking). DAYS ×2 left — trivial two-word array.
-- [ ] **O18.** Donor identifiers in localStorage survive logout/restore (`OfferingEntry.svelte:626-716`) —
+- [x] **O18.** Donor identifiers in localStorage survive logout/restore (`OfferingEntry.svelte:626-716`) —
   clear on logout or scope key to DB identity.
+  **FIXED 2026-08-24:** clearDonorUsage() removes or-fav-donors/or-donor-freq on logout and after a
+  database restore.
 - [ ] **O19.** Zero-collection offerings cannot be signed/locked — workflow dead-end for nil collections
   (`validation.rs:95-104`, `offerings.rs:351-361,388-398`). Consider nil-collection confirmation.
 - [ ] **O20.** `delete_deposit` actuals guard ignores `actual_other` (`banking.rs:174`).

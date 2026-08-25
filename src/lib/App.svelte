@@ -51,6 +51,15 @@
     })();
   });
 
+  // Pseudonymous donor usage data (favourites + per-donor frequency) lives in
+  // localStorage outside the encrypted/audited database; clear it whenever the
+  // session ends or the database is replaced so it cannot outlive its owner
+  // (review O18).
+  function clearDonorUsage() {
+    localStorage.removeItem("or-fav-donors");
+    localStorage.removeItem("or-donor-freq");
+  }
+
   function hasAny(roles: string[]) {
     return user !== null && user.roles.roles.some((r) => roles.includes(r));
   }
@@ -152,7 +161,7 @@
         </div>
       {/if}
     </div>
-    <button class="secondary" onclick={() => { logout(); user = null; view = "offerings"; }}>
+    <button class="secondary" onclick={() => { logout().finally(clearDonorUsage); user = null; view = "offerings"; }}>
       Sign out
     </button>
   </div>
@@ -187,7 +196,7 @@
     {:else if view === 'users'}
       <Users user={user} />
     {:else if view === 'backups'}
-      <Backups onRestored={() => { user = null; view = "offerings"; }} />
+      <Backups onRestored={() => { clearDonorUsage(); user = null; view = "offerings"; }} />
     {/if}
   </main>
 {/if}
