@@ -85,9 +85,13 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** donor_report and iif_donation_export now use `<`; IifDonationRow fields typed as
   DonationType/PaymentMethod (deserialized via from_json); memo assertion added to test suite.
   305 tests pass.
-- [ ] **R6. Offering numbers can collide after deletion**
+- [x] **R6. Offering numbers can collide after deletion**
   No UNIQUE constraint (initial_schema.sql:50-61); allocation uses COUNT(*)+1 (`sqlite/offerings.rs:217-224`).
   Add migration with UNIQUE(meeting_id, offering_number); allocate from MAX.
+  **FIXED 2026-08-24:** migration 20240112 adds UNIQUE(meeting_id, offering_number) index +
+  meetings.offering_seq_counter; allocation consumes the monotonic counter under BEGIN IMMEDIATE via
+  RETURNING (MAX-over-remaining alone still reuses a deleted highest number — caught by the regression
+  test). 305 tests pass.
 - [ ] **R7. Donation insert not atomic**
   `sqlite/donations.rs:105-126` — donation INSERT and denomination rows in separate implicit transactions.
   Wrap in one transaction (mirror `insert_offering` pattern).
@@ -254,3 +258,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R3 fixed · page_binds() helper: None ⇒ unbounded (was silent LIMIT 1000) at 11 repo sites; 1050-row regression test · cargo test 302 pass
 - 2026-08-24 · R4 fixed · optimistic concurrency on Offering aggregate saves (expected_updated_at + Conflict); stale-write regression tests; amendment repos deferred to new O27 · cargo test 304 pass
 - 2026-08-24 · R5 fixed · donor/IIF report boundaries unified to `<`; IifDonationRow typed enums, unquoted IIF memos + assertion · cargo test 305 pass
+- 2026-08-24 · R6 fixed · migration 20240112 (unique index + per-meeting seq counter); allocation via UPDATE…RETURNING under IMMEDIATE lock; no-reuse regression test · cargo test 305 pass

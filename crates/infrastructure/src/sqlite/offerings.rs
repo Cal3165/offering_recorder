@@ -213,17 +213,21 @@ impl OfferingRepository for SqliteOfferingRepository {
         .await
         .map_err(map_db_err)?;
 
-        let prefix = format!("{}/", year);
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM offerings WHERE meeting_id = ? AND offering_number LIKE ?",
+        // Consume the meeting's monotonic sequence counter. COUNT(*)+1 (and
+        // MAX over remaining rows) reused numbers after a deletion; a
+        // persisted counter consumed under this IMMEDIATE lock never does
+        // (review R6; unique index in migration 20240112 backstops it).
+        let offering_seq: i64 = sqlx::query_scalar(
+            "UPDATE meetings SET offering_seq_counter = offering_seq_counter + 1
+             WHERE id = ? RETURNING offering_seq_counter",
         )
         .bind(offering.meeting_id)
-        .bind(format!("{}%", prefix))
         .fetch_one(&mut *conn)
         .await
         .map_err(map_db_err)?;
 
-        offering.offering_number = OfferingNumber::generated(year, seq as u32, count as u32 + 1);
+        offering.offering_number =
+            OfferingNumber::generated(year, seq as u32, offering_seq as u32);
 
         if let Err(e) = self.insert_offering(&mut *conn, &offering).await {
             let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
@@ -616,5 +620,47 @@ mod tests {
         repo.update(fresh, expected).await.unwrap();
         let reloaded = repo.get(created.id).await.unwrap().unwrap();
         assert_eq!(reloaded.attendance, Some(10));
+    }
+
+    #[tokio::test]
+    async fn deleted_offering_numbers_are_not_reused() {
+        // Regression (review R6): allocation used COUNT(*)+1, so after
+        // deleting offering 0002 the next create reused "0002".
+        let (repo, meeting_id) = setup().await;
+
+        let o1 = repo
+            .create_with_generated_number(
+                Offering::create(meeting_id, OfferingNumber::new("2024/01/0001").unwrap(), None)
+                    .unwrap(),
+                2024,
+            )
+            .await
+            .unwrap();
+        let o2 = repo
+            .create_with_generated_number(
+                Offering::create(meeting_id, OfferingNumber::new("2024/01/0002").unwrap(), None)
+                    .unwrap(),
+                2024,
+            )
+            .await
+            .unwrap();
+        assert_eq!(o1.offering_number.as_str(), "2024/01/0001");
+        assert_eq!(o2.offering_number.as_str(), "2024/01/0002");
+
+        repo.delete(o2.id).await.unwrap();
+
+        let o3 = repo
+            .create_with_generated_number(
+                Offering::create(meeting_id, OfferingNumber::new("2024/01/0003").unwrap(), None)
+                    .unwrap(),
+                2024,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            o3.offering_number.as_str(),
+            "2024/01/0003",
+            "sequence must continue from MAX, never reuse deleted numbers"
+        );
     }
 }
