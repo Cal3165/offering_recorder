@@ -52,8 +52,18 @@ impl offering_application::ports::BackupStorage for SqliteBackupStorage {
         safety_dir: &Path,
         passphrase: &str,
     ) -> offering_application::error::AppResult<()> {
-        BackupManager::restore_backup_files(db_path, backup_path, safety_dir, passphrase)
-            .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))?;
+        // File decryption + Argon2 key derivation are CPU-bound: run the whole
+        // synchronous restore staging on the blocking pool (review O12).
+        let db = db_path.to_path_buf();
+        let bp = backup_path.to_path_buf();
+        let sd = safety_dir.to_path_buf();
+        let pw = passphrase.to_string();
+        tokio::task::spawn_blocking(move || {
+            BackupManager::restore_backup_files(&db, &bp, &sd, &pw)
+        })
+        .await
+        .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))?
+        .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))?;
 
         // The running application must not serve queries from the now-stale
         // database handle: swap in a fresh pool pointing at the restored file.
@@ -149,7 +159,14 @@ impl BackupManager {
             .map_err(InfraError::Database)?;
 
         if !passphrase.trim().is_empty() {
-            crypto::encrypt_file(staging.path(), &final_path, passphrase)?;
+            // Argon2 key derivation is CPU-bound; keep it off the async
+            // workers (review O12).
+            let src = staging.path().to_path_buf();
+            let dst = final_path.clone();
+            let pw = passphrase.to_string();
+            tokio::task::spawn_blocking(move || crypto::encrypt_file(&src, &dst, &pw))
+                .await
+                .map_err(|e| InfraError::Message(e.to_string()))??;
         } else {
             fs::rename(staging.path(), &plain_path)?;
             staging.keep(); // promoted into place; do not delete on drop
@@ -165,7 +182,11 @@ impl BackupManager {
         // which contains donor PII and Argon2 password hashes — is never left
         // behind in a shared temp directory.
         let guard = if crypto::is_encrypted(path) {
-            let body = crypto::decrypt_file(path, passphrase)?;
+            let p = path.to_path_buf();
+            let pw = passphrase.to_string();
+            let body = tokio::task::spawn_blocking(move || crypto::decrypt_file(&p, &pw))
+                .await
+                .map_err(|e| InfraError::Message(e.to_string()))??;
             let tmp = TempFileGuard::new(&std::env::temp_dir(), "offrec_validate")?;
             fs::write(tmp.path(), &body)?;
             Some(tmp)

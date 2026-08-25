@@ -11,11 +11,24 @@ pub struct PasswordHasherService;
 #[async_trait]
 impl offering_application::ports::PasswordHasher for PasswordHasherService {
     async fn hash_password(&self, password: &str) -> AppResult<String> {
-        Self::hash_password(password).map_err(|e| AppError::Validation(e.to_string()))
+        // Argon2 is deliberately CPU-heavy (~19 MiB, t=2): run it on the
+        // blocking pool so login does not stall other commands (review O12).
+        let pw = password.to_string();
+        let hash = tokio::task::spawn_blocking(move || Self::hash_password(&pw))
+            .await
+            .map_err(|e| AppError::Persistence(e.to_string()))?
+            .map_err(|e| AppError::Validation(e.to_string()))?;
+        Ok(hash)
     }
 
     async fn verify_password(&self, password: &str, hash: &str) -> AppResult<bool> {
-        Self::verify_password(password, hash).map_err(|e| AppError::Validation(e.to_string()))
+        let pw = password.to_string();
+        let h = hash.to_string();
+        let ok = tokio::task::spawn_blocking(move || Self::verify_password(&pw, &h))
+            .await
+            .map_err(|e| AppError::Persistence(e.to_string()))?
+            .map_err(|e| AppError::Validation(e.to_string()))?;
+        Ok(ok)
     }
 }
 

@@ -251,8 +251,10 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 - [x] **O11.** UTF-8 BOM breaks CSV header detection (`application/migration.rs:109-153`) — strip `\u{feff}`.
   **FIXED 2026-08-24:** normalize_header strips U+FEFF (service entry also strips a leading BOM); test
   asserts BOM'd first header still maps.
-- [ ] **O12.** Blocking Argon2/crypto on tokio workers — `spawn_blocking` (`infrastructure/auth.rs:13-19`,
+- [x] **O12.** Blocking Argon2/crypto on tokio workers — `spawn_blocking` (`infrastructure/auth.rs:13-19`,
   `backup.rs:67,102`).
+  **FIXED 2026-08-24:** password hash/verify and backup encrypt/decrypt (incl. whole restore-staging fn)
+  now run via tokio::task::spawn_blocking.
 - [ ] **O13.** Global search never reloads after login (`App.svelte:30-39`) — load reactively on user change.
 - [ ] **O14.** N+1 invokes on mount: `Checking.svelte:16-17` (use `list_all_offerings`);
   `DonorDetail.load` sequential invokes → Promise.all.
@@ -361,3 +363,6 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O7 fixed · checked totals on Offering; escape hatches documented + debug_assert · cargo test 320 pass
 - 2026-08-24 · O8 fixed · migration 20240113 UNIQUE(donor_id, version) on declarations
 - 2026-08-24 · O9 fixed · unique violations → RepoError::Conflict; deposit races → AlreadyDeposited
+- 2026-08-24 · O10 fixed · LIKE wildcards escaped with ESCAPE clause in donor search
+- 2026-08-24 · O11 fixed · BOM stripped in normalize_header + service entry; header test
+- 2026-08-24 · O12 fixed · Argon2 + backup crypto moved to spawn_blocking
