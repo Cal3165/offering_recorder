@@ -178,6 +178,19 @@ impl GiftAidDeclaration {
         self.status == DeclarationStatus::Active
     }
 
+    /// Whether this declaration carries the donor details HMRC requires for a
+    /// claim. A `MultipleDonations` declaration must state the donor's full
+    /// name and address; a `Single` declaration's details are captured on the
+    /// claim form itself (review O6).
+    pub fn is_complete_for_claim(&self) -> bool {
+        match self.declaration_type {
+            DeclarationType::Single => true,
+            DeclarationType::MultipleDonations => {
+                self.donor_full_name.is_some() && self.donor_address.is_some()
+            }
+        }
+    }
+
     /// A declaration covers donations received inside its recorded window.
     /// Revocation ends coverage from the revocation date onward but does NOT
     /// retroactively void donations received while the declaration was live
@@ -359,6 +372,54 @@ mod tests {
         // boundary itself stays covered (donation received at revocation time).
         assert!(d.covers_date(now));
         assert!(!d.covers_date(now + chrono::Duration::days(1)));
+    }
+
+    #[test]
+    fn completeness_for_claim_depends_on_donor_details() {
+        // Regression (review O6): HMRC requires name + address on a
+        // MultipleDonations declaration.
+        let donor = Uuid::new_v4();
+        let user = Uuid::new_v4();
+        let bare = GiftAidDeclaration::create(donor, base_time(), user).unwrap();
+        assert!(!bare.is_complete_for_claim());
+
+        let with_address = GiftAidDeclaration::create_full(
+            donor,
+            DeclarationType::MultipleDonations,
+            base_time(),
+            None,
+            Some("Complete Person".to_string()),
+            Some(
+                Address::new(
+                    "1 Road".to_string(),
+                    None,
+                    None,
+                    crate::postcode::Postcode::new("AB1 2CD").unwrap(),
+                )
+                .unwrap(),
+            ),
+            DeclarationMethod::Written,
+            None,
+            None,
+            user,
+        )
+        .unwrap();
+        assert!(with_address.is_complete_for_claim());
+
+        let single = GiftAidDeclaration::create_full(
+            donor,
+            DeclarationType::Single,
+            base_time(),
+            None,
+            None,
+            None,
+            DeclarationMethod::Written,
+            None,
+            None,
+            user,
+        )
+        .unwrap();
+        assert!(single.is_complete_for_claim());
     }
 
     #[test]

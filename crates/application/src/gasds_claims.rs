@@ -179,7 +179,10 @@ impl<'a> GasdsClaimService<'a> {
 
         let matching = offering_domain::entities::gasds_claim::matching_limit(
             &readiness.gift_aid_amount,
-            &offering_domain::money::Money::from_pence_unchecked(offering_domain::gasds::DEFAULT_ANNUAL_LIMIT_PENCE),
+            // Year-aware ceiling rather than the modern default (review O2).
+            &offering_domain::money::Money::from_pence_unchecked(
+                offering_domain::gasds::annual_ceiling_pence(tax_year.start_year()),
+            ),
             &tax_year,
         );
         let claimable = offering_domain::money::Money::from_pence_unchecked(
@@ -190,6 +193,19 @@ impl<'a> GasdsClaimService<'a> {
         );
         readiness.matching_limit = matching;
         readiness.claimable_amount = claimable;
+
+        // HMRC requires donor name and address on a MultipleDonations
+        // declaration; surface declarations that cannot support a claim
+        // (review O6).
+        let incomplete = declarations
+            .iter()
+            .filter(|d| d.is_active() && !d.is_complete_for_claim())
+            .count();
+        if incomplete > 0 {
+            readiness.warnings.push(format!(
+                "{incomplete} active Gift Aid declaration(s) lack donor name/address and cannot support claims"
+            ));
+        }
 
         if readiness.items.iter().all(|i| i.tax_treatment == TaxTreatment::Neither) {
             readiness.warnings.push(format!(
