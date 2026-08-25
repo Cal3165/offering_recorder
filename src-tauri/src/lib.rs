@@ -131,6 +131,7 @@ pub fn run() {
             commands::list_backups,
             commands::restore_backup,
             commands::list_audit_events,
+            commands::recent_audit_events,
             commands::import_donors_csv,
         ])
         .run(tauri::generate_context!())

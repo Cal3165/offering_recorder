@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listAuditEvents } from "./api";
+  import { listAuditEvents, recentAuditEvents } from "./api";
   import type { AuditEvent } from "./types";
 
   let events = $state<AuditEvent[]>([]);
@@ -8,14 +8,30 @@
   let query = $state("");
   let expanded = $state<Set<string>>(new Set());
 
+  const PAGE = 500;
+  let loadedCount = $state(0);
+
   onMount(async () => {
     error = "";
     try {
-      events = await listAuditEvents();
+      // The audit table grows forever; render a bounded window with
+      // explicit "load more" rather than the whole log (review O15).
+      events = await recentAuditEvents(PAGE);
+      loadedCount = PAGE;
     } catch (e) {
       error = String(e);
     }
   });
+
+  async function loadMore() {
+    error = "";
+    try {
+      loadedCount += PAGE;
+      events = await recentAuditEvents(loadedCount);
+    } catch (e) {
+      error = String(e);
+    }
+  }
 
   const filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -56,7 +72,10 @@
     <div class="field" style="flex:1">
       <input type="search" bind:value={query} placeholder="Filter by action, entity, reason, user…" style="width:100%" />
     </div>
-    <button onclick={async () => { error = ""; try { events = await listAuditEvents(); } catch (e) { error = String(e); } }}>Refresh</button>
+    <button onclick={async () => { error = ""; try { events = await recentAuditEvents(loadedCount); } catch (e) { error = String(e); } }}>Refresh</button>
+    {#if events.length === loadedCount && loadedCount > 0}
+      <button class="secondary" onclick={loadMore}>Load more</button>
+    {/if}
   </div>
 </div>
 

@@ -76,6 +76,16 @@ impl AuditRepository for SqliteAuditRepository {
         rows.iter().map(row_to_event).collect()
     }
 
+    async fn list_recent(&self, limit: u32) -> RepoResult<Vec<AuditEvent>> {
+        let rows =
+            sqlx::query("SELECT * FROM audit_events ORDER BY timestamp DESC LIMIT ?")
+                .bind(limit)
+                .fetch_all(&self.pool.get())
+                .await
+                .map_err(map_db_err)?;
+        rows.iter().map(row_to_event).collect()
+    }
+
     async fn list_by_user(&self, user_id: Uuid) -> RepoResult<Vec<AuditEvent>> {
         let rows = sqlx::query("SELECT * FROM audit_events WHERE user_id = ? ORDER BY timestamp DESC")
             .bind(user_id)

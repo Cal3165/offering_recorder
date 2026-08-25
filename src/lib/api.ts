@@ -292,6 +292,8 @@ export const restoreBackup = (backup_path: string, passphrase: string) =>
 
 // audit
 export const listAuditEvents = () => run<AuditEvent[]>("list_audit_events");
+export const recentAuditEvents = (limit: number) =>
+  run<AuditEvent[]>("recent_audit_events", { limit });
 
 // migration
 export const importDonorsCsv = (csv: string) =>

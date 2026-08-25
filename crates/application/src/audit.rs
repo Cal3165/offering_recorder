@@ -70,6 +70,14 @@ impl<'a> AuditLog<'a> {
         }
         Ok(self.repo.list().await?)
     }
+
+    /// Newest-first, capped listing for UI surfaces (review O15).
+    pub async fn list_recent(&self, actor: &User, limit: u32) -> AppResult<Vec<AuditEvent>> {
+        if !can_view_audit(actor) {
+            return Err(crate::error::unauthorized("view audit log"));
+        }
+        Ok(self.repo.list_recent(limit).await?)
+    }
 }
 
 /// Capture an entity snapshot for the audit trail.

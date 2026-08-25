@@ -15,3 +15,17 @@ pub async fn list_audit_events(
         .await
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn recent_audit_events(
+    state: State<'_, AppState>,
+    limit: u32,
+) -> Result<Vec<AuditEvent>, String> {
+    let actor = with_actor!(state);
+    state
+        .services
+        .audit
+        .list_recent(&actor, limit)
+        .await
+        .map_err(|e| e.to_string())
+}

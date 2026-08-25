@@ -19,6 +19,8 @@ pub trait UserRepository: Send + Sync {
 pub trait AuditRepository: Send + Sync {
     async fn create(&self, event: AuditEvent) -> RepoResult<AuditEvent>;
     async fn list(&self) -> RepoResult<Vec<AuditEvent>>;
+    /// Newest-first, capped at `limit` events (review O15).
+    async fn list_recent(&self, limit: u32) -> RepoResult<Vec<AuditEvent>>;
     async fn list_by_user(&self, user_id: Uuid) -> RepoResult<Vec<AuditEvent>>;
     async fn list_by_entity(&self, entity_type: &str, entity_id: Uuid) -> RepoResult<Vec<AuditEvent>>;
 }

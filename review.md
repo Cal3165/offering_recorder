@@ -261,8 +261,10 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   `DonorDetail.load` sequential invokes → Promise.all.
   **FIXED 2026-08-24:** Checking uses single list_all_offerings query; DonorDetail fetches declarations,
   declaration amendments, and eligibility in parallel.
-- [ ] **O15.** Unbounded rendering: Audit table grows forever (`Audit.svelte:70-94`); Dashboard eagerly loads
+- [x] **O15.** Unbounded rendering: Audit table grows forever (`Audit.svelte:70-94`); Dashboard eagerly loads
   full audit log for 8 events. Paginate/bound.
+  **FIXED 2026-08-24:** new list_recent(limit) port/impl/service + recent_audit_events command; Audit.svelte
+  loads 500 at a time with Load-more; Dashboard fetches only the latest 50.
 - [ ] **O16.** Timezone bugs from `toISOString().slice()`: `Banking.svelte:56-60`, `Reports.svelte:27-37`,
   `DonorDetail.svelte:61-65,186`, display-only in Claims/Retention — shared local-date formatter.
 - [ ] **O17.** Duplication inventory: `fmtBreakdown` ×2; amendment-change labelers ×3; cash-reconciliation

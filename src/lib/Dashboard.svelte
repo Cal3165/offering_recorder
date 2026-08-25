@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listBackups, listAuditEvents, listDeposits, listMeetings, listOfferings, listAllOfferings } from "./api";
+  import { listBackups, recentAuditEvents, listDeposits, listMeetings, listAllOfferings } from "./api";
   import type { AuditEvent, Backup, BankDeposit, Meeting, Offering, User } from "./types";
   import { fmtPence } from "./types";
 
@@ -30,7 +30,7 @@
         listAllOfferings(),
         listDeposits(),
         listBackups(),
-        listAuditEvents(),
+        recentAuditEvents(50),
       ]);
       meetings = m;
       offerings = offs;
