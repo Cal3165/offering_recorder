@@ -148,10 +148,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** generation counters (meetingsSeq/offeringSeq/eligSeq); loadOfferings,
   selectOffering, refresh (seq-aware; fresh callers invalidate in-flight refreshes) and loadElig
   discard superseded results.
-- [ ] **R14. Backups UI bugs**
+- [x] **R14. Backups UI bugs**
   `Backups.svelte:70` reads oldest completed (backend returns DESC) ⇒ overdue badge inverted once ≥2
-  backups; `window.prompt(...) ?? ""` means Cancel silently creates UNENCRYPTED PII backup (:32).
+  backups; `window.prompt(...) ?? ""` means Cancel silently creates an UNENCRYPTED PII backup (:32).
   Use `[0]`; treat null as abort; move passphrase to proper modal/dialog plugin.
+  **FIXED 2026-08-24:** lastBackup = completed[0]; Cancel aborts create (message) and restore instead of
+  proceeding. (Proper dialog-plugin modal remains an optional polish item.)
 - [ ] **R15. Last-admin lockout possible**
   `application/auth.rs:215-243` allows deactivating self / last active admin with no recovery path. Refuse it.
 
@@ -294,3 +296,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R11 fixed · AmendmentSignModal guest name now $bindable + parent bind: so signatures record the typed guest identity · svelte-check 0 errors
 - 2026-08-24 · R12 fixed · single-flight dispatchCashSave queues follow-up saves; no dropped or racing denomination writes
 - 2026-08-24 · R13 fixed · generation tokens on meeting/offering/donor-eligibility loads discard stale responses
+- 2026-08-24 · R14 fixed · Backups: newest-completed for overdue logic; prompt Cancel aborts instead of creating unencrypted backups / failing decrypt

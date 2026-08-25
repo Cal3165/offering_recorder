@@ -27,11 +27,16 @@
   async function backup() {
     error = "";
     ok = "";
+    const entered = window.prompt("Backup passphrase (leave blank for an unencrypted backup)", "");
+    if (entered === null) {
+      // Cancel must not silently create an unencrypted PII backup (review R14).
+      ok = "Backup cancelled.";
+      return;
+    }
     busy = true;
     try {
-      const passphrase = window.prompt("Backup passphrase (leave blank for an unencrypted backup)", "") ?? "";
-      const b = await createBackup(passphrase);
-      ok = `Backup created (${(b.size_bytes ?? 0) / 1024} KB)${passphrase ? " — encrypted" : ""}`;
+      const b = await createBackup(entered);
+      ok = `Backup created (${(b.size_bytes ?? 0) / 1024} KB)${entered ? " — encrypted" : ""}`;
       await refresh();
     } catch (e) {
       error = String(e);
@@ -43,11 +48,17 @@
   async function doRestore(b: Backup) {
     error = "";
     ok = "";
+    let passphrase = "";
+    if (b.encryption_enabled) {
+      const entered = window.prompt("Enter the passphrase used to encrypt this backup", "");
+      if (entered === null) {
+        ok = "Restore cancelled.";
+        return;
+      }
+      passphrase = entered;
+    }
     restoring = b.id;
     try {
-      const passphrase = b.encryption_enabled
-        ? window.prompt("Enter the passphrase used to encrypt this backup", "") ?? ""
-        : "";
       await restoreBackup(b.backup_path, passphrase);
       // The backend clears the in-memory session on restore, so force the
       // frontend back to a logged-out state too (the old identity is no longer
@@ -67,7 +78,9 @@
   }
 
   const completed = $derived(backups.filter((b) => b.status === "Completed"));
-  const lastBackup = $derived(completed.length > 0 ? completed[completed.length - 1] : null);
+  // Backend lists newest-first (ORDER BY created_at DESC): the last backup
+  // is the first entry, not the last (review R14).
+  const lastBackup = $derived(completed.length > 0 ? completed[0] : null);
   const lastAgeDays = $derived(
     lastBackup ? (Date.now() - new Date(lastBackup.created_at).getTime()) / 86400000 : Infinity,
   );
