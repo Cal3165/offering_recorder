@@ -49,7 +49,7 @@ impl<'a> BankingService<'a> {
             ));
         }
 
-        let mut deposit = BankDeposit::create(actor.id, deposit_date, reference);
+        let mut deposit = BankDeposit::create(actor.id, deposit_date, reference)?;
 
         for offering_id in &offering_ids {
             let already = self.deposits.list_by_offering(*offering_id).await?;
@@ -107,7 +107,7 @@ impl<'a> BankingService<'a> {
             });
         }
         for item in items {
-            deposit.add_item(item);
+            deposit.add_item(item)?;
         }
 
         let deposit = self.deposits.create(deposit).await?;

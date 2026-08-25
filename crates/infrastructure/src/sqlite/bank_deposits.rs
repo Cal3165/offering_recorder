@@ -265,7 +265,7 @@ mod tests {
         other_pence: i64,
     ) -> BankDeposit {
         let mut deposit =
-            BankDeposit::create(banker_id, Utc::now(), None);
+            BankDeposit::create(banker_id, Utc::now(), None).unwrap();
         let item = BankDepositItem {
             offering_id,
             cash_amount: Money::from_pence(5000).unwrap(),
@@ -274,7 +274,7 @@ mod tests {
             donor_count: 3,
             donation_count: 5,
         };
-        deposit.add_item(item);
+        deposit.add_item(item).unwrap();
         deposit
     }
 

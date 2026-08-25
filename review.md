@@ -221,8 +221,11 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   coverage rules still apply whole). Semantic decision recorded: a classified single gift WITHOUT a
   breakdown remains subject to the whole-amount limit (boundary_30_01 test now breakdown-less); mixed-
   donations test expectations updated (£40 as 2×£20 notes now eligible).
-- [ ] **O5.** BankDeposit integrity: duplicate offering_ids accepted, future dates accepted, no state machine;
+- [x] **O5.** BankDeposit integrity: duplicate offering_ids accepted, future dates accepted, no state machine;
   `cash_discrepancy` loses short-vs-over direction (`bank_deposit.rs:69-72,102-105`).
+  **FIXED 2026-08-24:** add_item rejects duplicate offerings (DomainResult); BankDeposit::create rejects
+  deposit dates >1 day in the future; cash_discrepancy_direction() returns Shortfall/Overage/None;
+  service call sites propagate. 3 tests added.
 - [ ] **O6.** Gift Aid declarations don't require name+address at claim time (`gift_aid.rs:148-154`) though
   HMRC requires them — add `is_valid_for_claim()`.
 - [ ] **O7.** Money escape hatches: public `from_pence_unchecked`, saturating `Add` vs checked `add`;
@@ -338,3 +341,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R19 fixed · banking actuals/delete guards, signature-withdrawal flow, tax-year-boundary report tests; gift_aid_report now shows donation date · cargo test 313 pass; CSV-import/audit assertions → O29
 - 2026-08-24 · O2+O3 fixed · date-aware GASDS parameters (£20/£30, card eligibility, ceiling) + unified exclusion predicate · cargo test 316 pass
 - 2026-08-24 · O4 fixed · breakdown-carrying Cash donations evaluated per denomination; single-gift boundary tests use breakdown-less gifts
+- 2026-08-24 · O5 fixed · duplicate-offering + future-date guards on deposits; signed discrepancy direction · cargo test 319 pass

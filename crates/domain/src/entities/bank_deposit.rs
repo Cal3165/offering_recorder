@@ -1,7 +1,15 @@
+use crate::errors::{DomainError, DomainResult};
 use crate::money::Money;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// Whether a reconciliation difference is missing money or extra money.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiscrepancyDirection {
+    Shortfall,
+    Overage,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BankDepositItem {
@@ -50,9 +58,20 @@ pub struct BankDeposit {
 }
 
 impl BankDeposit {
-    pub fn create(banker_id: Uuid, deposit_date: DateTime<Utc>, reference: Option<String>) -> Self {
+    /// Create a deposit. A deposit dated more than a day in the future is a
+    /// recording mistake and is rejected (review O5).
+    pub fn create(
+        banker_id: Uuid,
+        deposit_date: DateTime<Utc>,
+        reference: Option<String>,
+    ) -> DomainResult<Self> {
         let now = Utc::now();
-        BankDeposit {
+        if deposit_date > now + chrono::Duration::days(1) {
+            return Err(DomainError::Validation(
+                "deposit date cannot be in the future".into(),
+            ));
+        }
+        Ok(BankDeposit {
             id: Uuid::new_v4(),
             deposit_date,
             banker_id,
@@ -63,12 +82,21 @@ impl BankDeposit {
             reference,
             created_at: now,
             updated_at: now,
-        }
+        })
     }
 
-    pub fn add_item(&mut self, item: BankDepositItem) {
+    /// Add an offering to this deposit. An offering may be deposited only
+    /// once — duplicates would double-count it (review O5).
+    pub fn add_item(&mut self, item: BankDepositItem) -> DomainResult<()> {
+        if self.items.iter().any(|i| i.offering_id == item.offering_id) {
+            return Err(DomainError::Validation(format!(
+                "offering {} is already on this deposit",
+                item.offering_id
+            )));
+        }
         self.items.push(item);
         self.updated_at = Utc::now();
+        Ok(())
     }
 
     pub fn expected_cash(&self) -> Money {
@@ -104,6 +132,17 @@ impl BankDeposit {
         Money::from_pence_unchecked(diff.unsigned_abs() as i64)
     }
 
+    /// Direction of the cash discrepancy: [`DiscrepancyDirection::Shortfall`]
+    /// when counted cash is missing, [`DiscrepancyDirection::Overage`] when
+    /// there is more cash than recorded (review O5).
+    pub fn cash_discrepancy_direction(&self) -> Option<DiscrepancyDirection> {
+        match self.actual_cash.pence() - self.expected_cash().pence() {
+            0 => None,
+            d if d < 0 => Some(DiscrepancyDirection::Shortfall),
+            _ => Some(DiscrepancyDirection::Overage),
+        }
+    }
+
     pub fn has_discrepancy(&self) -> bool {
         self.actual_cash.pence() != self.expected_cash().pence()
             || self.actual_cheques.pence() != self.expected_cheques().pence()
@@ -119,7 +158,7 @@ mod tests {
     fn create_empty_deposit() {
         let banker_id = Uuid::new_v4();
         let date = Utc::now();
-        let d = BankDeposit::create(banker_id, date, Some("REF001".to_string()));
+        let d = BankDeposit::create(banker_id, date, Some("REF001".to_string())).unwrap();
         assert!(d.items.is_empty());
         assert!(d.expected_cash().is_zero());
         assert!(d.expected_total().is_zero());
@@ -129,7 +168,7 @@ mod tests {
     fn add_item_updates_totals() {
         let banker_id = Uuid::new_v4();
         let date = Utc::now();
-        let mut d = BankDeposit::create(banker_id, date, None);
+        let mut d = BankDeposit::create(banker_id, date, None).unwrap();
         let item = BankDepositItem {
             offering_id: Uuid::new_v4(),
             cash_amount: Money::from_pence(5000).unwrap(),
@@ -138,17 +177,63 @@ mod tests {
             donor_count: 10,
             donation_count: 15,
         };
-        d.add_item(item);
+        d.add_item(item).unwrap();
         assert_eq!(d.expected_cash().pence(), 5000);
         assert_eq!(d.expected_cheques().pence(), 2000);
         assert_eq!(d.expected_total().pence(), 8000);
     }
 
     #[test]
+    fn add_item_rejects_duplicate_offering() {
+        let mut d = BankDeposit::create(Uuid::new_v4(), Utc::now(), None).unwrap();
+        let offering_id = Uuid::new_v4();
+        let mk = || BankDepositItem {
+            offering_id,
+            cash_amount: Money::from_pence(100).unwrap(),
+            cheque_amount: Money::zero(),
+            other_amount: Money::zero(),
+            donor_count: 1,
+            donation_count: 1,
+        };
+        d.add_item(mk()).unwrap();
+        // The same offering twice would double-count it (review O5).
+        assert!(d.add_item(mk()).is_err());
+        assert_eq!(d.items.len(), 1);
+    }
+
+    #[test]
+    fn future_dated_deposit_rejected() {
+        let future = Utc::now() + chrono::Duration::days(7);
+        assert!(BankDeposit::create(Uuid::new_v4(), future, None).is_err());
+    }
+
+    #[test]
+    fn discrepancy_direction_distinguishes_short_and_over() {
+        let mut d = BankDeposit::create(Uuid::new_v4(), Utc::now(), None).unwrap();
+        let item = BankDepositItem {
+            offering_id: Uuid::new_v4(),
+            cash_amount: Money::from_pence(5000).unwrap(),
+            cheque_amount: Money::zero(),
+            other_amount: Money::zero(),
+            donor_count: 1,
+            donation_count: 1,
+        };
+        d.add_item(item).unwrap();
+        // Expected £50, recorded £0 so far: a shortfall.
+        assert_eq!(d.cash_discrepancy_direction(), Some(DiscrepancyDirection::Shortfall));
+
+        d.actual_cash = Money::from_pence(4500).unwrap();
+        assert_eq!(d.cash_discrepancy_direction(), Some(DiscrepancyDirection::Shortfall));
+
+        d.actual_cash = Money::from_pence(5500).unwrap();
+        assert_eq!(d.cash_discrepancy_direction(), Some(DiscrepancyDirection::Overage));
+    }
+
+    #[test]
     fn discrepancy_detected() {
         let banker_id = Uuid::new_v4();
         let date = Utc::now();
-        let mut d = BankDeposit::create(banker_id, date, None);
+        let mut d = BankDeposit::create(banker_id, date, None).unwrap();
         d.actual_cash = Money::from_pence(4500).unwrap();
         d.actual_cheques = Money::from_pence(2000).unwrap();
         let item = BankDepositItem {
@@ -159,13 +244,13 @@ mod tests {
             donor_count: 10,
             donation_count: 15,
         };
-        d.add_item(item);
+        d.add_item(item).unwrap();
         assert!(d.has_discrepancy());
     }
 
     #[test]
     fn discrepancy_reported_for_shortfall() {
-        let mut d = BankDeposit::create(Uuid::new_v4(), Utc::now(), None);
+        let mut d = BankDeposit::create(Uuid::new_v4(), Utc::now(), None).unwrap();
         d.actual_cash = Money::from_pence(4500).unwrap();
         let item = BankDepositItem {
             offering_id: Uuid::new_v4(),
@@ -175,7 +260,7 @@ mod tests {
             donor_count: 10,
             donation_count: 15,
         };
-        d.add_item(item);
+        d.add_item(item).unwrap();
         // A shortfall of £5.00 must be reported (it was previously £0.00).
         assert_eq!(d.cash_discrepancy().pence(), 500);
     }
