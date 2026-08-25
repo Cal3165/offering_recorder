@@ -175,10 +175,19 @@
     }
   }
 
+  /** Stale-response guard: requests bump the generation; results are
+   *  discarded when superseded by a newer selection (review R13). */
+  let meetingsSeq = 0;
+  let offeringSeq = 0;
+  let eligSeq = 0;
+
   async function loadOfferings() {
+    const req = ++meetingsSeq;
     if (!meetingId) return;
-    offerings = await listOfferings(meetingId);
-    offeringId = offerings.length > 0 ? offerings[offerings.length - 1].id : null;
+    const rows = await listOfferings(meetingId);
+    if (req !== meetingsSeq) return;
+    offerings = rows;
+    offeringId = rows.length > 0 ? rows[rows.length - 1].id : null;
     await selectOffering();
   }
 
@@ -208,27 +217,34 @@
   }
 
   async function selectOffering() {
+    const req = ++offeringSeq;
     offering = null;
     issues = [];
     gasds = null;
     amendments = [];
     if (!offeringId) return;
-    offering = await getOffering(offeringId);
+    const loaded = await getOffering(offeringId);
+    if (req !== offeringSeq) return;
+    offering = loaded;
     if (offering) {
       attendance = offering.attendance ?? 0;
       counts = { ...offering.cash_denominations.counts };
-      await refresh();
+      await refresh(req);
     }
   }
 
-  async function refresh() {
+  async function refresh(seq?: number) {
     if (!offeringId) return;
+    // Callers that already own a generation pass it through; fresh callers
+    // start a new one, invalidating any in-flight refresh.
+    const req = seq ?? ++offeringSeq;
     const [o, a, i, g] = await Promise.all([
       getOffering(offeringId),
       listAmendments(offeringId),
       validateOffering(offeringId),
       gasdsForOffering(offeringId),
     ]);
+    if (req !== offeringSeq) return;
     offering = o;
     amendments = a;
     issues = i;
@@ -732,11 +748,14 @@
     elig = null;
   }
   async function loadElig(id: string) {
+    const req = ++eligSeq;
     elig = null;
     try {
-      elig = await donorEligibilitySummary(id);
+      const summary = await donorEligibilitySummary(id);
+      if (req !== eligSeq) return;
+      elig = summary;
     } catch {
-      elig = null;
+      if (req === eligSeq) elig = null;
     }
   }
   function donorKeydown(e: KeyboardEvent) {

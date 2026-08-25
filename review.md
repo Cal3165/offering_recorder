@@ -142,9 +142,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   Single-flight queue (pendingSave flag; never clear dirty before dispatch).
   **FIXED 2026-08-24:** unified saveCash/autosaveCash into dispatchCashSave — in-flight requests queue
   one follow-up, dirty cleared only at payload snapshot, queued run re-sends post-await edits.
-- [ ] **R13. Stale async responses render wrong entities**
+- [x] **R13. Stale async responses render wrong entities**
   Rapid meeting/offering/donor switches let slow responses overwrite newer ones
   (`selectOffering`, `loadElig`). Sequence-token guard after each await.
+  **FIXED 2026-08-24:** generation counters (meetingsSeq/offeringSeq/eligSeq); loadOfferings,
+  selectOffering, refresh (seq-aware; fresh callers invalidate in-flight refreshes) and loadElig
+  discard superseded results.
 - [ ] **R14. Backups UI bugs**
   `Backups.svelte:70` reads oldest completed (backend returns DESC) ⇒ overdue badge inverted once ≥2
   backups; `window.prompt(...) ?? ""` means Cancel silently creates UNENCRYPTED PII backup (:32).
@@ -290,3 +293,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R10 fixed · backup staging TempFileGuard + accurate restore audit events (start/complete/fail) + replace_draining pool swap + panic-safe RestoreGuard with session ordering + backup_path confined to backups dir; Windows rename caveat → O28 · cargo test 308 pass
 - 2026-08-24 · R11 fixed · AmendmentSignModal guest name now $bindable + parent bind: so signatures record the typed guest identity · svelte-check 0 errors
 - 2026-08-24 · R12 fixed · single-flight dispatchCashSave queues follow-up saves; no dropped or racing denomination writes
+- 2026-08-24 · R13 fixed · generation tokens on meeting/offering/donor-eligibility loads discard stale responses
