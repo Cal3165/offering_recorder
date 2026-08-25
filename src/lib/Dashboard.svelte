@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { listBackups, recentAuditEvents, listDeposits, listMeetings, listAllOfferings } from "./api";
   import type { AuditEvent, Backup, BankDeposit, Meeting, Offering, User } from "./types";
-  import { fmtPence } from "./types";
+  import { fmtPence, depositExpectedTotals } from "./types";
 
   let { user, onNavigate }: { user: User; onNavigate: (view: string, offeringId?: string) => void } = $props();
 
@@ -59,11 +59,16 @@
   );
   const discrepancies = $derived(
     deposits.filter((d) => {
-      const expCash = d.items.reduce((s, i) => s + i.cash_amount.pence, 0);
-      const expCheques = d.items.reduce((s, i) => s + i.cheque_amount.pence, 0);
+      const t = depositExpectedTotals(d);
+      const hasActuals =
+        d.actual_cash.pence !== 0 || d.actual_cheques.pence !== 0 || d.actual_other.pence !== 0;
+      // Compare all three buckets, matching Banking's reconciled check
+      // (review O17: the previous copy ignored actual_other).
       return (
-        (d.actual_cash.pence !== 0 || d.actual_cheques.pence !== 0) &&
-        (d.actual_cash.pence !== expCash || d.actual_cheques.pence !== expCheques)
+        hasActuals &&
+        (d.actual_cash.pence !== t.cash ||
+          d.actual_cheques.pence !== t.cheques ||
+          d.actual_other.pence !== t.other)
       );
     }),
   );

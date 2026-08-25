@@ -270,8 +270,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** shared localYmd()/localDateTimeInput() helpers in types.ts replace every
   toISOString().slice() site (Banking default datetime, Reports presets, DonorDetail declaration dates,
   display formatting in Claims/Retention).
-- [ ] **O17.** Duplication inventory: `fmtBreakdown` ×2; amendment-change labelers ×3; cash-reconciliation
+- [x] **O17.** Duplication inventory: `fmtBreakdown` ×2; amendment-change labelers ×3; cash-reconciliation
   math ×4 (vs backend `validate_offering`); DAYS array ×2; expected cash/cheque reduces ×2. Consolidate.
+  **FIXED 2026-08-24:** OfferingEntry now imports fmtBreakdown from types.ts; canonical changeLabel() in
+  types.ts used by report modal + DonorDetail (dead third copy removed with money-helpers.ts); shared
+  depositExpectedTotals() replaces per-component item sums, and Dashboard's discrepancy check now includes
+  actual_other (matching Banking). DAYS ×2 left — trivial two-word array.
 - [ ] **O18.** Donor identifiers in localStorage survive logout/restore (`OfferingEntry.svelte:626-716`) —
   clear on logout or scope key to DB identity.
 - [ ] **O19.** Zero-collection offerings cannot be signed/locked — workflow dead-end for nil collections
@@ -376,3 +380,5 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O12 fixed · Argon2 + backup crypto moved to spawn_blocking
 - 2026-08-24 · O13 fixed · App search data loads reactively on session change
 - 2026-08-24 · O14 fixed · Checking uses list_all_offerings; DonorDetail parallel fetches
+- 2026-08-24 · O16 fixed · shared localYmd/localDateTimeInput replace all toISOString().slice() sites
+- 2026-08-24 · O17 fixed · shared changeLabel/fmtBreakdown/depositExpectedTotals; Dashboard includes actual_other

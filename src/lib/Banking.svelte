@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { availableOfferingsForDeposit, createDeposit, deleteDeposit, listDeposits, recordDepositActuals } from "./api";
   import type { BankDeposit, DepositCandidate } from "./types";
-  import { fmtPence, parsePenceFromInput, localDateTimeInput } from "./types";
+  import { fmtPence, parsePenceFromInput, localDateTimeInput, depositExpectedTotals } from "./types";
 
   let candidates = $state<DepositCandidate[]>([]);
   let selected = $state<Set<string>>(new Set());
@@ -70,17 +70,18 @@
     }
   }
 
+  // Shared deposit reconciliation math (review O17).
   function expectedCash(d: BankDeposit) {
-    return d.items.reduce((s, i) => s + i.cash_amount.pence, 0);
+    return depositExpectedTotals(d).cash;
   }
   function expectedCheques(d: BankDeposit) {
-    return d.items.reduce((s, i) => s + i.cheque_amount.pence, 0);
+    return depositExpectedTotals(d).cheques;
   }
   function expectedOther(d: BankDeposit) {
-    return d.items.reduce((s, i) => s + i.other_amount.pence, 0);
+    return depositExpectedTotals(d).other;
   }
   function expectedTotal(d: BankDeposit) {
-    return expectedCash(d) + expectedCheques(d) + expectedOther(d);
+    return depositExpectedTotals(d).total;
   }
   function actualTotal(d: BankDeposit) {
     return d.actual_cash.pence + d.actual_cheques.pence + d.actual_other.pence;

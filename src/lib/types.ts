@@ -429,6 +429,37 @@ export function localDateTimeInput(d: Date): string {
   return `${localYmd(d)}T${hh}:${mm}`;
 }
 
+/**
+ * Canonical amendment-change description (review O17): one wording shared by
+ * the offering report and the donor detail views.
+ */
+export function changeLabel(c: AmendmentChange): string {
+  if ("AddDonation" in c)
+    return `Added donation ${fmtPence(c.AddDonation.amount.pence)} (${c.AddDonation.donation_type}, ${c.AddDonation.payment_method})`;
+  if ("RemoveDonation" in c) return "Removed donation";
+  if ("SetAttendance" in c) return `Attendance → ${c.SetAttendance}`;
+  if ("SetCashDenominations" in c) return "Cash denominations updated";
+  if ("SetDescription" in c) return `Description → ${c.SetDescription ?? "(none)"}`;
+  return "Change";
+}
+
+/**
+ * Expected totals summed over a deposit's offering items (review O17):
+ * single source of truth for reconciliation math shared by Banking,
+ * Dashboard, and Checking.
+ */
+export function depositExpectedTotals(d: BankDeposit): {
+  cash: number;
+  cheques: number;
+  other: number;
+  total: number;
+} {
+  const cash = d.items.reduce((s, i) => s + i.cash_amount.pence, 0);
+  const cheques = d.items.reduce((s, i) => s + i.cheque_amount.pence, 0);
+  const other = d.items.reduce((s, i) => s + i.other_amount.pence, 0);
+  return { cash, cheques, other, total: cash + cheques + other };
+}
+
 export function parsePenceFromInput(value: string): number | null {
   const trimmed = value.trim();
   if (!/^\d+(?:\.\d{1,2})?$/.test(trimmed)) return null;

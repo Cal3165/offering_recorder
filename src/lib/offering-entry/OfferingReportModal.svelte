@@ -1,17 +1,8 @@
 <script lang="ts">
-  import { DENOMINATIONS, fmtPence, fmtBreakdown } from "../types";
+  import { DENOMINATIONS, fmtPence, fmtBreakdown, changeLabel } from "../types";
   import type { AmendmentChange, OfferingReport } from "../types";
 
   let { report, onClose }: { report: OfferingReport; onClose: () => void } = $props();
-
-  function changeLabel(c: AmendmentChange): string {
-    if ("AddDonation" in c) return `Added donation ${fmtPence(c.AddDonation.amount.pence)} (${c.AddDonation.donation_type}, ${c.AddDonation.payment_method})`;
-    if ("RemoveDonation" in c) return "Removed donation";
-    if ("SetAttendance" in c) return `Attendance → ${c.SetAttendance}`;
-    if ("SetCashDenominations" in c) return "Cash denominations updated";
-    if ("SetDescription" in c) return `Description → ${c.SetDescription ?? "none"}`;
-    return "Change";
-  }
 
   const repDonations = $derived(report.offering.donations ?? []);
   const repCashTotal = $derived(repDonations.filter(d => d.payment_method === "Cash").reduce((s, d) => s + d.amount.pence, 0));

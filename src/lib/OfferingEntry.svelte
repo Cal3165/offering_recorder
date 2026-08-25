@@ -45,7 +45,7 @@
     GasdsResult,
   } from "./types";
   import type { CreateDonorInput } from "./api";
-  import { DENOMINATIONS, fmtPence, parsePenceFromInput } from "./types";
+  import { DENOMINATIONS, fmtPence, fmtBreakdown, parsePenceFromInput } from "./types";
   import DenominationGrid from "./DenominationGrid.svelte";
 
   let { user, focusId = null, focusMeetingId = null }: { user: User; focusId?: string | null; focusMeetingId?: string | null } = $props();
@@ -559,14 +559,6 @@
     if (!id) return "";
     const d = donors.find((x) => x.id === id);
     return d ? `${d.first_name} ${d.last_name}` : "";
-  }
-  function fmtBreakdown(breakdown: CashTotal): string {
-    const parts: string[] = [];
-    for (const [name, count] of Object.entries(breakdown.counts)) {
-      const d = DENOMINATIONS.find((x) => x.name === name);
-      if (d && count) parts.push(`${count}×${d.label}`);
-    }
-    return parts.length ? parts.join(", ") : "—";
   }
   function donorSummary(id: string | null): string {
     if (!id) return "";

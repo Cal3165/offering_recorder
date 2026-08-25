@@ -23,7 +23,7 @@
     GiftAidDeclaration,
     User,
   } from "../types";
-  import { fmtPence, localYmd } from "../types";
+  import { fmtPence, localYmd, changeLabel } from "../types";
 
   let { donor, user, onClose }: { donor: Donor; user: User; onClose: () => void } = $props();
 
@@ -82,15 +82,6 @@
       return `End declaration on ${c.change.EndDeclaration.at.slice(0, 10)}`;
     if ("RevokeDeclaration" in c.change)
       return `Revoke declaration on ${c.change.RevokeDeclaration.at.slice(0, 10)}`;
-    return "";
-  }
-
-  function amendmentChangeText(c: AmendmentChange): string {
-    if ("AddDonation" in c) return `Added donation ${fmtPence(c.AddDonation.amount.pence)} (${c.AddDonation.donation_type}, ${c.AddDonation.payment_method})`;
-    if ("RemoveDonation" in c) return "Removed donation";
-    if ("SetAttendance" in c) return `Attendance → ${c.SetAttendance}`;
-    if ("SetCashDenominations" in c) return "Cash denominations updated";
-    if ("SetDescription" in c) return `Description → ${c.SetDescription ?? "(cleared)"}`;
     return "";
   }
 
@@ -437,7 +428,7 @@
               <p><strong>{new Date(a.created_at).toLocaleString()}</strong> — {a.reason} <span class="muted">({a.status})</span></p>
               <ul>
                 {#each a.changes as c (c)}
-                  <li>{amendmentChangeText(c)}</li>
+                  <li>{changeLabel(c)}</li>
                 {/each}
               </ul>
             </div>
