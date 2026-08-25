@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listMeetings, listOfferings } from "./api";
+  import { listAllOfferings, listMeetings } from "./api";
   import type { Meeting, Offering, User } from "./types";
   import { DENOMINATIONS, fmtPence } from "./types";
 
@@ -13,8 +13,8 @@
   onMount(async () => {
     try {
       meetings = await listMeetings();
-      const perMeeting = await Promise.all(meetings.map((m) => listOfferings(m.id)));
-      offerings = perMeeting.flat().sort((a, b) => b.created_at.localeCompare(a.created_at));
+      // Single query instead of one invoke per meeting (review O14).
+      offerings = (await listAllOfferings()).sort((a, b) => b.created_at.localeCompare(a.created_at));
     } catch (e) {
       error = String(e);
     }

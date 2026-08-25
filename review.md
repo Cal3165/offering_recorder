@@ -257,8 +257,10 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   now run via tokio::task::spawn_blocking.
 - [x] **O13.** Global search never reloads after login (`App.svelte:30-39`) — load reactively on user change.
   **FIXED 2026-08-24:** $effect tracks the session; clears data on logout, fetches on login.
-- [ ] **O14.** N+1 invokes on mount: `Checking.svelte:16-17` (use `list_all_offerings`);
+- [x] **O14.** N+1 invokes on mount: `Checking.svelte:16-17` (use `list_all_offerings`);
   `DonorDetail.load` sequential invokes → Promise.all.
+  **FIXED 2026-08-24:** Checking uses single list_all_offerings query; DonorDetail fetches declarations,
+  declaration amendments, and eligibility in parallel.
 - [ ] **O15.** Unbounded rendering: Audit table grows forever (`Audit.svelte:70-94`); Dashboard eagerly loads
   full audit log for 8 events. Paginate/bound.
 - [ ] **O16.** Timezone bugs from `toISOString().slice()`: `Banking.svelte:56-60`, `Reports.svelte:27-37`,
@@ -367,3 +369,5 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O10 fixed · LIKE wildcards escaped with ESCAPE clause in donor search
 - 2026-08-24 · O11 fixed · BOM stripped in normalize_header + service entry; header test
 - 2026-08-24 · O12 fixed · Argon2 + backup crypto moved to spawn_blocking
+- 2026-08-24 · O13 fixed · App search data loads reactively on session change
+- 2026-08-24 · O14 fixed · Checking uses list_all_offerings; DonorDetail parallel fetches

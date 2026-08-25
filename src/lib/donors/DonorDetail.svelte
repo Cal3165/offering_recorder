@@ -95,10 +95,15 @@
   }
 
   async function load() {
-    declarations = await listDeclarations(donor.id);
-    declarationAmendments = await listDeclarationAmendments(donor.id);
-    const s = await donorEligibilitySummary(donor.id);
-    hasActiveDecl = s.has_active_declaration;
+    // Independent fetches in parallel (review O14).
+    const [decls, declAmendments, summary] = await Promise.all([
+      listDeclarations(donor.id),
+      listDeclarationAmendments(donor.id),
+      donorEligibilitySummary(donor.id),
+    ]);
+    declarations = decls;
+    declarationAmendments = declAmendments;
+    hasActiveDecl = summary.has_active_declaration;
     prefillDeclarationForm();
   }
 
