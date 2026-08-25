@@ -233,7 +233,7 @@ async fn full_offering_workflow_end_to_end() {
         .unwrap();
 
     let current = services.offerings.get_offering(&counter, offering.id).await.unwrap().unwrap();
-    assert_eq!(current.donation_total().pence(), 3000);
+    assert_eq!(current.donation_total().unwrap().pence(), 3000);
     let issues = services.amendments.validate_offering(&counter, offering.id).await.unwrap();
     assert!(issues.is_empty(), "expected no validation issues: {issues:?}");
 
@@ -258,7 +258,7 @@ async fn full_offering_workflow_end_to_end() {
 
     let after_lock = services.offerings.get_offering(&checker, offering.id).await.unwrap().unwrap();
     assert_eq!(after_lock.status, OfferingStatus::Locked);
-    assert_eq!(after_lock.donation_total().pence(), 3000);
+    assert_eq!(after_lock.donation_total().unwrap().pence(), 3000);
 
     let gasds = services
         .offerings

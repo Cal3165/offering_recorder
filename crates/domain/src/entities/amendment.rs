@@ -556,7 +556,7 @@ mod tests {
             None,
         ).unwrap();
         original.add_donation(donation).unwrap();
-        assert_eq!(original.donation_total().pence(), 10000);
+        assert_eq!(original.donation_total().unwrap().pence(), 10000);
 
         // Amendment 1: replace £100 donation with £120 donation
         let original_donations: Vec<Uuid> = original.donations.iter().map(|d| d.id).collect();
@@ -620,18 +620,18 @@ mod tests {
 
         // Original → £100
         let original_state = reconstruction.at_index(0).unwrap();
-        assert_eq!(original_state.donation_total().pence(), 10000);
+        assert_eq!(original_state.donation_total().unwrap().pence(), 10000);
 
         // After amendment 1 → £120
         let after_a1 = reconstruction.at_index(1).unwrap();
-        assert_eq!(after_a1.donation_total().pence(), 12000);
+        assert_eq!(after_a1.donation_total().unwrap().pence(), 12000);
 
         // After amendment 2 → £115
         let after_a2 = reconstruction.at_index(2).unwrap();
-        assert_eq!(after_a2.donation_total().pence(), 11500);
+        assert_eq!(after_a2.donation_total().unwrap().pence(), 11500);
 
         // Current state is after amendment 2
-        assert_eq!(reconstruction.current().donation_total().pence(), 11500);
+        assert_eq!(reconstruction.current().donation_total().unwrap().pence(), 11500);
     }
 
     #[test]
@@ -649,7 +649,7 @@ mod tests {
         let change = AmendmentChange::AddDonation(donation);
         let new_offering = o.apply_change(&change);
         assert_eq!(new_offering.donations.len(), 1);
-        assert_eq!(new_offering.donation_total().pence(), 500);
+        assert_eq!(new_offering.donation_total().unwrap().pence(), 500);
     }
 
     #[test]
@@ -668,7 +668,7 @@ mod tests {
         let change = AmendmentChange::RemoveDonation(donation.id);
         let new_offering = o.apply_change(&change);
         assert_eq!(new_offering.donations.len(), 0);
-        assert!(new_offering.donation_total().is_zero());
+        assert!(new_offering.donation_total().unwrap().is_zero());
     }
 
     #[test]

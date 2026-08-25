@@ -231,8 +231,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** GiftAidDeclaration::is_complete_for_claim() (MultipleDonations requires name+
   address; Single captures details on the claim form); claim readiness warns when active declarations
   are incomplete. Unit test added.
-- [ ] **O7.** Money escape hatches: public `from_pence_unchecked`, saturating `Add` vs checked `add`;
+- [x] **O7.** Money escape hatches: public `from_pence_unchecked`, saturating `Add` vs checked `add`;
   `Offering::donation_total` uses unchecked i64 sum (`money.rs:22-24,131-145`; `offering.rs:246-249`).
+  **FIXED 2026-08-24:** cheque_total/donation_total now use checked Money::sum (DomainResult);
+  from_pence_unchecked documented as trusted-decoder-only with debug_assert; saturating Add documented
+  with pointer to checked add/sum. (pub(crate) was not viable — infra decoders legitimately use it
+  cross-crate on CHECK-constrained columns.)
 - [ ] **O8.** Declaration version allocation race — `max(version)+1` outside tx, no UNIQUE(donor_id, version)
   (`application/gift_aid.rs:104-113`, initial_schema.sql:39-48).
 - [ ] **O9.** Double-deposit race surfaces generic DB error instead of AlreadyDeposited — map constraint
@@ -346,3 +350,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O4 fixed · breakdown-carrying Cash donations evaluated per denomination; single-gift boundary tests use breakdown-less gifts
 - 2026-08-24 · O5 fixed · duplicate-offering + future-date guards on deposits; signed discrepancy direction · cargo test 319 pass
 - 2026-08-24 · O6 fixed · is_complete_for_claim() on declarations + readiness warning for incomplete ones · cargo test 320 pass
+- 2026-08-24 · O7 fixed · checked totals on Offering; escape hatches documented + debug_assert · cargo test 320 pass

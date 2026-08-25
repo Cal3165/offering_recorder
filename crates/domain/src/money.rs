@@ -19,7 +19,12 @@ impl Money {
         Ok(Money { pence })
     }
 
+    /// Trusted-construction path for internal decoders (e.g. reading INTEGER
+    /// pence columns that the schema CHECKs constrain to be non-negative).
+    /// Application/domain logic must use [`Money::from_pence`], which
+    /// rejects negatives (review O7).
     pub fn from_pence_unchecked(pence: i64) -> Self {
+        debug_assert!(pence >= 0, "from_pence_unchecked with negative value");
         Money { pence }
     }
 
@@ -131,6 +136,9 @@ impl Money {
 impl Add for Money {
     type Output = Self;
 
+    /// Saturating addition for ergonomics in aggregations. Accounting paths
+    /// that must detect overflow use [`Money::add`] / [`Money::sum`], which
+    /// return errors (review O7).
     fn add(self, rhs: Self) -> Self {
         self.saturating_add(&rhs)
     }
@@ -139,6 +147,8 @@ impl Add for Money {
 impl Add<&Money> for &Money {
     type Output = Money;
 
+    /// See the owned [`Add`] impl: saturating; prefer `add`/`sum` in
+    /// accounting paths.
     fn add(self, rhs: &Money) -> Money {
         self.saturating_add(rhs)
     }

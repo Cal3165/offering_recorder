@@ -233,19 +233,20 @@ impl Offering {
         self.cash_denominations.total()
     }
 
-    pub fn cheque_total(&self) -> Money {
-        let total: i64 = self
-            .donations
-            .iter()
-            .filter(|d| d.payment_method == crate::payment_method::PaymentMethod::Cheque)
-            .map(|d| d.amount.pence())
-            .sum();
-        Money::from_pence_unchecked(total)
+    /// Total of all cheque donations, using checked arithmetic: an overflow
+    /// is a data bug, not a value to saturate away (review O7).
+    pub fn cheque_total(&self) -> DomainResult<Money> {
+        Money::sum(
+            self.donations
+                .iter()
+                .filter(|d| d.payment_method == crate::payment_method::PaymentMethod::Cheque)
+                .map(|d| d.amount),
+        )
     }
 
-    pub fn donation_total(&self) -> Money {
-        let total: i64 = self.donations.iter().map(|d| d.amount.pence()).sum();
-        Money::from_pence_unchecked(total)
+    /// Total across all donations, using checked arithmetic (review O7).
+    pub fn donation_total(&self) -> DomainResult<Money> {
+        Money::sum(self.donations.iter().map(|d| d.amount))
     }
 }
 
@@ -449,7 +450,7 @@ mod tests {
             None,
         ).unwrap())
         .unwrap();
-        assert_eq!(o.donation_total().pence(), 500);
+        assert_eq!(o.donation_total().unwrap().pence(), 500);
     }
 
     #[test]

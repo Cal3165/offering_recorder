@@ -246,8 +246,8 @@ impl<'a> BankingService<'a> {
                 date: offering.created_at,
                 meeting_name,
                 cash_total: offering.cash_total().pence(),
-                cheque_total: offering.cheque_total().pence(),
-                total: offering.donation_total().pence(),
+                cheque_total: offering.cheque_total()?.pence(),
+                total: offering.donation_total()?.pence(),
             });
         }
         Ok(candidates)
