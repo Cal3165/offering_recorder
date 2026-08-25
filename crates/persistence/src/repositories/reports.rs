@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use offering_domain::address::Address;
 use offering_domain::donation_type::DonationType;
+use offering_domain::payment_method::PaymentMethod;
 use offering_domain::entities::*;
 use offering_domain::money::Money;
 use offering_domain::offering_number::OfferingNumber;
@@ -55,8 +56,8 @@ pub struct IifDonationRow {
     pub offering_number: String,
     pub donor_name: Option<String>,
     pub amount_pence: i64,
-    pub donation_type: String,
-    pub payment_method: String,
+    pub donation_type: DonationType,
+    pub payment_method: PaymentMethod,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -78,10 +78,13 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   service call sites snapshot updated_at at load. Repo tests prove stale write ⇒ Conflict and fresh
   write ⇒ ok. NOTE: single-row Amendment/DeclarationAmendment updates still blind (bounded blast
   radius, state-machine guarded) — tracked as O27. 304 tests pass.
-- [ ] **R5. Inconsistent report boundaries + raw JSON enums in IIF memos**
+- [x] **R5. Inconsistent report boundaries + raw JSON enums in IIF memos**
   `sqlite/reports.rs:122,169` use `<=` against exclusive bound (bookkeeping correctly `<` at :84) ⇒
   double-counting at next-day midnight. Also :195-196 feed JSON-quoted enums into IIF memos —
   deserialize like bookkeeping does.
+  **FIXED 2026-08-24:** donor_report and iif_donation_export now use `<`; IifDonationRow fields typed as
+  DonationType/PaymentMethod (deserialized via from_json); memo assertion added to test suite.
+  305 tests pass.
 - [ ] **R6. Offering numbers can collide after deletion**
   No UNIQUE constraint (initial_schema.sql:50-61); allocation uses COUNT(*)+1 (`sqlite/offerings.rs:217-224`).
   Add migration with UNIQUE(meeting_id, offering_number); allocate from MAX.
@@ -250,3 +253,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R2 fixed · apply_amendment guards (approved/identity/removal-exists) + DomainResult propagation; 3 guard tests · cargo test 301 pass
 - 2026-08-24 · R3 fixed · page_binds() helper: None ⇒ unbounded (was silent LIMIT 1000) at 11 repo sites; 1050-row regression test · cargo test 302 pass
 - 2026-08-24 · R4 fixed · optimistic concurrency on Offering aggregate saves (expected_updated_at + Conflict); stale-write regression tests; amendment repos deferred to new O27 · cargo test 304 pass
+- 2026-08-24 · R5 fixed · donor/IIF report boundaries unified to `<`; IifDonationRow typed enums, unquoted IIF memos + assertion · cargo test 305 pass

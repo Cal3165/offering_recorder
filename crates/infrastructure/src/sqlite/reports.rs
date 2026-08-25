@@ -123,7 +123,7 @@ impl ReportRepository for SqliteReportRepository {
                     MAX(CASE WHEN {0} THEN 1 ELSE 0 END) AS eligible
              FROM donors JOIN donations d ON d.donor_id = donors.id
              JOIN offerings o ON o.id = d.offering_id
-             WHERE o.created_at >= ? AND o.created_at <= ?
+             WHERE o.created_at >= ? AND o.created_at < ?
              GROUP BY donors.id ORDER BY donors.last_name, donors.first_name",
             declaration_covers_donation_sql()
         );
@@ -169,7 +169,7 @@ impl ReportRepository for SqliteReportRepository {
                    FROM donations d
                    JOIN offerings o ON o.id = d.offering_id
                    LEFT JOIN donors donor ON donor.id = d.donor_id
-                   WHERE o.created_at >= ? AND o.created_at <= ?
+                   WHERE o.created_at >= ? AND o.created_at < ?
                    ORDER BY o.created_at, d.created_at";
 
         let rows = sqlx::query(sql)
@@ -195,8 +195,10 @@ impl ReportRepository for SqliteReportRepository {
                 offering_number: row.get("offering_number"),
                 donor_name,
                 amount_pence: row.get("amount_pence"),
-                donation_type: row.get("donation_type"),
-                payment_method: row.get("payment_method"),
+                // Columns store serde JSON (e.g. `"Tithe"` including quotes);
+                // deserialize so IIF memos render clean enum names (review R5).
+                donation_type: from_json(&row.get::<String, _>("donation_type"))?,
+                payment_method: from_json(&row.get::<String, _>("payment_method"))?,
             });
         }
         Ok(out)

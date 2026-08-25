@@ -1,5 +1,7 @@
 use offering_domain::entities::user::User;
 use offering_domain::gasds::{GasdsCalculator, GasdsConfig, GasdsResult};
+use offering_domain::donation_type::DonationType;
+use offering_domain::payment_method::PaymentMethod;
 use offering_persistence::{
     AuditRepository, BankDepositRepository, BookkeepingEntry, DonorReportEntry, GdprReport,
     GiftAidRepository, GiftAidReportEntry, IifDonationRow, MeetingRepository, OfferingRepository,
@@ -277,8 +279,8 @@ mod tests {
             offering_number: "2026/06/0001".into(),
             donor_name: donor.map(|s| s.to_string()),
             amount_pence,
-            donation_type: "Tithe".into(),
-            payment_method: "Cash".into(),
+            donation_type: DonationType::Tithe,
+            payment_method: PaymentMethod::Cash,
         }
     }
 
@@ -297,6 +299,10 @@ mod tests {
         assert!(out.contains("Anonymous"));
         assert!(out.contains("06/01/2026"));
         assert!(out.contains("06/02/2026"));
+        // Enum names must render unquoted in the memo (review R5): the raw
+        // column values are serde JSON like `"Tithe"` including quotes.
+        assert!(out.contains("- Tithe (Cash)"));
+        assert!(!out.contains("\"Tithe\""));
         let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("SPL\t")).collect();
         assert_eq!(lines.len(), 4);
         let totals: f64 = lines
