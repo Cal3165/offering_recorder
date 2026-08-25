@@ -1431,7 +1431,7 @@
         {#if amendSignFor}
           <AmendmentSignModal
             {amendSignKind}
-            {amendSignGuestName}
+            bind:amendSignGuestName
             {user}
             onConfirm={doAmendSign}
             onClose={() => (amendSignFor = null)}

@@ -132,9 +132,11 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 
 *Frontend correctness*
 
-- [ ] **R11. Guest signer name never reaches parent (mis-attributed signature)**
+- [x] **R11. Guest signer name never reaches parent (mis-attributed signature)**
   `AmendmentSignModal.svelte:27` binds plain non-`$bindable` prop; parent stays `""`
   (`OfferingEntry.svelte:403`). Use `$bindable` or ReviewModal's callback pattern. Audit-integrity bug.
+  **FIXED 2026-08-24:** prop is now `$bindable("")` and the parent uses `bind:`; guest names typed into
+  the amendment-sign modal reach doAmendSign and are recorded on the signature. svelte-check 0 errors.
 - [ ] **R12. Autosave/manual-save race loses denomination edits**
   `OfferingEntry.svelte:273-278` clears dirty then returns if saving; autosaveCash lacks in-flight guard.
   Single-flight queue (pendingSave flag; never clear dirty before dispatch).
@@ -284,3 +286,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R8 fixed · script-src 'unsafe-inline' removed from CSP (codegen hashes cover SvelteKit inline bootstrap; dev unaffected) · npm build ok
 - 2026-08-24 · R9 fixed · ViewPermission enforced on 11 read endpoints across meetings/offerings/amendments/gift_aid/gasds/banking; denial regression test · cargo test 307 pass
 - 2026-08-24 · R10 fixed · backup staging TempFileGuard + accurate restore audit events (start/complete/fail) + replace_draining pool swap + panic-safe RestoreGuard with session ordering + backup_path confined to backups dir; Windows rename caveat → O28 · cargo test 308 pass
+- 2026-08-24 · R11 fixed · AmendmentSignModal guest name now $bindable + parent bind: so signatures record the typed guest identity · svelte-check 0 errors

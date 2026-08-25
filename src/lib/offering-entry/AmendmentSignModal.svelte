@@ -3,13 +3,13 @@
 
   let {
     amendSignKind,
-    amendSignGuestName,
+    amendSignGuestName = $bindable(""),
     user,
     onConfirm,
     onClose,
   }: {
     amendSignKind: "counter" | "checker";
-    amendSignGuestName: string;
+    amendSignGuestName?: string;
     user: User;
     onConfirm: () => void;
     onClose: () => void;
