@@ -117,12 +117,18 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   internal-only, caller already guarded. Command call sites pass &actor. Denial regression test added.
   NOTE: reconstruction/list_active_meetings/is_donor_eligible currently have no command callers —
   guarded anyway; candidates for dead-code removal decision (see R17 pattern). 307 tests pass.
-- [ ] **R10. Backup/restore hardening (bundle)**
+- [x] **R10. Backup/restore hardening (bundle)**
   - plaintext DB survives encryption failure (`infrastructure/backup.rs:144-147`) — use TempFileGuard;
   - failed restores audited as completed (`application/backup.rs:89-99`) — record start/success/failure separately;
   - old pool not drained post-swap — `.close().await` before returning;
   - restoring flag not panic-safe + session-clear ordering window (`commands/backups.rs:73-104`) — RAII guard;
   - caller-supplied `backup_path` unrestricted — confine to app backups dir.
+  **FIXED 2026-08-24:** VACUUM INTO staged via TempFileGuard (rename-promote for unencrypted, encrypt+drop
+  for encrypted; no-plaintext regression test); audit records started/completed/FAILED accurately
+  (completion written through fresh pool into restored DB); SharedPool::replace_draining closes displaced
+  pool; RestoreGuard RAII clears flag even on unwind, session cleared while flag held, released last;
+  restore path canonicalized and required to live under app backups dir. 308 tests pass.
+  Remaining (documented): Windows rename-over-open-file semantics for the DB swap — see O23/O28.
 
 *Frontend correctness*
 
@@ -213,6 +219,9 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 - [ ] **O27.** (follow-up from R4) Apply the same expected_updated_at conditional-update guard to
   AmendmentRepository::update and DeclarationAmendmentRepository::update (single-row status
   transitions; lower severity than the offering aggregate but same TOCTOU pattern).
+- [ ] **O28.** (follow-up from R10) Restore promotes the restored file by `fs::rename` over a database
+  that may still be open by a displaced pool connection — safe on POSIX, fails on Windows. Stage to
+  temp + swap under a lock or document Windows behavior explicitly.
 
 ## Nit (batch when convenient)
 
@@ -274,3 +283,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R7 fixed · donation INSERT + denomination rows in one transaction; breakdown roundtrip test · cargo test 306 pass
 - 2026-08-24 · R8 fixed · script-src 'unsafe-inline' removed from CSP (codegen hashes cover SvelteKit inline bootstrap; dev unaffected) · npm build ok
 - 2026-08-24 · R9 fixed · ViewPermission enforced on 11 read endpoints across meetings/offerings/amendments/gift_aid/gasds/banking; denial regression test · cargo test 307 pass
+- 2026-08-24 · R10 fixed · backup staging TempFileGuard + accurate restore audit events (start/complete/fail) + replace_draining pool swap + panic-safe RestoreGuard with session ordering + backup_path confined to backups dir; Windows rename caveat → O28 · cargo test 308 pass

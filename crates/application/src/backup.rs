@@ -83,9 +83,11 @@ impl<'a> BackupService<'a> {
         if !can_restore(actor) {
             return Err(unauthorized("restore backups"));
         }
-        // Record the audit event before the storage layer swaps the database
-        // file (and the connection pool): once the restored file is in place
-        // any write through the displaced pool fails with SQLITE_READONLY.
+        // The start event must be recorded before the storage layer swaps the
+        // database file and pool: afterwards, writes land in the restored
+        // database rather than the caller's. A failed restore must not leave a
+        // trail claiming a completed restore (review R10), so completion is
+        // recorded only on success and failure is recorded best-effort.
         self.audit
             .record(
                 actor,
@@ -94,12 +96,48 @@ impl<'a> BackupService<'a> {
                 None,
                 None,
                 None,
-                Some(format!("restored database from {}", backup_path.display())),
+                Some(format!("database restore started from {}", backup_path.display())),
             )
             .await?;
-        self.storage
+        match self
+            .storage
             .restore_backup_file(db_path, backup_path, safety_dir, passphrase)
-            .await?;
-        Ok(())
+            .await
+        {
+            Ok(()) => {
+                // Written through the fresh pool: lands in the restored
+                // database's audit log.
+                self.audit
+                    .record(
+                        actor,
+                        AuditAction::Restore,
+                        "Backup",
+                        None,
+                        None,
+                        None,
+                        Some(format!(
+                            "database restore completed from {}",
+                            backup_path.display()
+                        )),
+                    )
+                    .await?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self
+                    .audit
+                    .record(
+                        actor,
+                        AuditAction::Restore,
+                        "Backup",
+                        None,
+                        None,
+                        None,
+                        Some(format!("database restore FAILED: {e}")),
+                    )
+                    .await;
+                Err(e)
+            }
+        }
     }
 }

@@ -22,6 +22,22 @@ impl SharedPool {
         self.inner.read().expect("pool lock poisoned").clone()
     }
 
+    /// Install a new pool, draining the displaced one.
+    ///
+    /// Connections already checked out keep pointing at the old database
+    /// file: on Linux they would read stale data and their writes would land
+    /// in the unlinked inode (silently lost). Closing the old pool after the
+    /// swap drains in-flight connections so queries either complete on the
+    /// old file before it is replaced or run against the restored one
+    /// (review R10).
+    pub async fn replace_draining(&self, pool: SqlitePool) {
+        let old = {
+            let mut guard = self.inner.write().expect("pool lock poisoned");
+            std::mem::replace(&mut *guard, pool)
+        };
+        old.close().await;
+    }
+
     pub fn replace(&self, pool: SqlitePool) {
         *self
             .inner

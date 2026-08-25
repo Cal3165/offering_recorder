@@ -75,7 +75,7 @@ impl offering_application::ports::BackupStorage for SqliteBackupStorage {
             .await
             .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))?;
 
-        self.pool.replace(pool);
+        self.pool.replace_draining(pool).await;
         Ok(())
     }
 }
@@ -134,16 +134,25 @@ impl BackupManager {
         } else {
             backup_dir.join(format!("backup_{timestamp}.sqlite.enc"))
         };
-        let plain_str = plain_path.to_string_lossy().to_string();
 
-        sqlx::query(&format!("VACUUM INTO '{}'", plain_str.replace('\'', "''")))
+        // VACUUM INTO writes the full plaintext database (donor PII + password
+        // hashes). Stage it through a TempFileGuard so an encryption failure,
+        // panic, or crash between write and encrypt never leaves the plaintext
+        // on disk; on success it is promoted by rename or encrypted and the
+        // guard removes the plaintext (review R10).
+        let mut staging = TempFileGuard::new(backup_dir, "backup_staging")?;
+        let staging_str = staging.path().to_string_lossy().to_string();
+
+        sqlx::query(&format!("VACUUM INTO '{}'", staging_str.replace('\'', "''")))
             .execute(pool)
             .await
             .map_err(InfraError::Database)?;
 
         if !passphrase.trim().is_empty() {
-            crypto::encrypt_file(&plain_path, &final_path, passphrase)?;
-            fs::remove_file(&plain_path)?;
+            crypto::encrypt_file(staging.path(), &final_path, passphrase)?;
+        } else {
+            fs::rename(staging.path(), &plain_path)?;
+            staging.keep(); // promoted into place; do not delete on drop
         }
 
         let size = fs::metadata(&final_path)?.len();
@@ -298,6 +307,35 @@ mod tests {
             .unwrap();
         assert!(BackupManager::validate_backup(std::path::Path::new(&path), "wrong").await.is_err());
         assert!(BackupManager::validate_backup(std::path::Path::new(&path), "").await.is_err());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn encrypted_backup_leaves_no_plaintext_behind() {
+        // Regression (review R10): the VACUUM INTO plaintext used to be
+        // written to the final unencrypted name and deleted only after
+        // successful encryption.
+        let dir = temp_dir("no_plaintext");
+        let db_path = dir.join("app.sqlite");
+        let pool = connect(db_path.to_str().unwrap()).await.unwrap();
+
+        let (path, _) = BackupManager::create_backup(&pool, &dir, "hunter2backup").await.unwrap();
+        assert!(crate::crypto::is_encrypted(std::path::Path::new(&path)));
+
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| {
+                (name.starts_with("backup_staging") || name.starts_with("backup_2"))
+                    && !name.ends_with(".enc")
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "plaintext database copies must not survive an encrypted backup: {leftovers:?}"
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }

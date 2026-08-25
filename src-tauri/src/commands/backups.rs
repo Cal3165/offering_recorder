@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 use crate::commands::AppState;
@@ -27,6 +28,21 @@ pub async fn create_backup(
 pub async fn list_backups(state: State<'_, AppState>) -> Result<Vec<Backup>, String> {
     let actor = with_actor!(state);
     state.services.backups.list_backups(&actor).await.map_err(|e| e.to_string())
+}
+
+/// RAII guard for the `restoring` flag: cleared on drop, so a panic between
+/// claim and release cannot leave every command locked out until restart
+/// (review R10).
+struct RestoreGuard<'a> {
+    flag: &'a Mutex<bool>,
+}
+
+impl Drop for RestoreGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.flag.lock() {
+            *guard = false;
+        }
+    }
 }
 
 #[tauri::command]
@@ -59,7 +75,21 @@ pub async fn restore_backup(
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let db_path = app_data.join("offering_recorder.sqlite");
     let safety_dir = app_data.join("pre_restore");
-    let backup_path = std::path::PathBuf::from(&backup_path);
+
+    // Only backups created by this app (the app's backups directory) may be
+    // restored; an arbitrary caller-supplied path must not be read and
+    // decrypted into place (review R10).
+    let backups_dir = app_data.join("backups");
+    let candidate = std::path::PathBuf::from(&backup_path);
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|e| format!("backup file not found: {e}"))?;
+    let allowed_dir = backups_dir
+        .canonicalize()
+        .map_err(|e| format!("backups directory not available: {e}"))?;
+    if !resolved.starts_with(&allowed_dir) {
+        return Err("backup file is outside the application's backups directory".into());
+    }
 
     // Atomically claim the restore lock: check-and-set in a single lock
     // acquisition so two concurrent `restore_backup` calls cannot both pass
@@ -72,18 +102,19 @@ pub async fn restore_backup(
         }
         *guard = true;
     }
+    let _restore_guard = RestoreGuard { flag: &state.restoring };
 
     let outcome = async {
         state
             .services
             .backups
-            .validate_backup(&actor, &backup_path, &passphrase)
+            .validate_backup(&actor, &resolved, &passphrase)
             .await
             .map_err(|e| e.to_string())?;
         state
             .services
             .backups
-            .restore_backup(&actor, &db_path, &backup_path, &safety_dir, &passphrase)
+            .restore_backup(&actor, &db_path, &resolved, &safety_dir, &passphrase)
             .await
             .map_err(|e| e.to_string())?;
         let store_path = db_path.to_str().ok_or("db path is not valid UTF-8")?;
@@ -93,14 +124,18 @@ pub async fn restore_backup(
         Ok::<(), String>(())
     }
     .await;
-    // Always release the flag so the app stays usable even if the restore failed.
-    *state.restoring.lock().map_err(|e| e.to_string())? = false;
-    outcome?;
 
-    // The restored database may belong to a different organisation or have a
-    // different user table; the in-memory session user must not survive the
-    // swap, otherwise the old identity (with its roles) could be used against
-    // the new data. Force a re-login.
-    *state.session.lock().unwrap() = None;
-    Ok(())
+    if outcome.is_ok() {
+        // The restored database may belong to a different organisation or have a
+        // different user table; the in-memory session user must not survive the
+        // swap, otherwise the old identity (with its roles) could be used against
+        // the new data. Force a re-login. Cleared while the restoring flag is
+        // still held so no command can slip through with a stale identity
+        // between release and clear (review R10).
+        *state.session.lock().unwrap() = None;
+    }
+    // On failure the database was not swapped, so the existing session stays
+    // valid; the flag is released by dropping `_restore_guard` last.
+    drop(_restore_guard);
+    outcome
 }
