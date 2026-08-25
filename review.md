@@ -169,10 +169,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   file-based modules.
   **FIXED 2026-08-24:** dead mod.rs deleted; the inline declaration in lib.rs is the single source of
   module structure. All suites green.
-- [ ] **R17. Dead frontend files**
+- [x] **R17. Dead frontend files**
   Verified unreferenced: `money-helpers.ts`, `AddDonationDialog.svelte` (legacy syntax; latent money bug
   `"10.5"` ⇒ £1.05), unwired `repaint.ts` (compositor workaround hack — install where needed or delete).
   Confirm then remove.
+  **FIXED 2026-08-24:** re-verified zero references, then removed all three (repaint.ts was untracked).
+  svelte-check now 0 errors AND 0 warnings (all 15 warnings originated in AddDonationDialog.svelte).
 - [ ] **R18. `OfferingEntry.svelte` still 1474 lines (> ~1000 boundary)**
   Next extractions: donor picker/new-donor card (~lines 615-821, 1081-1160), amendment panel (~1359-1441),
   collection-start flow. Decompose before adding features.
@@ -305,3 +307,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R14 fixed · Backups: newest-completed for overdue logic; prompt Cancel aborts instead of creating unencrypted backups / failing decrypt
 - 2026-08-24 · R15 fixed · set_active refuses self-deactivation and last-active-admin deactivation (defense-in-depth); regression test · cargo test 309 pass
 - 2026-08-24 · R16 fixed · deleted never-compiled entities/mod.rs with broken CashDenomination re-export
+- 2026-08-24 · R17 fixed · removed money-helpers.ts, AddDonationDialog.svelte, repaint.ts after zero-reference verification · svelte-check 0 errors / 0 warnings
