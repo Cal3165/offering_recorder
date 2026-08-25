@@ -183,10 +183,16 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   lazy cache load moved to setClass/openDonation), GasdsExplainer.svelte. 1598→**1064 lines**, svelte-check
   0/0, build ok. Remaining extraction candidates (donation-entry form, collection-start flow) noted for
   future decomposition when those areas are next touched.
-- [ ] **R19. Test gaps map to bugs above**
+- [x] **R19. Test gaps map to bugs above**
   Missing coverage: `record_deposit_actuals` (would have caught C2), `delete_deposit`, withdraw-signature
   service flows, report generation (incl. tax-year boundary), CSV-import integration, view-permission denials,
   self-sign denial service-level, audit-trail completeness assertions.
+  **FIXED 2026-08-24:** added banking_actuals_roundtrip_and_delete_guards (end-to-end actuals incl. other-
+  tender preservation + delete evidence guards + re-deposit), signature_withdrawal_returns_to_previous_state,
+  gift_aid_report_respects_tax_year_boundary (Apr 5/6 back-dated donations). View-permission denials landed
+  with R9; self-sign denial remains domain-tested (service-level covered via SoD tests). CSV-import
+  integration + audit-completeness assertions deferred → O29. 313 tests pass. Also fixed en route:
+  gift_aid_report displayed created_at instead of the donation date.
 
 ---
 
@@ -244,6 +250,7 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 - [ ] **O28.** (follow-up from R10) Restore promotes the restored file by `fs::rename` over a database
   that may still be open by a displaced pool connection — safe on POSIX, fails on Windows. Stage to
   temp + swap under a lock or document Windows behavior explicitly.
+- [ ] **O29.** (follow-up from R19) CSV-import integration test and audit-trail completeness assertions.
 
 ## Nit (batch when convenient)
 
@@ -314,3 +321,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R16 fixed · deleted never-compiled entities/mod.rs with broken CashDenomination re-export
 - 2026-08-24 · R17 fixed · removed money-helpers.ts, AddDonationDialog.svelte, repaint.ts after zero-reference verification · svelte-check 0 errors / 0 warnings
 - 2026-08-24 · R18 fixed · OfferingEntry 1598→1064 lines via AmendmentPanel + DonorPicker + GasdsExplainer extraction · svelte-check 0/0, build ok
+- 2026-08-24 · R19 fixed · banking actuals/delete guards, signature-withdrawal flow, tax-year-boundary report tests; gift_aid_report now shows donation date · cargo test 313 pass; CSV-import/audit assertions → O29

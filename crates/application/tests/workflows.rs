@@ -1956,3 +1956,272 @@ async fn cannot_deactivate_self_or_last_active_admin() {
     // admin. It protects future callers (bulk operations, new commands) from
     // reintroducing the lockout.
 }
+
+#[tokio::test]
+async fn banking_actuals_roundtrip_and_delete_guards() {
+    // Regression (review R19/C2): record_deposit_actuals previously wiped
+    // per-item non-cash amounts, and delete_deposit's evidence guard ignored
+    // actual_other.
+    let services = build_services().await;
+    let admin = services.auth.bootstrap("admin", "pw", "Admin").await.unwrap();
+
+    let meeting = services.meetings.create_meeting(&admin, "BankTest", 0, "10:00", None).await.unwrap();
+    let offering = services.offerings.create_offering(&admin, meeting.id, None).await.unwrap();
+
+    // Loose cash (provides the cash bucket with a matching breakdown)…
+    let mut ct = offering_domain::entities::cash_denomination::CashTotal::new();
+    ct.add(offering_domain::entities::cash_denomination::Denomination::Note1000p, 2);
+    services
+        .offerings
+        .add_donation(
+            &admin,
+            offering.id,
+            AddDonationInput {
+                donor_id: None,
+                amount_pence: 2000,
+                donation_type: DonationType::Offering,
+                payment_method: PaymentMethod::Cash,
+                classification: DonationClassification::LooseCash,
+                reference: None,
+                cash_denominations: Some(ct.clone()),
+                date: None,
+            },
+        )
+        .await
+        .unwrap();
+    services.offerings.set_cash_denominations(&admin, offering.id, ct).await.unwrap();
+    // …plus cheque and bank transfer donations for the other buckets.
+    for (method, pence) in [(PaymentMethod::Cheque, 3000), (PaymentMethod::BankTransfer, 1500)] {
+        services
+            .offerings
+            .add_donation(
+                &admin,
+                offering.id,
+                AddDonationInput {
+                    donor_id: None,
+                    amount_pence: pence,
+                    donation_type: DonationType::Offering,
+                    payment_method: method,
+                    classification: DonationClassification::Anonymous,
+                    reference: None,
+                    cash_denominations: None,
+                    date: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    services.offerings.set_attendance(&admin, offering.id, 42).await.unwrap();
+    lock_offering(&services, &admin, offering.id).await;
+
+    let deposit = services
+        .banking
+        .create_deposit(&admin, vec![offering.id], chrono::Utc::now(), Some("ACT-1".into()))
+        .await
+        .unwrap();
+    assert_eq!(deposit.items[0].other_amount.pence(), 1500);
+
+    // Record actuals matching expectations exactly.
+    let updated = services
+        .banking
+        .record_actuals(&admin, deposit.id, 2000, 3000, 1500)
+        .await
+        .unwrap();
+    assert!(!updated.has_discrepancy());
+
+    let reloaded = services.banking.list_deposits(&admin).await.unwrap();
+    let stored = reloaded.iter().find(|d| d.id == deposit.id).unwrap();
+    // The C2 bug zeroed this on update.
+    assert_eq!(stored.items[0].other_amount.pence(), 1500);
+    assert_eq!(stored.expected_other().pence(), 1500);
+
+    // A deposit with recorded actuals is evidence and cannot be deleted.
+    assert!(services.banking.delete_deposit(&admin, deposit.id).await.is_err());
+
+    // An un-reconciled deposit can be deleted, freeing its offering.
+    let offering2 = services.offerings.create_offering(&admin, meeting.id, None).await.unwrap();
+    services
+        .offerings
+        .add_donation(
+            &admin,
+            offering2.id,
+            AddDonationInput {
+                donor_id: None,
+                amount_pence: 1000,
+                donation_type: DonationType::Offering,
+                payment_method: PaymentMethod::Cash,
+                classification: DonationClassification::Anonymous,
+                reference: None,
+                cash_denominations: Some({
+                    let mut ct2 = offering_domain::entities::cash_denomination::CashTotal::new();
+                    ct2.add(offering_domain::entities::cash_denomination::Denomination::Coin100p, 10);
+                    ct2
+                }),
+                date: None,
+            },
+        )
+        .await
+        .unwrap();
+    services.offerings.set_cash_denominations(&admin, offering2.id, {
+        let mut ct2 = offering_domain::entities::cash_denomination::CashTotal::new();
+        ct2.add(offering_domain::entities::cash_denomination::Denomination::Coin100p, 10);
+        ct2
+    }).await.unwrap();
+    services.offerings.set_attendance(&admin, offering2.id, 5).await.unwrap();
+    lock_offering(&services, &admin, offering2.id).await;
+    let deposit2 = services
+        .banking
+        .create_deposit(&admin, vec![offering2.id], chrono::Utc::now(), None)
+        .await
+        .unwrap();
+    services.banking.delete_deposit(&admin, deposit2.id).await.unwrap();
+    let again = services
+        .banking
+        .create_deposit(&admin, vec![offering2.id], chrono::Utc::now(), None)
+        .await;
+    assert!(again.is_ok(), "deleting an unreconciled deposit frees the offering");
+}
+
+#[tokio::test]
+async fn signature_withdrawal_returns_to_previous_state() {
+    let services = build_services().await;
+    let admin = services.auth.bootstrap("admin", "pw", "Admin").await.unwrap();
+    let counter = services
+        .auth
+        .create_user(&admin, "wd_counter", "pw", "WD Counter", None, RoleSet::new(vec![Role::Counter]))
+        .await
+        .unwrap();
+    let checker = services
+        .auth
+        .create_user(&admin, "wd_checker", "pw", "WD Checker", None, RoleSet::new(vec![Role::Checker]))
+        .await
+        .unwrap();
+
+    let meeting = services.meetings.create_meeting(&admin, "Withdraw", 0, "10:00", None).await.unwrap();
+    let offering = services.offerings.create_offering(&admin, meeting.id, None).await.unwrap();
+    services
+        .offerings
+        .add_donation(
+            &admin,
+            offering.id,
+            AddDonationInput {
+                donor_id: None,
+                amount_pence: 1000,
+                donation_type: DonationType::Offering,
+                payment_method: PaymentMethod::Cheque,
+                classification: DonationClassification::Anonymous,
+                reference: None,
+                cash_denominations: None,
+                date: None,
+            },
+        )
+        .await
+        .unwrap();
+    services.offerings.set_attendance(&admin, offering.id, 10).await.unwrap();
+
+    use offering_domain::entities::offering::OfferingStatus;
+    services.offerings.counter_sign(&counter, offering.id, None).await.unwrap();
+    let signed = services.offerings.get_stored_offering(&admin, offering.id).await.unwrap().unwrap();
+    assert_eq!(signed.status, OfferingStatus::CounterSigned);
+
+    services.offerings.withdraw_signature(&counter, offering.id).await.unwrap();
+    let draft = services.offerings.get_stored_offering(&admin, offering.id).await.unwrap().unwrap();
+    assert_eq!(draft.status, OfferingStatus::Draft);
+    assert!(draft.counter_signature.is_none());
+
+    // The withdrawn signer may sign again.
+    services.offerings.counter_sign(&counter, offering.id, None).await.unwrap();
+    services.offerings.checker_sign(&checker, offering.id, None).await.unwrap();
+    let checked = services.offerings.get_stored_offering(&admin, offering.id).await.unwrap().unwrap();
+    assert_eq!(checked.status, OfferingStatus::CheckerSigned);
+    services.offerings.withdraw_signature(&checker, offering.id).await.unwrap();
+    let back = services.offerings.get_stored_offering(&admin, offering.id).await.unwrap().unwrap();
+    assert_eq!(back.status, OfferingStatus::CounterSigned);
+}
+
+#[tokio::test]
+async fn gift_aid_report_respects_tax_year_boundary() {
+    // Regression (review R19): reports must place donations in the correct UK
+    // tax year (Apr 6 boundary). AddDonationInput.date allows precise control.
+    use offering_domain::tax_year::TaxYear;
+    let services = build_services().await;
+    let admin = services.auth.bootstrap("admin", "pw", "Admin").await.unwrap();
+
+    let donor = services
+        .donors
+        .create_donor(
+            &admin,
+            CreateDonorInput {
+                first_name: "Boundary".into(),
+                last_name: "Case".into(),
+                preferred_name: None,
+                donor_type: offering_domain::entities::donor::DonorType::Uk,
+                address_line1: Some("1 Boundary Rd".into()),
+                address_line2: None,
+                address_line3: None,
+                postcode: Some("BD1 1BD".into()),
+                email: None,
+                phone: None,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    let details = offering_application::gift_aid::NewDeclarationDetails {
+        declaration_type: offering_domain::entities::gift_aid::DeclarationType::MultipleDonations,
+        effective_from: chrono::Utc::now() - chrono::Duration::days(1500),
+        charity_name: None,
+        donor_full_name: Some("Boundary Case".into()),
+        donor_address: Some(
+            offering_domain::address::Address::new(
+                "1 Boundary Rd".into(),
+                None,
+                None,
+                offering_domain::postcode::Postcode::new("BD1 1BD").unwrap(),
+            )
+            .unwrap(),
+        ),
+        declaration_method: offering_domain::entities::gift_aid::DeclarationMethod::Written,
+        received_at: None,
+        declaration_text_version: None,
+    };
+    services.gift_aid.create_declaration(&admin, donor.id, details).await.unwrap();
+
+    let meeting = services.meetings.create_meeting(&admin, "Boundary", 0, "10:00", None).await.unwrap();
+    let make_donation = |_offering_id: uuid::Uuid, day: u32, month: u32, year: i32| AddDonationInput {
+        donor_id: Some(donor.id),
+        amount_pence: 1000,
+        donation_type: DonationType::Tithe,
+        payment_method: PaymentMethod::Cheque,
+        classification: DonationClassification::Named,
+        reference: None,
+        cash_denominations: None,
+        date: Some(chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()),
+    };
+
+    // A donation on 5 April belongs to the tax year that ENDS that day; one on
+    // 6 April belongs to the next year. Pick years relative to today so both
+    // fall inside claimable history.
+    let this_year = current_tax_year().end_year();
+    let prev_apr5 = chrono::NaiveDate::from_ymd_opt(this_year - 1, 4, 5).unwrap();
+    let cur_apr6 = chrono::NaiveDate::from_ymd_opt(this_year, 4, 6).unwrap();
+
+    let o1 = services.offerings.create_offering(&admin, meeting.id, None).await.unwrap();
+    services.offerings.add_donation(&admin, o1.id, make_donation(o1.id, 5, 4, this_year - 1)).await.unwrap();
+    let o2 = services.offerings.create_offering(&admin, meeting.id, None).await.unwrap();
+    services.offerings.add_donation(&admin, o2.id, make_donation(o2.id, 6, 4, this_year)).await.unwrap();
+
+    let ty_prev = TaxYear::from_date(prev_apr5);
+    let ty_cur = TaxYear::from_date(cur_apr6);
+
+    let prev_entries = services.reports.gift_aid_report(&admin, ty_prev).await.unwrap();
+    let cur_entries = services.reports.gift_aid_report(&admin, ty_cur).await.unwrap();
+
+    let prev_for_donor: Vec<_> = prev_entries.iter().filter(|e| e.donor_id == donor.id).collect();
+    let cur_for_donor: Vec<_> = cur_entries.iter().filter(|e| e.donor_id == donor.id).collect();
+    assert_eq!(prev_for_donor.len(), 1, "exactly one donation in the year ending Apr 5: {prev_for_donor:?}");
+    assert_eq!(prev_for_donor[0].donation_date, prev_apr5);
+    assert_eq!(cur_for_donor.len(), 1, "exactly one donation in the year starting Apr 6: {cur_for_donor:?}");
+    assert_eq!(cur_for_donor[0].donation_date, cur_apr6);
+}
+

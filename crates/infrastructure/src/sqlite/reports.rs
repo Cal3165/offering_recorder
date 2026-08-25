@@ -210,7 +210,7 @@ impl ReportRepository for SqliteReportRepository {
 
         let sql = format!(
             "SELECT donors.id, donors.last_name, donors.first_name,
-                    d.created_at AS donation_date, d.amount_pence,
+                    d.date AS donation_date, d.amount_pence,
                     COALESCE(ga.donor_full_name, donors.last_name) AS donor_full_name,
                     COALESCE(ga.donor_address_line1, donors.address_line1) AS address_line1,
                     COALESCE(ga.donor_address_line2, donors.address_line2) AS address_line2,
@@ -241,12 +241,12 @@ impl ReportRepository for SqliteReportRepository {
         for row in rows {
             let snapshot_name: Option<String> = row.get("donor_full_name");
             let last: String = row.get("last_name");
-            let donation_date: chrono::DateTime<chrono::Utc> = row.get("donation_date");
+            let donation_date: chrono::NaiveDate = row.get("donation_date");
             entries.push(GiftAidReportEntry {
                 donor_id: row.get("id"),
                 donor_name: snapshot_name.unwrap_or(last),
                 donor_address: row_to_address(&row),
-                donation_date: donation_date.date_naive(),
+                donation_date,
                 amount: Money::from_pence_unchecked(row.get("amount_pence")),
                 tax_year: tax_year.clone(),
             });
