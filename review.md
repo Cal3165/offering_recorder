@@ -255,7 +255,8 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   `backup.rs:67,102`).
   **FIXED 2026-08-24:** password hash/verify and backup encrypt/decrypt (incl. whole restore-staging fn)
   now run via tokio::task::spawn_blocking.
-- [ ] **O13.** Global search never reloads after login (`App.svelte:30-39`) — load reactively on user change.
+- [x] **O13.** Global search never reloads after login (`App.svelte:30-39`) — load reactively on user change.
+  **FIXED 2026-08-24:** $effect tracks the session; clears data on logout, fetches on login.
 - [ ] **O14.** N+1 invokes on mount: `Checking.svelte:16-17` (use `list_all_offerings`);
   `DonorDetail.load` sequential invokes → Promise.all.
 - [ ] **O15.** Unbounded rendering: Audit table grows forever (`Audit.svelte:70-94`); Dashboard eagerly loads

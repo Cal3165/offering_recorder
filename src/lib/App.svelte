@@ -29,13 +29,26 @@
 
   onMount(async () => {
     user = await currentUser();
-    try {
-      searchMeetings = await listMeetings();
-      if (canViewDonors) searchDonors = await listActiveDonors();
-    } catch {
+  });
+
+  // Reload global search data whenever the session changes: at mount the user
+  // is still null, so a mount-only load failed with "not logged in" and search
+  // stayed empty until restart (review O13).
+  $effect(() => {
+    if (user === null) {
       searchMeetings = [];
       searchDonors = [];
+      return;
     }
+    (async () => {
+      try {
+        searchMeetings = await listMeetings();
+        if (canViewDonors) searchDonors = await listActiveDonors();
+      } catch {
+        searchMeetings = [];
+        searchDonors = [];
+      }
+    })();
   });
 
   function hasAny(roles: string[]) {
