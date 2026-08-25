@@ -221,12 +221,34 @@ impl<'a> AuthService<'a> {
             .get(user_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("user not found".into()))?;
-        let old = crate::audit::state_json(&user);
         if active {
             user.activate();
         } else {
+            // Deactivating yourself would end this session with no way to log
+            // back in as you; deactivating the last active admin would leave
+            // the installation without any administrator and bootstrap is
+            // refused once users exist. Refuse both (review R15).
+            if user.id == actor.id {
+                return Err(crate::error::AppError::Validation(
+                    "you cannot deactivate your own account".into(),
+                ));
+            }
+            if user.roles.has(&offering_domain::entities::role::Role::Admin)
+                && user.is_active
+            {
+                let users = self.users.list().await?;
+                let other_active_admins = users
+                    .iter()
+                    .any(|u| u.id != user.id && u.is_active && u.roles.has(&offering_domain::entities::role::Role::Admin));
+                if !other_active_admins {
+                    return Err(crate::error::AppError::Conflict(
+                        "cannot deactivate the last active administrator".into(),
+                    ));
+                }
+            }
             user.deactivate();
         }
+        let old = crate::audit::state_json(&user);
         let user = self.users.update(user).await?;
         self.audit
             .record(

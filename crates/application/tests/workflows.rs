@@ -1908,3 +1908,51 @@ async fn view_permissions_denied_on_read_paths() {
         .unwrap();
     assert!(services.meetings.list_meetings(&counter).await.is_ok());
 }
+
+#[tokio::test]
+async fn cannot_deactivate_self_or_last_active_admin() {
+    // Regression (review R15): an admin could deactivate their own account or
+    // the only active admin, permanently locking administration with no
+    // in-app recovery (bootstrap refuses once users exist).
+    let services = build_services().await;
+    let admin = services.auth.bootstrap("admin", "pw", "Admin").await.unwrap();
+
+    // Self-deactivation is refused.
+    assert!(matches!(
+        services.auth.set_active(&admin, admin.id, false).await,
+        Err(AppError::Validation(_))
+    ));
+
+    let second_admin = services
+        .auth
+        .create_user(
+            &admin,
+            "admin2",
+            "pw",
+            "Second Admin",
+            None,
+            RoleSet::new(vec![Role::Admin]),
+        )
+        .await
+        .unwrap();
+
+    // With two active admins, deactivating one is allowed...
+    let deactivated = services
+        .auth
+        .set_active(&admin, second_admin.id, false)
+        .await
+        .unwrap();
+    assert!(!deactivated.is_active);
+
+    // ...and re-activating restores a second active admin.
+    services.auth.set_active(&admin, second_admin.id, true).await.unwrap();
+    let reactivated = services.auth.get_user(&admin, second_admin.id).await.unwrap().unwrap();
+    assert!(reactivated.is_active);
+
+    // Note: the last-active-admin guard itself is defense-in-depth and
+    // intentionally unreachable through this API while self-deactivation is
+    // blocked - any authorized actor is by definition an active admin, so a
+    // target distinct from the actor always has at least one other active
+    // admin. It protects future callers (bulk operations, new commands) from
+    // reintroducing the lockout.
+}
