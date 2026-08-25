@@ -198,9 +198,14 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 
 ## Optional (selected)
 
-- [ ] **O1.** Audit written out-of-band post-commit (`offerings.rs:282-293`) — failed audit makes client retry
+- [~] **O1.** Audit written out-of-band post-commit (`offerings.rs:282-293`) — failed audit makes client retry
   committed mutation. Move into same tx or make failures explicit/idempotent. Also `AuditLog::state_json`
   swallows serialization errors into None.
+  **PARTIAL 2026-08-24:** state_json now surfaces serialization failures on stderr instead of silently
+  emitting state-less events. Moving audit writes into the mutation transaction requires a unit-of-work
+  layer across all repositories — disproportionate for this Optional finding on a single-process desktop
+  app; deferred deliberately. Risk accepted: a failed audit write reports an error to the caller after the
+  mutation committed (retry may duplicate); probability is negligible (audit INSERTs are trivial).
 - [ ] **O2.** Historical GASDS parameters flat-coded (£30 threshold pre-Apr-2019 was £20; contactless
   eligibility date; ceiling pre-2016) — wrong for back-claims over older tax years.
 - [ ] **O3.** GASDS eligibility predicate triplicated (`gasds.rs` :137/:382/:421) — collapse into one fn

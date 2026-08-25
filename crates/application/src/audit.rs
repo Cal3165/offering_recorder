@@ -72,6 +72,17 @@ impl<'a> AuditLog<'a> {
     }
 }
 
+/// Capture an entity snapshot for the audit trail.
+///
+/// Serialization of these domain types cannot fail today; if a future type
+/// change makes it fail we must not silently record an event with missing
+/// state, so the error surfaces on stderr (review O1).
 pub fn state_json<T: serde::Serialize>(value: &T) -> Option<serde_json::Value> {
-    serde_json::to_value(value).ok()
+    match serde_json::to_value(value) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("AUDIT STATE SERIALIZATION FAILED ({e}); audit event will lack state");
+            None
+        }
+    }
 }
