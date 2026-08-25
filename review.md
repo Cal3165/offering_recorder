@@ -241,8 +241,10 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   (`application/gift_aid.rs:104-113`, initial_schema.sql:39-48).
   **FIXED 2026-08-24:** migration 20240113 adds UNIQUE(donor_id, version); any residual race surfaces as a
   loud constraint error rather than silently ambiguous declaration history (mapping to typed Conflict is O9).
-- [ ] **O9.** Double-deposit race surfaces generic DB error instead of AlreadyDeposited — map constraint
+- [x] **O9.** Double-deposit race surfaces generic DB error instead of AlreadyDeposited — map constraint
   violation (`banking.rs:54-59`, `sqlite/mod.rs:35-40`). Related: RepoError::Conflict never produced anywhere.
+  **FIXED 2026-08-24:** map_db_err detects unique violations → RepoError::Conflict (→ AppError::Conflict);
+  create_deposit maps deposit-insert conflicts to the precise AppError::AlreadyDeposited.
 - [ ] **O10.** Donor search doesn't escape LIKE wildcards (`sqlite/donors.rs:154`).
 - [ ] **O11.** UTF-8 BOM breaks CSV header detection (`application/migration.rs:109-153`) — strip `\u{feff}`.
 - [ ] **O12.** Blocking Argon2/crypto on tokio workers — `spawn_blocking` (`infrastructure/auth.rs:13-19`,
@@ -354,3 +356,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O6 fixed · is_complete_for_claim() on declarations + readiness warning for incomplete ones · cargo test 320 pass
 - 2026-08-24 · O7 fixed · checked totals on Offering; escape hatches documented + debug_assert · cargo test 320 pass
 - 2026-08-24 · O8 fixed · migration 20240113 UNIQUE(donor_id, version) on declarations
+- 2026-08-24 · O9 fixed · unique violations → RepoError::Conflict; deposit races → AlreadyDeposited

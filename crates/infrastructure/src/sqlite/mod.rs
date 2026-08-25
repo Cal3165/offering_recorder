@@ -35,7 +35,19 @@ use serde::{de::DeserializeOwned, Serialize};
 pub fn map_db_err(e: sqlx::Error) -> RepoError {
     match e {
         sqlx::Error::RowNotFound => RepoError::NotFound,
-        other => RepoError::Database(other.to_string()),
+        other => {
+            // Unique-constraint violations are business-level conflicts
+            // (duplicate deposit, duplicate username, duplicate declaration
+            // version), not opaque database failures (review O9).
+            if other.as_database_error().is_some_and(|db| db.is_unique_violation()) {
+                RepoError::Conflict(format!(
+                    "record conflicts with an existing entry: {}",
+                    other
+                ))
+            } else {
+                RepoError::Database(other.to_string())
+            }
+        }
     }
 }
 

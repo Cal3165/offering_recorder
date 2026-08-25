@@ -110,7 +110,13 @@ impl<'a> BankingService<'a> {
             deposit.add_item(item)?;
         }
 
-        let deposit = self.deposits.create(deposit).await?;
+        // The PK on bank_deposit_items(offering_id) backs the pre-check above:
+        // losing the race surfaces as the precise AlreadyDeposited error
+        // instead of a raw constraint message (review O9).
+        let deposit = self.deposits.create(deposit).await.map_err(|e| match e {
+            offering_persistence::RepoError::Conflict(_) => crate::error::AppError::AlreadyDeposited,
+            other => other.into(),
+        })?;
         self.audit
             .record(
                 actor,
