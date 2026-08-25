@@ -108,6 +108,11 @@ impl<'a> GasdsClaimService<'a> {
         let mut config = GasdsConfig::default();
         config.matching_multiplier =
             offering_domain::entities::gasds_claim::gasds_matching_multiplier(&tax_year);
+        // The £8,000 ceiling is the post-2016 value; back-claims over earlier
+        // tax years must use the historical ceiling (review O2).
+        config.annual_limit = offering_domain::money::Money::from_pence_unchecked(
+            offering_domain::gasds::annual_ceiling_pence(tax_year.start_year()),
+        );
 
         for offering in &offerings {
             let result = GasdsCalculator::calculate_offering(offering, &declarations, &config);

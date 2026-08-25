@@ -206,10 +206,15 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   layer across all repositories — disproportionate for this Optional finding on a single-process desktop
   app; deferred deliberately. Risk accepted: a failed audit write reports an error to the caller after the
   mutation committed (retry may duplicate); probability is negligible (audit INSERTs are trivial).
-- [ ] **O2.** Historical GASDS parameters flat-coded (£30 threshold pre-Apr-2019 was £20; contactless
+- [x] **O2.** Historical GASDS parameters flat-coded (£30 threshold pre-Apr-2019 was £20; contactless
   eligibility date; ceiling pre-2016) — wrong for back-claims over older tax years.
-- [ ] **O3.** GASDS eligibility predicate triplicated (`gasds.rs` :137/:382/:421) — collapse into one fn
+  **FIXED 2026-08-24:** per_donation_limit_pence / card_donations_eligible keyed on donation date
+  (£20→£30 and card eligibility from 6 Apr 2019); annual_ceiling_pence per tax year wired into claim
+  readiness; new CardNotEligibleYet exclusion reason; 4 regression tests.
+- [x] **O3.** GASDS eligibility predicate triplicated (`gasds.rs` :137/:382/:421) — collapse into one fn
   returning `(bool, Option<Reason>)`.
+  **FIXED 2026-08-24 (with O2):** single exclusion_reason_for() predicate; check_eligibility/exclusion_reason
+  deleted; TaxTreatment::gasds_eligible delegates.
 - [ ] **O4.** Identical anonymous cash excluded/included depending on classification flag
   (`gasds.rs:297-299` vs :337-347 vs :398) — run breakdown-aware evaluation whenever denominations exist.
 - [ ] **O5.** BankDeposit integrity: duplicate offering_ids accepted, future dates accepted, no state machine;
@@ -327,3 +332,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R17 fixed · removed money-helpers.ts, AddDonationDialog.svelte, repaint.ts after zero-reference verification · svelte-check 0 errors / 0 warnings
 - 2026-08-24 · R18 fixed · OfferingEntry 1598→1064 lines via AmendmentPanel + DonorPicker + GasdsExplainer extraction · svelte-check 0/0, build ok
 - 2026-08-24 · R19 fixed · banking actuals/delete guards, signature-withdrawal flow, tax-year-boundary report tests; gift_aid_report now shows donation date · cargo test 313 pass; CSV-import/audit assertions → O29
+- 2026-08-24 · O2+O3 fixed · date-aware GASDS parameters (£20/£30, card eligibility, ceiling) + unified exclusion predicate · cargo test 316 pass

@@ -38,6 +38,8 @@ impl Default for GasdsConfig {
 pub enum ExclusionReason {
     ChequeNotEligible,
     BankTransferNotEligible,
+    /// Contactless / chip-&-PIN donations made before 6 April 2019 (review O2).
+    CardNotEligibleYet,
     OverThirtyPounds,
     FiftyPoundNote,
     NamedWithGiftAid,
@@ -50,6 +52,9 @@ impl std::fmt::Display for ExclusionReason {
             ExclusionReason::ChequeNotEligible => write!(f, "Cheques are not eligible for GASDS"),
             ExclusionReason::BankTransferNotEligible => {
                 write!(f, "Bank transfers are not eligible for GASDS")
+            }
+            ExclusionReason::CardNotEligibleYet => {
+                write!(f, "Contactless and chip-&-PIN donations only qualify from 6 April 2019")
             }
             ExclusionReason::OverThirtyPounds => {
                 write!(f, "Donation exceeds £30 GASDS threshold")
@@ -139,25 +144,8 @@ impl TaxTreatment {
         declarations: &[GiftAidDeclaration],
         date: DateTime<Utc>,
     ) -> bool {
-        use crate::payment_method::PaymentMethod;
-
-        if donation.payment_method == PaymentMethod::Cheque {
-            return false;
-        }
-        if donation.payment_method == PaymentMethod::BankTransfer {
-            return false;
-        }
-        if donation.amount.pence() > THIRTY_POUNDS {
-            return false;
-        }
-        if matches!(
-            donation.classification,
-            crate::entities::donation::DonationClassification::Named
-        ) && Self::covered_by_gift_aid_declaration(donation, declarations, date)
-        {
-            return false;
-        }
-        true
+        // Delegate to the single unified predicate (review O3).
+        GasdsCalculator::exclusion_reason_for(donation, declarations, date.date_naive()).is_none()
     }
 }
 
@@ -219,7 +207,27 @@ impl GasdsResult {
 
 pub struct GasdsCalculator;
 
-const THIRTY_POUNDS: i64 = 3000;
+/// 6 April 2019: the per-donation limit rose from £20 to £30 and contactless /
+/// chip-&-PIN donations became eligible under GASDS (review O2).
+fn scheme_change_date() -> NaiveDate {
+    NaiveDate::from_ymd_opt(2019, 4, 6).expect("known valid date")
+}
+
+/// Per-donation limit for a donation made on `date` (£20 before April 2019, £30 after).
+pub fn per_donation_limit_pence(date: NaiveDate) -> i64 {
+    if date >= scheme_change_date() { 3000 } else { 2000 }
+}
+
+/// Contactless / chip-&-PIN donations only qualify from 6 April 2019.
+pub fn card_donations_eligible(date: NaiveDate) -> bool {
+    date >= scheme_change_date()
+}
+
+/// Annual ceiling of small donations claimable for a tax year
+/// (£5,000 before the April 2016 change, £8,000 after; review O2).
+pub fn annual_ceiling_pence(tax_year_start_year: i32) -> i64 {
+    if tax_year_start_year >= 2016 { 800_000 } else { 500_000 }
+}
 
 impl GasdsCalculator {
     pub fn calculate_offering(
@@ -293,20 +301,14 @@ impl GasdsCalculator {
         declarations: &[GiftAidDeclaration],
         date: NaiveDate,
     ) -> DonationEvaluation {
-        let date = donation_datetime(date);
         if donation.classification == DonationClassification::LooseCash {
             return Self::evaluate_loose_cash(donation);
         }
 
         let amount = donation.amount.clone();
 
-        let is_eligible = Self::check_eligibility(donation, declarations, date);
-
-        let exclusion_reason = if is_eligible {
-            None
-        } else {
-            Some(Self::exclusion_reason(donation, declarations, date))
-        };
+        let exclusion_reason = Self::exclusion_reason_for(donation, declarations, date);
+        let is_eligible = exclusion_reason.is_none();
 
         let (eligible_amount, excluded_amount) = if is_eligible {
             (amount.clone(), Money::zero())
@@ -322,11 +324,14 @@ impl GasdsCalculator {
             classification: donation.classification,
             eligible: is_eligible,
             exclusion_reason,
-            tax_treatment: TaxTreatment::classify(donation, declarations, date),
+            tax_treatment: TaxTreatment::classify(donation, declarations, donation_datetime(date)),
         }
     }
 
     fn evaluate_loose_cash(donation: &Donation) -> DonationEvaluation {
+        // Cash is always an eligible method; the per-donation limit depends on
+        // when the donation was made (£20 before April 2019, £30 after).
+        let limit = per_donation_limit_pence(donation.date);
         let total = donation.amount.clone();
         let mut eligible_amount = Money::zero();
         let mut excluded_amount = Money::zero();
@@ -336,7 +341,7 @@ impl GasdsCalculator {
             Some(breakdown) => {
                 for (denom, count) in breakdown.iter() {
                     let item = Money::from_pence_unchecked(denom.pence() * (*count as i64));
-                    if denom.pence() <= THIRTY_POUNDS {
+                    if denom.pence() <= limit {
                         eligible_amount = eligible_amount.saturating_add(&item);
                     } else {
                         excluded_amount = excluded_amount.saturating_add(&item);
@@ -347,7 +352,7 @@ impl GasdsCalculator {
                 }
             }
             None => {
-                if total.pence() <= THIRTY_POUNDS {
+                if total.pence() <= limit {
                     eligible_amount = total.clone();
                 } else {
                     excluded_amount = total.clone();
@@ -379,82 +384,56 @@ impl GasdsCalculator {
         }
     }
 
-    fn check_eligibility(
+    /// The single source of truth for GASDS eligibility (review O3): every
+    /// caller previously duplicated this rule chain and had to be kept in
+    /// sync by hand.
+    ///
+    /// Returns `None` when the donation qualifies for GASDS, otherwise why it
+    /// does not. Rules reflect the scheme conditions on the donation date:
+    /// cheques and bank transfers never qualify; contactless / chip-&-PIN
+    /// only from 6 April 2019; per-donation limit £30 (£20 before); named
+    /// donations already covered by a valid Gift Aid declaration belong to
+    /// Gift Aid instead.
+    fn exclusion_reason_for(
         donation: &Donation,
         declarations: &[GiftAidDeclaration],
-        date: DateTime<Utc>,
-    ) -> bool {
+        date: NaiveDate,
+    ) -> Option<ExclusionReason> {
         use crate::gift_aid_service::GiftAidService;
         use crate::payment_method::PaymentMethod;
 
         if donation.payment_method == PaymentMethod::Cheque {
-            return false;
+            return Some(ExclusionReason::ChequeNotEligible);
         }
-
         if donation.payment_method == PaymentMethod::BankTransfer {
-            return false;
+            return Some(ExclusionReason::BankTransferNotEligible);
         }
-
-        if donation.amount.pence() > THIRTY_POUNDS {
-            return false;
+        if matches!(donation.payment_method, PaymentMethod::Contactless | PaymentMethod::ChipAndPin)
+            && !card_donations_eligible(date)
+        {
+            return Some(ExclusionReason::CardNotEligibleYet);
         }
-
+        if donation.amount.pence() > per_donation_limit_pence(date) {
+            return Some(ExclusionReason::OverThirtyPounds);
+        }
         if matches!(
             donation.classification,
             crate::entities::donation::DonationClassification::Named
-        ) {
-            if let Some(donor_id) = donation.donor_id {
+        ) && donation
+            .donor_id
+            .is_some_and(|donor_id| {
                 let donor_decls: Vec<GiftAidDeclaration> = declarations
                     .iter()
                     .filter(|d| d.donor_id == donor_id)
                     .cloned()
                     .collect();
-                if GiftAidService::is_gift_aid_eligible(&donor_decls, date) {
-                    return false;
-                }
-            }
+                !donor_decls.is_empty()
+                    && GiftAidService::is_gift_aid_eligible(&donor_decls, donation_datetime(date))
+            })
+        {
+            return Some(ExclusionReason::NamedWithGiftAid);
         }
-
-        true
-    }
-
-    fn exclusion_reason(
-        donation: &Donation,
-        declarations: &[GiftAidDeclaration],
-        date: DateTime<Utc>,
-    ) -> ExclusionReason {
-        use crate::gift_aid_service::GiftAidService;
-        use crate::payment_method::PaymentMethod;
-
-        if donation.payment_method == PaymentMethod::Cheque {
-            return ExclusionReason::ChequeNotEligible;
-        }
-
-        if donation.payment_method == PaymentMethod::BankTransfer {
-            return ExclusionReason::BankTransferNotEligible;
-        }
-
-        if donation.amount.pence() > THIRTY_POUNDS {
-            return ExclusionReason::OverThirtyPounds;
-        }
-
-        if matches!(
-            donation.classification,
-            crate::entities::donation::DonationClassification::Named
-        ) {
-            if let Some(donor_id) = donation.donor_id {
-                let donor_decls: Vec<GiftAidDeclaration> = declarations
-                    .iter()
-                    .filter(|d| d.donor_id == donor_id)
-                    .cloned()
-                    .collect();
-                if GiftAidService::is_gift_aid_eligible(&donor_decls, date) {
-                    return ExclusionReason::NamedWithGiftAid;
-                }
-            }
-        }
-
-        ExclusionReason::Other("Unknown exclusion".to_string())
+        None
     }
 }
 
@@ -464,6 +443,7 @@ mod tests {
     use crate::entities::offering::Offering;
     use crate::money::Money;
     use crate::offering_number::OfferingNumber;
+    use crate::payment_method::PaymentMethod;
     use uuid::Uuid;
 
     fn dt(year: i32, month: u32, day: u32) -> DateTime<Utc> {
@@ -1026,6 +1006,76 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn per_donation_limit_depends_on_donation_date() {
+        // Regression (review O2): the £30 limit applies only from 6 April 2019;
+        // earlier donations were limited to £20.
+        assert_eq!(per_donation_limit_pence(chrono::NaiveDate::from_ymd_opt(2019, 4, 5).unwrap()), 2000);
+        assert_eq!(per_donation_limit_pence(chrono::NaiveDate::from_ymd_opt(2019, 4, 6).unwrap()), 3000);
+        assert_eq!(per_donation_limit_pence(chrono::NaiveDate::from_ymd_opt(2024, 6, 1).unwrap()), 3000);
+    }
+
+    #[test]
+    fn pre_2019_cash_over_twenty_pounds_is_excluded() {
+        let mut o = make_offering();
+        o.add_donation(cash_donation(o.id, 2500, DonationClassification::Anonymous))
+            .unwrap();
+        let config = GasdsConfig::default();
+
+        let old = GasdsCalculator::calculate_offering(&o, &[], &config);
+        // Donation date defaults to today: eligible under the £30 rule.
+
+        // The same gift made before April 2019 exceeds the then-current £20 limit.
+        let mut historic = make_offering();
+        let mut d = cash_donation(historic.id, 2500, DonationClassification::Anonymous);
+        d = d.with_date(chrono::NaiveDate::from_ymd_opt(2018, 6, 1).unwrap());
+        historic.add_donation(d).unwrap();
+        let result = GasdsCalculator::calculate_offering(&historic, &[], &config);
+
+        let _ = old; // sanity baseline above
+        let eval = &result.evaluations[0];
+        assert!(!eval.eligible);
+        assert_eq!(eval.excluded_amount.pence(), 2500);
+    }
+
+    #[test]
+    fn contactless_only_eligible_from_april_2019() {
+        let make = |year: i32| {
+            let mut o = make_offering();
+            let mut d = Donation::anonymous(
+                o.id,
+                Money::from_pence(1000).unwrap(),
+                DonationType::Offering,
+                PaymentMethod::Contactless,
+                None,
+                None,
+            )
+            .unwrap();
+            d = d.with_date(chrono::NaiveDate::from_ymd_opt(year, 6, 1).unwrap());
+            o.add_donation(d).unwrap();
+            o
+        };
+        let config = GasdsConfig::default();
+
+        let modern = GasdsCalculator::calculate_offering(&make(2024), &[], &config);
+        assert!(modern.evaluations[0].eligible);
+
+        let historic = GasdsCalculator::calculate_offering(&make(2018), &[], &config);
+        let eval = &historic.evaluations[0];
+        assert!(!eval.eligible);
+        assert!(matches!(
+            eval.exclusion_reason,
+            Some(ExclusionReason::CardNotEligibleYet)
+        ));
+    }
+
+    #[test]
+    fn annual_ceiling_follows_tax_year() {
+        assert_eq!(annual_ceiling_pence(2015), 500_000);
+        assert_eq!(annual_ceiling_pence(2016), 800_000);
+        assert_eq!(annual_ceiling_pence(2024), 800_000);
+    }
+
     fn classify_named_with_declaration_is_gift_aid() {
         let donor = Uuid::new_v4();
         let user = Uuid::new_v4();
