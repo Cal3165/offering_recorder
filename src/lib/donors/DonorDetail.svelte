@@ -23,7 +23,7 @@
     GiftAidDeclaration,
     User,
   } from "../types";
-  import { fmtPence } from "../types";
+  import { fmtPence, localYmd } from "../types";
 
   let { donor, user, onClose }: { donor: Donor; user: User; onClose: () => void } = $props();
 
@@ -61,7 +61,7 @@
   function fourYearsAgo(): string {
     const d = new Date();
     d.setFullYear(d.getFullYear() - 4);
-    return d.toISOString().slice(0, 10);
+    return localYmd(d);
   }
 
   function prefillDeclarationForm() {
@@ -73,7 +73,7 @@
     dLine3 = donor.address?.line3 ?? "";
     dPostcode = donor.address?.postcode ?? "";
     dMethod = "Written";
-    dReceived = donor.address ? new Date().toISOString().slice(0, 10) : "";
+    dReceived = donor.address ? localYmd(new Date()) : "";
     dTextVersion = "1";
   }
 
@@ -188,7 +188,7 @@
 
   async function openAction(decl: GiftAidDeclaration, kind: "end" | "revoke") {
     action = { kind, decl };
-    aDate = new Date().toISOString().slice(0, 10);
+    aDate = localYmd(new Date());
     aReason = "";
   }
 

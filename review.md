@@ -265,8 +265,11 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   full audit log for 8 events. Paginate/bound.
   **FIXED 2026-08-24:** new list_recent(limit) port/impl/service + recent_audit_events command; Audit.svelte
   loads 500 at a time with Load-more; Dashboard fetches only the latest 50.
-- [ ] **O16.** Timezone bugs from `toISOString().slice()`: `Banking.svelte:56-60`, `Reports.svelte:27-37`,
+- [x] **O16.** Timezone bugs from `toISOString().slice()`: `Banking.svelte:56-60`, `Reports.svelte:27-37`,
   `DonorDetail.svelte:61-65,186`, display-only in Claims/Retention — shared local-date formatter.
+  **FIXED 2026-08-24:** shared localYmd()/localDateTimeInput() helpers in types.ts replace every
+  toISOString().slice() site (Banking default datetime, Reports presets, DonorDetail declaration dates,
+  display formatting in Claims/Retention).
 - [ ] **O17.** Duplication inventory: `fmtBreakdown` ×2; amendment-change labelers ×3; cash-reconciliation
   math ×4 (vs backend `validate_offering`); DAYS array ×2; expected cash/cheque reduces ×2. Consolidate.
 - [ ] **O18.** Donor identifiers in localStorage survive logout/restore (`OfferingEntry.svelte:626-716`) —

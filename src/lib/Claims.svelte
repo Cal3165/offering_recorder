@@ -10,7 +10,7 @@
     submitGasdsClaimForReview,
   } from "./api";
   import type { ClaimReadiness, GasdsClaim, GasdsClaimMethod } from "./types";
-  import { fmtPence } from "./types";
+  import { fmtPence, localYmd } from "./types";
 
   let taxYear = $state(2026);
   let readiness = $state<ClaimReadiness | null>(null);
@@ -46,7 +46,7 @@
   }
 
   function fmtDate(d: string | null): string {
-    return d ? new Date(d).toISOString().slice(0, 10) : "";
+    return d ? localYmd(new Date(d)) : "";
   }
 
   async function runSomething(a: () => Promise<unknown>) {

@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { availableOfferingsForDeposit, createDeposit, deleteDeposit, listDeposits, recordDepositActuals } from "./api";
   import type { BankDeposit, DepositCandidate } from "./types";
-  import { fmtPence, parsePenceFromInput } from "./types";
+  import { fmtPence, parsePenceFromInput, localDateTimeInput } from "./types";
 
   let candidates = $state<DepositCandidate[]>([]);
   let selected = $state<Set<string>>(new Set());
@@ -53,7 +53,7 @@
       error = "Select at least one offering.";
       return;
     }
-    const date = depositDate || new Date().toISOString().slice(0, 16);
+    const date = depositDate || localDateTimeInput(new Date());
     try {
       await createDeposit(
         selectedCandidates.map((c) => c.offering_id),

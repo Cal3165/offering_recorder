@@ -408,6 +408,27 @@ export function fmtPence(pence: number): string {
 // Parse a pounds[.pence] input into a whole-pence integer. Rejects anything that
 // is not plain digits with at most two decimal places (e.g. "Infinity", "1e3",
 // "12abc"), and anything that cannot be represented exactly as an integer.
+/**
+ * Local-timezone calendar date as y-m-d, for date inputs and display.
+ * `toISOString().slice(0,10)` shifts a day near midnight in non-UTC
+ * timezones (review O16).
+ */
+export function localYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Local-timezone value for `<input type="datetime-local">` (y-m-dThh:mm).
+ */
+export function localDateTimeInput(d: Date): string {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${localYmd(d)}T${hh}:${mm}`;
+}
+
 export function parsePenceFromInput(value: string): number | null {
   const trimmed = value.trim();
   if (!/^\d+(?:\.\d{1,2})?$/.test(trimmed)) return null;

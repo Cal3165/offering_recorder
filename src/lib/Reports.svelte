@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { bookkeepingReport, donorReport, exportIif, gasdsReport, giftAidReport, listMeetings } from "./api";
   import type { BookkeepingEntry, DonorReportEntry, GasdsReportEntry, GiftAidReportEntry, Meeting } from "./types";
-  import { fmtPence } from "./types";
+  import { fmtPence, localYmd } from "./types";
 
   let meetings = $state<Meeting[]>([]);
   let meetingId = $state<string | null>(null);
@@ -25,7 +25,7 @@
   });
 
   function iso(d: Date): string {
-    return d.toISOString().slice(0, 10);
+    return localYmd(d);
   }
   function taxYearFor(d: Date): number {
     return d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
