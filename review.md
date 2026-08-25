@@ -237,8 +237,10 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   from_pence_unchecked documented as trusted-decoder-only with debug_assert; saturating Add documented
   with pointer to checked add/sum. (pub(crate) was not viable — infra decoders legitimately use it
   cross-crate on CHECK-constrained columns.)
-- [ ] **O8.** Declaration version allocation race — `max(version)+1` outside tx, no UNIQUE(donor_id, version)
+- [x] **O8.** Declaration version allocation race — `max(version)+1` outside tx, no UNIQUE(donor_id, version)
   (`application/gift_aid.rs:104-113`, initial_schema.sql:39-48).
+  **FIXED 2026-08-24:** migration 20240113 adds UNIQUE(donor_id, version); any residual race surfaces as a
+  loud constraint error rather than silently ambiguous declaration history (mapping to typed Conflict is O9).
 - [ ] **O9.** Double-deposit race surfaces generic DB error instead of AlreadyDeposited — map constraint
   violation (`banking.rs:54-59`, `sqlite/mod.rs:35-40`). Related: RepoError::Conflict never produced anywhere.
 - [ ] **O10.** Donor search doesn't escape LIKE wildcards (`sqlite/donors.rs:154`).
@@ -351,3 +353,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O5 fixed · duplicate-offering + future-date guards on deposits; signed discrepancy direction · cargo test 319 pass
 - 2026-08-24 · O6 fixed · is_complete_for_claim() on declarations + readiness warning for incomplete ones · cargo test 320 pass
 - 2026-08-24 · O7 fixed · checked totals on Offering; escape hatches documented + debug_assert · cargo test 320 pass
+- 2026-08-24 · O8 fixed · migration 20240113 UNIQUE(donor_id, version) on declarations
