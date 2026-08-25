@@ -35,8 +35,8 @@ pub async fn record_deposit_actuals(
 
 #[tauri::command]
 pub async fn list_deposits(state: State<'_, AppState>) -> Result<Vec<BankDeposit>, String> {
-    with_actor!(state);
-    state.services.banking.list_deposits().await.map_err(|e| e.to_string())
+    let actor = with_actor!(state);
+    state.services.banking.list_deposits(&actor).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -460,8 +460,12 @@ self.audit
 
     pub async fn list_declaration_amendments(
         &self,
+        actor: &User,
         donor_id: Uuid,
     ) -> AppResult<Vec<DeclarationAmendment>> {
+        if !(can_manage_donors(actor) || can_manage_gift_aid(actor)) {
+            return Err(unauthorized("view gift aid declarations"));
+        }
         Ok(self
             .declaration_amendments
             .list_by_donor(donor_id)
@@ -497,7 +501,10 @@ self.audit
         Ok(self.gift_aid.get(declaration_id).await?)
     }
 
-    pub async fn is_donor_eligible(&self, donor_id: Uuid, date: DateTime<Utc>) -> AppResult<bool> {
+    pub async fn is_donor_eligible(&self, actor: &User, donor_id: Uuid, date: DateTime<Utc>) -> AppResult<bool> {
+        if !(can_manage_donors(actor) || can_manage_gift_aid(actor)) {
+            return Err(unauthorized("view gift aid declarations"));
+        }
         let declarations = self.gift_aid.list_by_donor(donor_id, None, None).await?;
         Ok(DomainGiftAidService::is_gift_aid_eligible(&declarations, date))
     }

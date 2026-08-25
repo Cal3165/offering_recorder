@@ -1832,3 +1832,79 @@ async fn encrypted_backup_can_be_validated_and_restored() {
         .await
         .unwrap_err();
 }
+#[tokio::test]
+async fn view_permissions_denied_on_read_paths() {
+    // Regression (review R9): read endpoints previously authenticated but
+    // never authorized, so a least-privilege user could read banking,
+    // amendment, meeting, and claim data.
+    let services = build_services().await;
+    let admin = services.auth.bootstrap("admin", "pw", "Admin").await.unwrap();
+
+    let banker = services
+        .auth
+        .create_user(
+            &admin,
+            "rb_banker",
+            "pw",
+            "Banker",
+            None,
+            RoleSet::new(vec![Role::Banker]),
+        )
+        .await
+        .unwrap();
+    let gift_aid = services
+        .auth
+        .create_user(
+            &admin,
+            "rb_giftaid",
+            "pw",
+            "Gift Aid",
+            None,
+            RoleSet::new(vec![Role::GiftAid]),
+        )
+        .await
+        .unwrap();
+
+    // Banker lacks ReadMeetings.
+    assert!(matches!(
+        services.meetings.list_meetings(&banker).await,
+        Err(AppError::Unauthorized(_))
+    ));
+    // Banker lacks ReadOfferings (amendment history is offering data).
+    let any_id = uuid::Uuid::new_v4();
+    assert!(matches!(
+        services.amendments.list_amendments(&banker, any_id).await,
+        Err(AppError::Unauthorized(_))
+    ));
+    // Gift-aid role lacks ReadMeetings.
+    assert!(matches!(
+        services.meetings.list_meetings(&gift_aid).await,
+        Err(AppError::Unauthorized(_))
+    ));
+    // Declaration amendments need donor or gift-aid management: the banker
+    // has neither.
+    assert!(matches!(
+        services.gift_aid.list_declaration_amendments(&banker, any_id).await,
+        Err(AppError::Unauthorized(_))
+    ));
+    // GASDS claim reads require gift-aid management.
+    assert!(matches!(
+        services.gasds_claims.get_claim(&banker, any_id).await,
+        Err(AppError::Unauthorized(_))
+    ));
+
+    // Sanity: permitted roles still get through.
+    let counter = services
+        .auth
+        .create_user(
+            &admin,
+            "rb_counter",
+            "pw",
+            "Counter",
+            None,
+            RoleSet::new(vec![Role::Counter]),
+        )
+        .await
+        .unwrap();
+    assert!(services.meetings.list_meetings(&counter).await.is_ok());
+}

@@ -192,11 +192,13 @@ impl<'a> BankingService<'a> {
         Ok(())
     }
 
-    pub async fn list_deposits(&self) -> AppResult<Vec<BankDeposit>> {
+    pub async fn list_deposits(&self, actor: &User) -> AppResult<Vec<BankDeposit>> {
+        crate::auth_guard::ViewPermission::ReadBanking.check(actor)?;
         Ok(self.deposits.list().await?)
     }
 
-    pub async fn get_deposit(&self, deposit_id: Uuid) -> AppResult<Option<BankDeposit>> {
+    pub async fn get_deposit(&self, actor: &User, deposit_id: Uuid) -> AppResult<Option<BankDeposit>> {
+        crate::auth_guard::ViewPermission::ReadBanking.check(actor)?;
         Ok(self.deposits.get(deposit_id).await?)
     }
 

@@ -5,6 +5,7 @@ use offering_persistence::{AuditRepository, MeetingRepository};
 use uuid::Uuid;
 
 use crate::audit::AuditLog;
+use crate::auth_guard::ViewPermission;
 use crate::error::{unauthorized, AppResult};
 use crate::permissions::can_record_offering;
 
@@ -50,11 +51,13 @@ impl<'a> MeetingService<'a> {
         Ok(meeting)
     }
 
-    pub async fn list_meetings(&self) -> AppResult<Vec<Meeting>> {
+    pub async fn list_meetings(&self, actor: &User) -> AppResult<Vec<Meeting>> {
+        ViewPermission::ReadMeetings.check(actor)?;
         Ok(self.meetings.list().await?)
     }
 
-    pub async fn list_active_meetings(&self) -> AppResult<Vec<Meeting>> {
+    pub async fn list_active_meetings(&self, actor: &User) -> AppResult<Vec<Meeting>> {
+        ViewPermission::ReadMeetings.check(actor)?;
         Ok(self.meetings.list_active().await?)
     }
 

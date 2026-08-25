@@ -25,8 +25,8 @@ pub async fn create_meeting(
 pub async fn list_meetings(
     state: State<'_, AppState>,
 ) -> Result<Vec<Meeting>, String> {
-    with_actor!(state);
-    state.services.meetings.list_meetings().await.map_err(|e| e.to_string())
+    let actor = with_actor!(state);
+    state.services.meetings.list_meetings(&actor).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

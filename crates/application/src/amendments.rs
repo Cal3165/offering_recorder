@@ -45,7 +45,8 @@ impl<'a> AmendmentService<'a> {
             .ok_or_else(|| crate::error::AppError::NotFound("offering not found".into()))
     }
 
-    pub async fn list_amendments(&self, offering_id: Uuid) -> AppResult<Vec<Amendment>> {
+    pub async fn list_amendments(&self, actor: &User, offering_id: Uuid) -> AppResult<Vec<Amendment>> {
+        ViewPermission::ReadOfferings.check(actor)?;
         Ok(self.amendments.list_by_offering(offering_id).await?)
     }
 
@@ -239,7 +240,8 @@ impl<'a> AmendmentService<'a> {
         Ok(())
     }
 
-    pub async fn reconstruction(&self, offering_id: Uuid) -> AppResult<Option<OfferingReconstruction>> {
+    pub async fn reconstruction(&self, actor: &User, offering_id: Uuid) -> AppResult<Option<OfferingReconstruction>> {
+        ViewPermission::ReadOfferings.check(actor)?;
         let offering = match self.offerings.get(offering_id).await? {
             Some(o) => o,
             None => return Ok(None),

@@ -272,7 +272,7 @@ impl<'a> GasdsClaimService<'a> {
 
     pub async fn prepare(&self, actor: &User, claim_id: Uuid) -> AppResult<GasdsClaim> {
         self.require_claim_permission(actor)?;
-        let mut claim = self.get_claim(claim_id).await?;
+        let mut claim = self.get_claim(actor, claim_id).await?;
         let old = crate::audit::state_json(&claim);
         claim.prepare(actor.id)?;
         let claim = self.claims.update(claim).await?;
@@ -292,7 +292,7 @@ impl<'a> GasdsClaimService<'a> {
 
     pub async fn submit_for_review(&self, actor: &User, claim_id: Uuid) -> AppResult<GasdsClaim> {
         self.require_claim_permission(actor)?;
-        let mut claim = self.get_claim(claim_id).await?;
+        let mut claim = self.get_claim(actor, claim_id).await?;
         let old = crate::audit::state_json(&claim);
         claim.submit_for_review()?;
         let claim = self.claims.update(claim).await?;
@@ -312,7 +312,7 @@ impl<'a> GasdsClaimService<'a> {
 
     pub async fn approve(&self, actor: &User, claim_id: Uuid) -> AppResult<GasdsClaim> {
         self.require_claim_permission(actor)?;
-        let mut claim = self.get_claim(claim_id).await?;
+        let mut claim = self.get_claim(actor, claim_id).await?;
         let old = crate::audit::state_json(&claim);
         claim.approve(actor.id)?;
         let claim = self.claims.update(claim).await?;
@@ -337,7 +337,7 @@ impl<'a> GasdsClaimService<'a> {
         reason: &str,
     ) -> AppResult<GasdsClaim> {
         self.require_claim_permission(actor)?;
-        let mut claim = self.get_claim(claim_id).await?;
+        let mut claim = self.get_claim(actor, claim_id).await?;
         let old = crate::audit::state_json(&claim);
         claim.reject(actor.id, reason)?;
         let claim = self.claims.update(claim).await?;
@@ -363,7 +363,8 @@ impl<'a> GasdsClaimService<'a> {
         }
     }
 
-    pub async fn get_claim(&self, claim_id: Uuid) -> AppResult<GasdsClaim> {
+    pub async fn get_claim(&self, actor: &User, claim_id: Uuid) -> AppResult<GasdsClaim> {
+        self.require_claim_permission(actor)?;
         self.claims
             .get(claim_id)
             .await?

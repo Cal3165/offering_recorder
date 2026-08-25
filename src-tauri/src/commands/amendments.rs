@@ -9,9 +9,9 @@ pub async fn list_amendments(
     state: State<'_, AppState>,
     offering_id: String,
 ) -> Result<Vec<Amendment>, String> {
-    with_actor!(state);
+    let actor = with_actor!(state);
     let id = parse_uuid(&offering_id)?;
-    state.services.amendments.list_amendments(id).await.map_err(|e| e.to_string())
+    state.services.amendments.list_amendments(&actor, id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

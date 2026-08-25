@@ -489,8 +489,10 @@ impl<'a> OfferingService<'a> {
 
     pub async fn reconstruction(
         &self,
+        actor: &User,
         offering_id: Uuid,
     ) -> AppResult<Option<OfferingReconstruction>> {
+        ViewPermission::ReadOfferings.check(actor)?;
         let offering = match self.offerings.get(offering_id).await? {
             Some(o) => o,
             None => return Ok(None),
@@ -535,7 +537,8 @@ impl<'a> OfferingService<'a> {
         ))
     }
 
-    pub async fn offering_report(&self, offering_id: Uuid) -> AppResult<Option<OfferingReport>> {
+    pub async fn offering_report(&self, actor: &User, offering_id: Uuid) -> AppResult<Option<OfferingReport>> {
+        ViewPermission::ReadOfferings.check(actor)?;
         let stored = match self.offerings.get(offering_id).await? {
             Some(o) => o,
             None => return Ok(None),

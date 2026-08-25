@@ -49,9 +49,9 @@ pub async fn offering_report(
     state: State<'_, AppState>,
     offering_id: String,
 ) -> Result<Option<OfferingReport>, String> {
-    with_actor!(state);
+    let actor = with_actor!(state);
     let id = parse_uuid(&offering_id)?;
-    state.services.offerings.offering_report(id).await.map_err(|e| e.to_string())
+    state.services.offerings.offering_report(&actor, id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

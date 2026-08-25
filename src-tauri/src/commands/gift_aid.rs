@@ -150,9 +150,9 @@ pub async fn list_declaration_amendments(
     state: State<'_, AppState>,
     donor_id: String,
 ) -> Result<Vec<DeclarationAmendment>, String> {
-    with_actor!(state);
+    let actor = with_actor!(state);
     let id = parse_uuid(&donor_id)?;
-    state.services.gift_aid.list_declaration_amendments(id).await.map_err(|e| e.to_string())
+    state.services.gift_aid.list_declaration_amendments(&actor, id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

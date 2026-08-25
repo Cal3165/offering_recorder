@@ -105,11 +105,18 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** removed from script-src (style-src kept — app uses style= attributes).
   Verified safe: SvelteKit's inline bootstrap is hashed per-file by tauri-codegen and re-permitted via
   script-src hashes at serve time; dev server (devUrl) is not CSP-injected at all. npm build ok.
-- [ ] **R9. RBAC gaps on read paths**
+- [x] **R9. RBAC gaps on read paths**
   Authenticated-only (no permission check): `list_deposits`/`get_deposit`, `list_amendments`,
   `list_declaration_amendments`, `offering_report`, `list_meetings`, `get_claim`,
   `search_for_duplicates`, `is_donor_eligible`, reconstruction endpoints. Thread actor through services,
   apply matching ViewPermission.
+  **FIXED 2026-08-24:** actor+permission added to list_meetings/list_active_meetings (ReadMeetings),
+  offering_report + both reconstructions + list_amendments (ReadOfferings), list/get deposits
+  (ReadBanking), get_claim (require_claim_permission), list_declaration_amendments/is_donor_eligible
+  (donor|gift-aid management, mirroring list_declarations). search_for_duplicates dropped from scope —
+  internal-only, caller already guarded. Command call sites pass &actor. Denial regression test added.
+  NOTE: reconstruction/list_active_meetings/is_donor_eligible currently have no command callers —
+  guarded anyway; candidates for dead-code removal decision (see R17 pattern). 307 tests pass.
 - [ ] **R10. Backup/restore hardening (bundle)**
   - plaintext DB survives encryption failure (`infrastructure/backup.rs:144-147`) — use TempFileGuard;
   - failed restores audited as completed (`application/backup.rs:89-99`) — record start/success/failure separately;
@@ -266,3 +273,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R6 fixed · migration 20240112 (unique index + per-meeting seq counter); allocation via UPDATE…RETURNING under IMMEDIATE lock; no-reuse regression test · cargo test 305 pass
 - 2026-08-24 · R7 fixed · donation INSERT + denomination rows in one transaction; breakdown roundtrip test · cargo test 306 pass
 - 2026-08-24 · R8 fixed · script-src 'unsafe-inline' removed from CSP (codegen hashes cover SvelteKit inline bootstrap; dev unaffected) · npm build ok
+- 2026-08-24 · R9 fixed · ViewPermission enforced on 11 read endpoints across meetings/offerings/amendments/gift_aid/gasds/banking; denial regression test · cargo test 307 pass
