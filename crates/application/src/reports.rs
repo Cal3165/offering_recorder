@@ -1,7 +1,5 @@
 use offering_domain::entities::user::User;
 use offering_domain::gasds::{GasdsCalculator, GasdsConfig, GasdsResult};
-use offering_domain::donation_type::DonationType;
-use offering_domain::payment_method::PaymentMethod;
 use offering_persistence::{
     AuditRepository, BankDepositRepository, BookkeepingEntry, DonorReportEntry, GdprReport,
     GiftAidRepository, GiftAidReportEntry, IifDonationRow, MeetingRepository, OfferingRepository,
@@ -272,6 +270,8 @@ fn build_iif(rows: &[IifDonationRow]) -> String {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use offering_domain::donation_type::DonationType;
+    use offering_domain::payment_method::PaymentMethod;
 
     fn row(day: u32, amount_pence: i64, donor: Option<&str>) -> IifDonationRow {
         IifDonationRow {

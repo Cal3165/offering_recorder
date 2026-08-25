@@ -92,9 +92,11 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   meetings.offering_seq_counter; allocation consumes the monotonic counter under BEGIN IMMEDIATE via
   RETURNING (MAX-over-remaining alone still reuses a deleted highest number — caught by the regression
   test). 305 tests pass.
-- [ ] **R7. Donation insert not atomic**
+- [x] **R7. Donation insert not atomic**
   `sqlite/donations.rs:105-126` — donation INSERT and denomination rows in separate implicit transactions.
   Wrap in one transaction (mirror `insert_offering` pattern).
+  **FIXED 2026-08-24:** create() wraps INSERT + persist_cash_denominations in one tx (helper now takes
+  &mut SqliteConnection); breakdown roundtrip test added. 306 tests pass.
 
 *Security*
 
@@ -259,3 +261,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R4 fixed · optimistic concurrency on Offering aggregate saves (expected_updated_at + Conflict); stale-write regression tests; amendment repos deferred to new O27 · cargo test 304 pass
 - 2026-08-24 · R5 fixed · donor/IIF report boundaries unified to `<`; IifDonationRow typed enums, unquoted IIF memos + assertion · cargo test 305 pass
 - 2026-08-24 · R6 fixed · migration 20240112 (unique index + per-meeting seq counter); allocation via UPDATE…RETURNING under IMMEDIATE lock; no-reuse regression test · cargo test 305 pass
+- 2026-08-24 · R7 fixed · donation INSERT + denomination rows in one transaction; breakdown roundtrip test · cargo test 306 pass

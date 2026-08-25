@@ -75,13 +75,13 @@ pub(crate) async fn load_cash_breakdown(
 }
 
 async fn persist_cash_denominations(
-    pool: &Pool<Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     donation_id: Uuid,
     breakdown: &Option<CashTotal>,
 ) -> RepoResult<()> {
     sqlx::query("DELETE FROM donation_cash_denominations WHERE donation_id = ?")
         .bind(donation_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .map_err(map_db_err)?;
     if let Some(total) = breakdown {
@@ -92,7 +92,7 @@ async fn persist_cash_denominations(
             .bind(donation_id)
             .bind(to_json(denom)?)
             .bind(*count)
-            .execute(pool)
+            .execute(&mut *conn)
             .await
             .map_err(map_db_err)?;
         }
@@ -103,6 +103,10 @@ async fn persist_cash_denominations(
 #[async_trait]
 impl DonationRepository for SqliteDonationRepository {
     async fn create(&self, donation: Donation) -> RepoResult<Donation> {
+        // One transaction: a donation whose denomination rows failed to write
+        // must not exist with an amount that matches no stored breakdown
+        // (review R7).
+        let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
         sqlx::query(
             "INSERT INTO donations (id, offering_id, donor_id, amount_pence, donation_type, payment_method, classification, reference, created_at, updated_at, date)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -118,10 +122,11 @@ impl DonationRepository for SqliteDonationRepository {
         .bind(donation.created_at)
         .bind(donation.updated_at)
         .bind(donation.date)
-        .execute(&self.pool.get())
+        .execute(&mut *tx)
         .await
         .map_err(map_db_err)?;
-        persist_cash_denominations(&self.pool.get(), donation.id, &donation.cash_denominations).await?;
+        persist_cash_denominations(&mut tx, donation.id, &donation.cash_denominations).await?;
+        tx.commit().await.map_err(map_db_err)?;
         Ok(donation)
     }
 
@@ -194,5 +199,42 @@ impl DonationRepository for SqliteDonationRepository {
             .await
             .map_err(map_db_err)?;
         Ok(())
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect_in_memory;
+
+    #[tokio::test]
+    async fn create_persists_donation_with_breakdown_atomically() {
+        let pool = connect_in_memory().await.unwrap();
+        let now = Utc::now().to_rfc3339();
+        let meeting = Uuid::new_v4();
+        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, ?, ?)")
+            .bind(meeting).bind(&now).bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let offering = Uuid::new_v4();
+        sqlx::query("INSERT INTO offerings (id, meeting_id, offering_number, status, created_at, updated_at) VALUES (?, ?, '1', 'Draft', ?, ?)")
+            .bind(offering)
+            .bind(meeting)
+            .bind(&now)
+            .bind(&now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let repo = SqliteDonationRepository::new(SharedPool::new(pool));
+        let mut ct = CashTotal::new();
+        ct.add(Denomination::Note500p, 2);
+        let donation = Donation::loose_cash(offering, ct.clone()).unwrap();
+        repo.create(donation.clone()).await.unwrap();
+
+        let loaded = repo.get(donation.id).await.unwrap().unwrap();
+        assert_eq!(loaded.amount.pence(), 1000);
+        let breakdown = loaded.cash_denominations.expect("breakdown must roundtrip");
+        assert_eq!(breakdown.total().pence(), 1000);
     }
 }
