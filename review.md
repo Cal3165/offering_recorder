@@ -100,8 +100,11 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 
 *Security*
 
-- [ ] **R8. CSP allows `'unsafe-inline'` scripts**
+- [x] **R8. CSP allows `'unsafe-inline'` scripts**
   `src-tauri/tauri.conf.json:22`. Drop from `script-src`; keep style-src inline if needed.
+  **FIXED 2026-08-24:** removed from script-src (style-src kept — app uses style= attributes).
+  Verified safe: SvelteKit's inline bootstrap is hashed per-file by tauri-codegen and re-permitted via
+  script-src hashes at serve time; dev server (devUrl) is not CSP-injected at all. npm build ok.
 - [ ] **R9. RBAC gaps on read paths**
   Authenticated-only (no permission check): `list_deposits`/`get_deposit`, `list_amendments`,
   `list_declaration_amendments`, `offering_report`, `list_meetings`, `get_claim`,
@@ -262,3 +265,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R5 fixed · donor/IIF report boundaries unified to `<`; IifDonationRow typed enums, unquoted IIF memos + assertion · cargo test 305 pass
 - 2026-08-24 · R6 fixed · migration 20240112 (unique index + per-meeting seq counter); allocation via UPDATE…RETURNING under IMMEDIATE lock; no-reuse regression test · cargo test 305 pass
 - 2026-08-24 · R7 fixed · donation INSERT + denomination rows in one transaction; breakdown roundtrip test · cargo test 306 pass
+- 2026-08-24 · R8 fixed · script-src 'unsafe-inline' removed from CSP (codegen hashes cover SvelteKit inline bootstrap; dev unaffected) · npm build ok
