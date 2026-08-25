@@ -248,7 +248,9 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 - [x] **O10.** Donor search doesn't escape LIKE wildcards (`sqlite/donors.rs:154`).
   **FIXED 2026-08-24:** search escapes `\`, `%`, `_` and uses `ESCAPE '\'` in both search queries —
   literal matching, no pattern surprises feeding duplicate detection.
-- [ ] **O11.** UTF-8 BOM breaks CSV header detection (`application/migration.rs:109-153`) — strip `\u{feff}`.
+- [x] **O11.** UTF-8 BOM breaks CSV header detection (`application/migration.rs:109-153`) — strip `\u{feff}`.
+  **FIXED 2026-08-24:** normalize_header strips U+FEFF (service entry also strips a leading BOM); test
+  asserts BOM'd first header still maps.
 - [ ] **O12.** Blocking Argon2/crypto on tokio workers — `spawn_blocking` (`infrastructure/auth.rs:13-19`,
   `backup.rs:67,102`).
 - [ ] **O13.** Global search never reloads after login (`App.svelte:30-39`) — load reactively on user change.

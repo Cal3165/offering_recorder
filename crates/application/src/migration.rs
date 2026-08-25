@@ -45,6 +45,10 @@ impl<'a> MigrationService<'a> {
         if !can_manage_migration(actor) {
             return Err(unauthorized("manage migration"));
         }
+        // Excel's "CSV UTF-8" export prepends a byte-order mark; without
+        // stripping it the first header cell never matches its aliases and
+        // the import fails with a misleading header error (review O11).
+        let csv = csv.strip_prefix('\u{feff}').unwrap_or(csv);
         let rows = parse_csv(csv);
         if rows.is_empty() {
             return Err(AppError::Validation("CSV is empty".into()));
@@ -188,6 +192,10 @@ struct ColumnMap {
 }
 
 fn normalize_header(h: &str) -> String {
+    // Excel's "CSV UTF-8" export prepends U+FEFF, which lands in the first
+    // header cell and is not char::is_whitespace — strip it explicitly so the
+    // first column still matches its aliases (review O11).
+    let h = h.trim_start_matches('\u{feff}');
     h.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -318,6 +326,15 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn header_with_bom_still_detected() {
+        // Excel UTF-8 CSVs start with U+FEFF; the service strips it before
+        // parsing (review O11).
+        let map = detect_header(&[format!("\u{feff}First Name"), "Last Name".to_string()]).unwrap();
+        assert_eq!(map.first, Some(0));
+        assert_eq!(map.last, Some(1));
+    }
+
     fn detect_header_missing_name_columns() {
         let header = parse_csv("email,phone\n")[0].clone();
         assert!(detect_header(&header).is_err());
