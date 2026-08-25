@@ -215,8 +215,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   returning `(bool, Option<Reason>)`.
   **FIXED 2026-08-24 (with O2):** single exclusion_reason_for() predicate; check_eligibility/exclusion_reason
   deleted; TaxTreatment::gasds_eligible delegates.
-- [ ] **O4.** Identical anonymous cash excluded/included depending on classification flag
+- [x] **O4.** Identical anonymous cash excluded/included depending on classification flag
   (`gasds.rs:297-299` vs :337-347 vs :398) — run breakdown-aware evaluation whenever denominations exist.
+  **FIXED 2026-08-24:** any Cash donation carrying a breakdown is now evaluated note-by-note (method/
+  coverage rules still apply whole). Semantic decision recorded: a classified single gift WITHOUT a
+  breakdown remains subject to the whole-amount limit (boundary_30_01 test now breakdown-less); mixed-
+  donations test expectations updated (£40 as 2×£20 notes now eligible).
 - [ ] **O5.** BankDeposit integrity: duplicate offering_ids accepted, future dates accepted, no state machine;
   `cash_discrepancy` loses short-vs-over direction (`bank_deposit.rs:69-72,102-105`).
 - [ ] **O6.** Gift Aid declarations don't require name+address at claim time (`gift_aid.rs:148-154`) though
@@ -333,3 +337,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · R18 fixed · OfferingEntry 1598→1064 lines via AmendmentPanel + DonorPicker + GasdsExplainer extraction · svelte-check 0/0, build ok
 - 2026-08-24 · R19 fixed · banking actuals/delete guards, signature-withdrawal flow, tax-year-boundary report tests; gift_aid_report now shows donation date · cargo test 313 pass; CSV-import/audit assertions → O29
 - 2026-08-24 · O2+O3 fixed · date-aware GASDS parameters (£20/£30, card eligibility, ceiling) + unified exclusion predicate · cargo test 316 pass
+- 2026-08-24 · O4 fixed · breakdown-carrying Cash donations evaluated per denomination; single-gift boundary tests use breakdown-less gifts

@@ -301,8 +301,16 @@ impl GasdsCalculator {
         declarations: &[GiftAidDeclaration],
         date: NaiveDate,
     ) -> DonationEvaluation {
-        if donation.classification == DonationClassification::LooseCash {
-            return Self::evaluate_loose_cash(donation);
+        // Breakdown-aware evaluation applies the per-donation limit per
+        // denomination. Route any cash donation that carries a breakdown
+        // through it — not just LooseCash — so an Anonymous gift recorded as
+        // e.g. 5×£10 is judged denomination by denomination like the same
+        // money recorded as loose cash (review O4).
+        if donation.classification == DonationClassification::LooseCash
+            || (donation.payment_method == crate::payment_method::PaymentMethod::Cash
+                && donation.cash_denominations.is_some())
+        {
+            return Self::evaluate_loose_cash(donation, declarations);
         }
 
         let amount = donation.amount.clone();
@@ -328,7 +336,27 @@ impl GasdsCalculator {
         }
     }
 
-    fn evaluate_loose_cash(donation: &Donation) -> DonationEvaluation {
+    fn evaluate_loose_cash(
+        donation: &Donation,
+        declarations: &[GiftAidDeclaration],
+    ) -> DonationEvaluation {
+        // Method / coverage rules apply to the whole donation; the limit is
+        // then applied per denomination.
+        if let Some(reason) =
+            Self::exclusion_without_limit(donation, declarations, donation.date)
+        {
+            let total = donation.amount.clone();
+            return DonationEvaluation {
+                donation_id: donation.id,
+                amount: total.clone(),
+                eligible_amount: Money::zero(),
+                excluded_amount: total,
+                classification: donation.classification,
+                eligible: false,
+                exclusion_reason: Some(reason),
+                tax_treatment: TaxTreatment::Neither,
+            };
+        }
         // Cash is always an eligible method; the per-donation limit depends on
         // when the donation was made (£20 before April 2019, £30 after).
         let limit = per_donation_limit_pence(donation.date);
@@ -399,6 +427,20 @@ impl GasdsCalculator {
         declarations: &[GiftAidDeclaration],
         date: NaiveDate,
     ) -> Option<ExclusionReason> {
+        Self::exclusion_without_limit(donation, declarations, date).or_else(|| {
+            (donation.amount.pence() > per_donation_limit_pence(date))
+                .then_some(ExclusionReason::OverThirtyPounds)
+        })
+    }
+
+    /// Method and Gift-Aid-coverage rules, without the per-donation amount
+    /// limit. Breakdown-aware evaluation applies the limit per denomination
+    /// but these rules apply to the donation as a whole.
+    fn exclusion_without_limit(
+        donation: &Donation,
+        declarations: &[GiftAidDeclaration],
+        date: NaiveDate,
+    ) -> Option<ExclusionReason> {
         use crate::gift_aid_service::GiftAidService;
         use crate::payment_method::PaymentMethod;
 
@@ -412,9 +454,6 @@ impl GasdsCalculator {
             && !card_donations_eligible(date)
         {
             return Some(ExclusionReason::CardNotEligibleYet);
-        }
-        if donation.amount.pence() > per_donation_limit_pence(date) {
-            return Some(ExclusionReason::OverThirtyPounds);
         }
         if matches!(
             donation.classification,
@@ -614,8 +653,20 @@ mod tests {
     #[test]
     fn boundary_30_01_not_eligible() {
         let mut o = make_offering();
-        o.add_donation(cash_donation(o.id, 3001, DonationClassification::Anonymous))
-            .unwrap();
+        // A single anonymous gift of £30.01 (no denomination breakdown) is one
+        // donation over the limit.
+        o.add_donation(
+            Donation::anonymous(
+                o.id,
+                Money::from_pence(3001).unwrap(),
+                DonationType::Offering,
+                PaymentMethod::Cash,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         let eval = &result.evaluations[0];
         assert!(!eval.eligible);
@@ -935,9 +986,11 @@ mod tests {
         o.add_donation(cash_donation(o.id, 4000, DonationClassification::Anonymous))
             .unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
-        // Anonymous £20 and £2.50 loose cash eligible, cheque excluded, £40 over threshold
-        assert_eq!(result.eligible_amount.pence(), 4500);
-        assert_eq!(result.excluded_amount.pence(), 6000);
+        // With note-level evaluation (review O4), the £40 anonymous gift's
+        // breakdown (2×£20) is judged per denomination: anonymous £20,
+        // £2.50 loose cash and £40 all eligible; cheque excluded.
+        assert_eq!(result.eligible_amount.pence(), 8500);
+        assert_eq!(result.excluded_amount.pence(), 2000);
     }
 
     #[test]
@@ -1017,22 +1070,22 @@ mod tests {
 
     #[test]
     fn pre_2019_cash_over_twenty_pounds_is_excluded() {
-        let mut o = make_offering();
-        o.add_donation(cash_donation(o.id, 2500, DonationClassification::Anonymous))
-            .unwrap();
-        let config = GasdsConfig::default();
-
-        let old = GasdsCalculator::calculate_offering(&o, &[], &config);
-        // Donation date defaults to today: eligible under the £30 rule.
-
-        // The same gift made before April 2019 exceeds the then-current £20 limit.
+        // A single anonymous £25 gift without a breakdown: excluded before the
+        // April 2019 £20→£30 limit change (review O2).
         let mut historic = make_offering();
-        let mut d = cash_donation(historic.id, 2500, DonationClassification::Anonymous);
-        d = d.with_date(chrono::NaiveDate::from_ymd_opt(2018, 6, 1).unwrap());
+        let d = Donation::anonymous(
+            historic.id,
+            Money::from_pence(2500).unwrap(),
+            DonationType::Offering,
+            PaymentMethod::Cash,
+            None,
+            None,
+        )
+        .unwrap()
+        .with_date(chrono::NaiveDate::from_ymd_opt(2018, 6, 1).unwrap());
         historic.add_donation(d).unwrap();
-        let result = GasdsCalculator::calculate_offering(&historic, &[], &config);
+        let result = GasdsCalculator::calculate_offering(&historic, &[], &GasdsConfig::default());
 
-        let _ = old; // sanity baseline above
         let eval = &result.evaluations[0];
         assert!(!eval.eligible);
         assert_eq!(eval.excluded_amount.pence(), 2500);
