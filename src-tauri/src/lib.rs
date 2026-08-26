@@ -137,3 +137,67 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    /// Contract test (review O24/C3): every command name invoked from
+    /// src/lib/api.ts must be registered in the invoke_handler list. This
+    /// catches renamed or removed Rust commands that the hand-written
+    /// bindings still reference - the class of drift behind review C3
+    /// (argument drift still requires code review or generated bindings).
+    #[test]
+    fn all_api_ts_commands_are_registered() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let api_ts = std::fs::read_to_string(format!("{manifest}/../src/lib/api.ts"))
+            .expect("src/lib/api.ts should exist");
+        let lib_rs = include_str!("lib.rs");
+
+        let mut registered = Vec::new();
+        if let Some(start) = lib_rs.find("generate_handler![") {
+            let body = &lib_rs[start + "generate_handler![".len()..];
+            let body = &body[..body.find(']').unwrap_or(body.len())];
+            for part in body.split(',') {
+                let name = part.trim().trim_end_matches(',');
+                if let Some(name) = name.strip_prefix("commands::") {
+                    registered.push(name.to_string());
+                }
+            }
+        }
+        assert!(!registered.is_empty(), "failed to parse invoke_handler list");
+
+        // Extract quoted names following `run<...>(` invocations.
+        let mut referenced = Vec::new();
+        let bytes = api_ts.as_bytes();
+        let mut i = 0;
+        while let Some(pos) = api_ts[i..].find("run<") {
+            let after = &api_ts[i + pos..];
+            if let Some(open) = after.find('(') {
+                let tail = &after[open..];
+                if let Some(q1) = tail.find('"') {
+                    let rest = &tail[q1 + 1..];
+                    if let Some(q2) = rest.find('"') {
+                        let name = &rest[..q2];
+                        if name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                            referenced.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            i += pos + 4;
+        }
+        assert!(
+            !referenced.is_empty(),
+            "failed to extract commands from api.ts"
+        );
+
+        let missing: Vec<_> = referenced
+            .iter()
+            .filter(|c| !registered.contains(c))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "api.ts invokes unregistered commands: {missing:?}"
+        );
+        let _ = bytes;
+    }
+}

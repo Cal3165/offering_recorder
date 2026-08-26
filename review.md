@@ -298,7 +298,10 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** storage layer is the single owner — its replace_draining swap propagates through
   the shared handle; store.reload() deleted (was discarding the validated pool with an undrained lazy
   one); tests assert propagation without explicit reopen.
-- [ ] **O24.** api.ts hand-maintained bindings drifted (see C3) — adopt tauri-specta or contract test.
+- [x] **O24.** api.ts hand-maintained bindings drifted (see C3) — adopt tauri-specta or contract test.
+  **FIXED 2026-08-24:** dependency-free contract test in src-tauri asserting every command invoked from
+  api.ts is registered in invoke_handler (verified to catch injected drift). Full type-level generation
+  remains an option if the IPC surface grows.
 - [ ] **O25.** Meeting seq derived from rowid order shifts on deletion; logic duplicated
   (`meetings.rs:117-123`, `offerings.rs:208-214`); `next_offering_number` port has no callers.
 - [ ] **O26.** Stale per-offering UI state survives offering switch (`selectOffering` resets only some state)
@@ -401,3 +404,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O21 fixed · GDPR export includes declaration amendment history
 - 2026-08-24 · O22 fixed · uuid segment in backup filenames
 - 2026-08-24 · O23 fixed · single pool-swap owner (store.reload removed); tests assert propagation
+- 2026-08-24 · O24 fixed · api.ts↔invoke_handler contract test in src-tauri (verified catches drift)
