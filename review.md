@@ -307,8 +307,10 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** migration 20240114 adds meetings.meeting_seq (backfilled, unique index);
   create allocates MAX+1 in-tx; offering-number generation reads the column; dead next_offering_number
   port method removed.
-- [ ] **O26.** Stale per-offering UI state survives offering switch (`selectOffering` resets only some state)
+- [x] **O26.** Stale per-offering UI state survives offering switch (`selectOffering` resets only some state)
   — reset addDonationOpen, dCounts, dRef, amendRemoveId etc. (`OfferingEntry.svelte:210-222`).
+  **FIXED 2026-08-24:** selectOffering resets donation-entry + removal-amendment state and messages;
+  AmendmentPanel wrapped in {#key offeringId} so its form state is fresh per offering.
 - [ ] **O27.** (follow-up from R4) Apply the same expected_updated_at conditional-update guard to
   AmendmentRepository::update and DeclarationAmendmentRepository::update (single-row status
   transitions; lower severity than the offering aggregate but same TOCTOU pattern).
@@ -409,3 +411,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O23 fixed · single pool-swap owner (store.reload removed); tests assert propagation
 - 2026-08-24 · O24 fixed · api.ts↔invoke_handler contract test in src-tauri (verified catches drift)
 - 2026-08-24 · O25 fixed · persisted meetings.meeting_seq (migration 20240114) replaces rowid-order derivation; dead port method removed
+- 2026-08-24 · O26 fixed · selectOffering resets entry/removal state; AmendmentPanel keyed by offeringId

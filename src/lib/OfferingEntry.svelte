@@ -194,6 +194,15 @@
     issues = [];
     gasds = null;
     amendments = [];
+    // Reset per-offering entry state so nothing recorded for the previous
+    // offering leaks into this one (review O26).
+    addDonationOpen = false;
+    dCounts = {};
+    dRef = "";
+    amendRemoveId = null;
+    removeReason = "";
+    error = "";
+    ok = "";
     if (!offeringId) return;
     const loaded = await getOffering(offeringId);
     if (req !== offeringSeq) return;
@@ -1013,16 +1022,18 @@
     </div>
 
     {#if !collectionMode && offering.status === 'Locked' && offeringId}
-      <AmendmentPanel
-        {offeringId}
-        {offering}
-        {amendments}
-        {canRecord}
-        {canSign}
-        {user}
-        onChanged={refresh}
-        onError={(m) => (error = m)}
-      />
+      {#key offeringId}
+        <AmendmentPanel
+          {offeringId}
+          {offering}
+          {amendments}
+          {canRecord}
+          {canSign}
+          {user}
+          onChanged={refresh}
+          onError={(m) => (error = m)}
+        />
+      {/key}
     {/if}
   {:else if meetingId}
     <p class="muted">Select or create an offering to begin.</p>
