@@ -66,7 +66,7 @@
 </div>
 
 <div class="card">
-  <h2>Awaing your check <span class="hint" title="Offerings signed by a counter but not yet checked by you.">ⓘ</span></h2>
+  <h2>Awaiting your check <span class="hint" title="Offerings signed by a counter but not yet checked by you.">ⓘ</span></h2>
   {#if awaitingChecker.length === 0}
     <p class="muted">Nothing awaiting your check right now.</p>
   {:else}

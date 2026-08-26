@@ -133,7 +133,7 @@ pub async fn restore_backup(
         // the new data. Force a re-login. Cleared while the restoring flag is
         // still held so no command can slip through with a stale identity
         // between release and clear (review R10).
-        *state.session.lock().unwrap() = None;
+        *state.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     // On failure the database was not swapped, so the existing session stays
     // valid; the flag is released by dropping `_restore_guard` last.

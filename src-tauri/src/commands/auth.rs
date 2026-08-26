@@ -10,6 +10,10 @@ pub async fn needs_bootstrap(state: State<'_, AppState>) -> Result<bool, String>
     state.services.auth.needs_bootstrap().await.map_err(|e| e.to_string())
 }
 
+/// Bootstrap the first admin. Two truly simultaneous first-run calls could
+/// both pass the needs_bootstrap check and create two admins (accepted: the
+/// unique username constraint still holds, and this window exists only on
+/// first run of a local desktop app).
 #[tauri::command]
 pub async fn bootstrap(
     state: State<'_, AppState>,
@@ -23,7 +27,7 @@ pub async fn bootstrap(
         .bootstrap(&username, &password, &display_name)
         .await
         .map_err(|e| e.to_string())?;
-    *state.session.lock().unwrap() = Some(user.clone());
+    *state.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(user.clone());
     Ok(user)
 }
 
@@ -35,18 +39,21 @@ pub async fn login(state: State<'_, AppState>, username: String, password: Strin
         .login(&username, &password)
         .await
         .map_err(|e| e.to_string())?;
-    *state.session.lock().unwrap() = Some(user.clone());
+    *state.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(user.clone());
     Ok(user)
 }
 
 #[tauri::command]
 pub fn logout(state: State<'_, AppState>) {
-    *state.session.lock().unwrap() = None;
+    *state.session.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// Returns the login-time session snapshot without revalidating it. Real
+/// actions re-fetch the user via `actor()`, so a deactivated or deleted user
+/// still shows as "logged in" here until their next action fails (review N3).
 #[tauri::command]
 pub fn current_user(state: State<'_, AppState>) -> Option<User> {
-    state.session.lock().unwrap().clone()
+    state.session.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[tauri::command]

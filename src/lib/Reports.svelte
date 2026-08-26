@@ -6,9 +6,10 @@
 
   let meetings = $state<Meeting[]>([]);
   let meetingId = $state<string | null>(null);
-  let start = $state("2026-01-01");
-  let end = $state("2026-12-31");
-  let taxYear = $state(2026);
+  const now = new Date();
+  let start = $state(localYmd(new Date(now.getFullYear(), 0, 1)));
+  let end = $state(localYmd(new Date(now.getFullYear(), 11, 31)));
+  let taxYear = $state(now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1);
   let error = $state("");
 
   let bk = $state<BookkeepingEntry[] | null>(null);

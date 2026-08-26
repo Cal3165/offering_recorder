@@ -86,7 +86,7 @@
         {#each offering.donations ?? [] as d (d.id)}
           <tr>
             <td>
-              {d.classification === 'Named' ? (d.donor_id ? 'Named' : 'Named') : d.classification === 'Anonymous' ? 'Anonymous' : 'Loose cash'}
+              {d.classification === 'Anonymous' ? 'Anonymous' : d.classification === 'LooseCash' ? 'Loose cash' : 'Named'}
             </td>
             <td>{d.donation_type}</td>
             <td>{d.payment_method === 'BankTransfer' ? 'Bank transfer' : d.payment_method === 'ChipAndPin' ? 'Chip & PIN' : d.payment_method}</td>

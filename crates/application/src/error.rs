@@ -28,7 +28,9 @@ impl From<DomainError> for AppError {
         match value {
             DomainError::Validation(m) => AppError::Validation(m),
             DomainError::InvalidTransition(m) => AppError::Validation(m),
-            DomainError::LockedError => AppError::Validation("offering is locked".into()),
+            DomainError::LockedError => {
+                AppError::Conflict("offering is locked and cannot be modified".into())
+            }
             DomainError::NegativeValue => AppError::Validation("negative value not allowed".into()),
             DomainError::ArithmeticOverflow => AppError::Validation("arithmetic overflow".into()),
             DomainError::ArithmeticUnderflow => AppError::Validation("arithmetic underflow".into()),

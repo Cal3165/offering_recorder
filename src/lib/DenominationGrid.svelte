@@ -38,7 +38,7 @@
         min="0"
         {readonly}
         value={counts[d.name] ?? 0}
-        onchange={(e) => setCount(d.name, Number(e.currentTarget.value) || 0)}
+        oninput={(e) => setCount(d.name, Number(e.currentTarget.value) || 0)}
         onkeydown={(e) => onKeydown?.(e, i)}
         aria-label={d.label}
       />

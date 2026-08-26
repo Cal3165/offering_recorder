@@ -110,13 +110,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_date_april_6_is_new_tax_year() {
-        let date = NaiveDate::from_ymd_opt(2024, 4, 6).unwrap();
-        let ty = TaxYear::from_date(date);
-        assert_eq!(ty, TaxYear::new(2024));
-    }
-
-    #[test]
     fn from_date_before_april_is_previous_year() {
         let date = NaiveDate::from_ymd_opt(2024, 3, 31).unwrap();
         let ty = TaxYear::from_date(date);

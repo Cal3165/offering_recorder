@@ -1,4 +1,3 @@
-use serde_json;
 use tauri::State;
 
 use crate::commands::AppState;
@@ -25,10 +24,9 @@ pub async fn gasds_claim_readiness(
 pub async fn prepare_gasds_claim(
     state: State<'_, AppState>,
     tax_year: TaxYear,
-    method: String,
+    method: GasdsClaimMethod,
 ) -> Result<GasdsClaim, String> {
     let actor = with_actor!(state);
-    let method: GasdsClaimMethod = serde_json::from_str(&method).map_err(|e| e.to_string())?;
     state
         .services
         .gasds_claims

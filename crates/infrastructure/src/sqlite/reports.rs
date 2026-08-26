@@ -52,9 +52,8 @@ fn donor_name(first: &str, last: &str, preferred: Option<&str>) -> String {
 }
 
 fn tax_year_bounds(year: &TaxYear) -> (NaiveDate, NaiveDate) {
-    let start = NaiveDate::from_ymd_opt(year.start_year(), 4, 6).unwrap();
-    let end = NaiveDate::from_ymd_opt(year.end_year(), 4, 5).unwrap();
-    (start, end)
+    // Delegate to the domain so the boundary rules live in one place.
+    (year.start_date(), year.end_date())
 }
 
 /// Coverage is determined purely by the declaration window: `end`/`revoke`

@@ -38,7 +38,7 @@ impl AmendmentChange {
     pub fn description(&self) -> String {
         match self {
             AmendmentChange::AddDonation(d) => {
-                format!("Add donation: {} {} ", d.amount, d.donation_type)
+                format!("Add donation: {} {}", d.amount, d.donation_type)
             }
             AmendmentChange::RemoveDonation(id) => format!("Remove donation: {}", id),
             AmendmentChange::SetCashDenominations(ct) => {

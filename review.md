@@ -329,19 +329,22 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 
 ## Nit (batch when convenient)
 
-- `Awaing` typo (Checking.svelte:69); trailing space in format string (amendment.rs:41); duplicate test
-  `from_date_april_6_is_new_tax_year` (tax_year.rs:113-117/136-140); dead ternary Named/'Named'
-  (ReviewModal.svelte:85); `.unwrap()` vs poison-tolerant locking inconsistency (auth.rs:26,38,44,49;
-  backups.rs:46,104); `expect("midnight is a valid time")` panics in domain (gasds.rs:11-13,
-  gasds_claims.rs:131,147); `LockedError` mapped to generic Validation (error.rs:31);
-  hardcoded Reports defaults 2026 dates (Reports.svelte:9-11); `meetingSeq` from array index
-  (OfferingEntry.svelte:448-451); DenominationGrid commits on change not input (:41); raw float KB in
-  Backups toast (:34); redundant index idx_deposit_items_offering (initial_schema.sql:123);
-  v1+v2 bank-deposit triggers both installed; `audit_events.created_at` written never read;
-  `tax_year_bounds` hardcodes Apr 6 instead of TaxYear methods (reports.rs:54-58);
-  `self.audit` misindent (gift_aid.rs:366); double-encoded enum param in prepare_gasds_claim command
-  (gasds_claims.rs:31); current_user returns unrevalidated snapshot (auth.rs:48-50) — document;
-  bootstrap check-then-act race (auth.rs:43).
+**BATCHED 2026-08-24** — fixed:
+- `Awaing` typo (Checking.svelte); trailing space in format string (amendment.rs); duplicate
+  `from_date_april_6_is_new_tax_year` test removed (tax_year.rs); dead Named/'Named' ternary replaced
+  (ReviewModal.svelte); lock-poison-tolerant `.lock().unwrap_or_else(into_inner)` across command layer;
+  `LockedError` now maps to Conflict (error.rs); Reports defaults derived from current date; backup KB
+  formatted; `prepare_gasds_claim` no longer double-decodes the method param (**this nit was a live
+  runtime bug — every claim preparation through the UI failed JSON parsing**); current_user + bootstrap
+  limitations documented; `tax_year_bounds` delegates to TaxYear::start_date/end_date; migration 20240115
+  drops superseded v1 bank-deposit triggers and the PK-duplicating index; misleading index-derived
+  "Next offering" guess removed from the start dialog (numbers are backend-assigned since O25/O6);
+  DenominationGrid commits per keystroke (oninput).
+
+Still open (accepted, low value-to-churn):
+- `audit_events.created_at` column written but never read (needs NOT NULL migration + insert change);
+- infallible `.expect("midnight is a valid time")` style panics in gasds date helpers;
+- `meetingSeq`/DAYS-array micro-duplications resolved or made moot by O25/O26 work above.
 
 ## Positive observations (keep doing these)
 
@@ -360,6 +363,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 
 **Request changes** at time of review. Architecture sound; security posture above average for category.
 Merge-quality requires fixing C1-C3 plus the mis-attributed signature (R11) first.
+
+**UPDATE 2026-08-24 — implementation complete:** all 3 Criticals, all 19 Requireds, and Optionals
+O1-O27 + O29 fixed (O1 partial with documented justification; O28 documented as deferred until Windows
+is a target). Nit batch applied. Final verification: cargo test 323 passed / 0 failed; clippy no new
+errors; svelte-check 0 errors / 0 warnings; frontend build clean. Remaining open items are explicitly
+tracked: O1-tx-refactor, O28-Windows-swap, audit_events.created_at column.
 
 Suggested fix batches:
 1. Domain/report math: C1, C2, R1, R5 (+ regression tests)
@@ -423,3 +432,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O27 fixed · optimistic concurrency on amendment + declaration-amendment updates (8 call sites)
 - 2026-08-24 · O28 documented · Windows rename limitation noted at restore site; redesign deferred until Windows is a target
 - 2026-08-24 · O29 fixed · CSV import integration test + audit completeness assertions; exposed and fixed broken ESCAPE clause from O10 · cargo test 325 pass
+- 2026-08-24 · Nit batch · typos, dedup test, poison-tolerant locks, LockedError→Conflict, dynamic report defaults, prepare_gasds_claim double-decode fix (live bug), schema cleanup migration 20240115, DenominationGrid oninput, start-dialog guess removed · cargo test 323 pass · svelte-check 0/0

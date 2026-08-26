@@ -361,11 +361,9 @@
 
   function openStart() {
     if (!meetingId) return;
-    const year = new Date().getFullYear();
-    const meetingIndex = meetings.findIndex((m) => m.id === meetingId);
-    const meetingSeq = meetingIndex >= 0 ? meetingIndex + 1 : 1;
-    const thisYearCount = offerings.filter((o) => o.offering_number.startsWith(`${year}/`)).length;
-    startNumber = `${year}/${String(meetingSeq).padStart(2, "0")}/${String(thisYearCount + 1).padStart(4, "0")}`;
+    // The backend assigns offering numbers from persisted counters; any
+    // index-based guess here could mislead, so we no longer show one.
+    startNumber = "";
     startAttendance = 0;
     startOpen = true;
   }
@@ -694,7 +692,7 @@
           <span class="muted">
             Meeting: <strong>{meetings.find((m) => m.id === meetingId)?.name ?? ""}</strong> •
             Date: <strong>{new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</strong> •
-            Next offering: <strong>{startNumber}</strong>
+            <span class="muted">The offering number is assigned automatically.</span>
           </span>
         </div>
         <div class="row">
