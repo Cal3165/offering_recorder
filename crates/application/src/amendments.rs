@@ -106,8 +106,10 @@ impl<'a> AmendmentService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
+        // Snapshot for optimistic-concurrency check at save time (review O27).
+        let expected_updated_at = amendment.updated_at;
         amendment.counter_sign(Self::signature_for(actor, guest_name))?;
-        let amendment = self.amendments.update(amendment).await?;
+        let amendment = self.amendments.update(amendment, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -136,8 +138,10 @@ impl<'a> AmendmentService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
+        // Snapshot for optimistic-concurrency check at save time (review O27).
+        let expected_updated_at = amendment.updated_at;
         amendment.checker_sign(Self::signature_for(actor, guest_name))?;
-        let amendment = self.amendments.update(amendment).await?;
+        let amendment = self.amendments.update(amendment, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -161,8 +165,10 @@ impl<'a> AmendmentService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
+        // Snapshot for optimistic-concurrency check at save time (review O27).
+        let expected_updated_at = amendment.updated_at;
         amendment.approve()?;
-        let amendment = self.amendments.update(amendment).await?;
+        let amendment = self.amendments.update(amendment, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -190,9 +196,10 @@ impl<'a> AmendmentService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
+        let expected_updated_at = amendment.updated_at;
         let old = crate::audit::state_json(&amendment);
         amendment.withdraw_signature()?;
-        let amendment = self.amendments.update(amendment).await?;
+        let amendment = self.amendments.update(amendment, expected_updated_at).await?;
         self.audit
             .record(
                 actor,

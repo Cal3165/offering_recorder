@@ -101,12 +101,18 @@ impl AmendmentRepository for SqliteAmendmentRepository {
         rows.iter().map(row_to_amendment).collect()
     }
 
-    async fn update(&self, amendment: Amendment) -> RepoResult<Amendment> {
+    async fn update(
+        &self,
+        amendment: Amendment,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<Amendment> {
         let changes = to_json(&amendment.changes)?;
         let counter = amendment.counter_signature.as_ref().map(to_json).transpose()?;
         let checker = amendment.checker_signature.as_ref().map(to_json).transpose()?;
-        sqlx::query(
-            "UPDATE amendments SET reason = ?, changes = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ?",
+        // Conditional on the loaded timestamp so a concurrent transition is
+        // rejected instead of overwritten (review O27).
+        let result = sqlx::query(
+            "UPDATE amendments SET reason = ?, changes = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(&amendment.reason)
         .bind(changes)
@@ -115,9 +121,15 @@ impl AmendmentRepository for SqliteAmendmentRepository {
         .bind(super::to_json(&amendment.status)?)
         .bind(amendment.updated_at)
         .bind(amendment.id)
+        .bind(expected_updated_at)
         .execute(&self.pool.get())
         .await
         .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::Conflict(
+                "amendment was modified by another operation; reload and retry".into(),
+            ));
+        }
         Ok(amendment)
     }
 

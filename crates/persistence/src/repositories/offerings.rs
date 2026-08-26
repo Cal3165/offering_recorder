@@ -52,7 +52,12 @@ pub trait AmendmentRepository: Send + Sync {
     async fn get(&self, id: Uuid) -> RepoResult<Option<Amendment>>;
     async fn list_by_offering(&self, offering_id: Uuid) -> RepoResult<Vec<Amendment>>;
     async fn approved_amendments_for_offering(&self, offering_id: Uuid) -> RepoResult<Vec<Amendment>>;
-    async fn update(&self, amendment: Amendment) -> RepoResult<Amendment>;
+    /// Optimistic-concurrency update; see OfferingRepository::update (review O27).
+    async fn update(
+        &self,
+        amendment: Amendment,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<Amendment>;
     async fn delete(&self, id: Uuid) -> RepoResult<()>;
     async fn delete_by_offering(&self, offering_id: Uuid) -> RepoResult<()>;
     async fn delete_all(&self) -> RepoResult<()>;

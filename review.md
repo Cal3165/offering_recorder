@@ -311,9 +311,11 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   — reset addDonationOpen, dCounts, dRef, amendRemoveId etc. (`OfferingEntry.svelte:210-222`).
   **FIXED 2026-08-24:** selectOffering resets donation-entry + removal-amendment state and messages;
   AmendmentPanel wrapped in {#key offeringId} so its form state is fresh per offering.
-- [ ] **O27.** (follow-up from R4) Apply the same expected_updated_at conditional-update guard to
+- [x] **O27.** (follow-up from R4) Apply the same expected_updated_at conditional-update guard to
   AmendmentRepository::update and DeclarationAmendmentRepository::update (single-row status
   transitions; lower severity than the offering aggregate but same TOCTOU pattern).
+  **FIXED 2026-08-24:** both ports take expected_updated_at; SQL guards `WHERE id = ? AND updated_at = ?`,
+  0 rows ⇒ Conflict; all 8 service call sites snapshot at load.
 - [ ] **O28.** (follow-up from R10) Restore promotes the restored file by `fs::rename` over a database
   that may still be open by a displaced pool connection — safe on POSIX, fails on Windows. Stage to
   temp + swap under a lock or document Windows behavior explicitly.
@@ -412,3 +414,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O24 fixed · api.ts↔invoke_handler contract test in src-tauri (verified catches drift)
 - 2026-08-24 · O25 fixed · persisted meetings.meeting_seq (migration 20240114) replaces rowid-order derivation; dead port method removed
 - 2026-08-24 · O26 fixed · selectOffering resets entry/removal state; AmendmentPanel keyed by offeringId
+- 2026-08-24 · O27 fixed · optimistic concurrency on amendment + declaration-amendment updates (8 call sites)

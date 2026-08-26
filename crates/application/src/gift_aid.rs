@@ -285,8 +285,10 @@ impl<'a> GiftAidService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| AppError::NotFound("declaration amendment not found".into()))?;
+        // Snapshot for optimistic-concurrency check at save time (review O27).
+        let expected_updated_at = amendment.updated_at;
         amendment.counter_sign(Self::signature_for(actor, guest_name))?;
-        let amendment = self.declaration_amendments.update(amendment).await?;
+        let amendment = self.declaration_amendments.update(amendment, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -315,8 +317,10 @@ impl<'a> GiftAidService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| AppError::NotFound("declaration amendment not found".into()))?;
+        // Snapshot for optimistic-concurrency check at save time (review O27).
+        let expected_updated_at = amendment.updated_at;
         amendment.checker_sign(Self::signature_for(actor, guest_name))?;
-        let amendment = self.declaration_amendments.update(amendment).await?;
+        let amendment = self.declaration_amendments.update(amendment, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -344,6 +348,8 @@ impl<'a> GiftAidService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| AppError::NotFound("declaration amendment not found".into()))?;
+        // Snapshot for optimistic-concurrency check at save time (review O27).
+        let expected_updated_at = amendment.updated_at;
         amendment.approve()?;
 
         let mut declaration = self
@@ -361,7 +367,7 @@ impl<'a> GiftAidService<'a> {
             }
         }
 
-        let amendment = self.declaration_amendments.update(amendment).await?;
+        let amendment = self.declaration_amendments.update(amendment, expected_updated_at).await?;
         let updated = self.gift_aid.update(declaration).await?;
 self.audit
             .record(
@@ -404,9 +410,10 @@ self.audit
             .get(amendment_id)
             .await?
             .ok_or_else(|| AppError::NotFound("declaration amendment not found".into()))?;
+        let expected_updated_at = amendment.updated_at;
         let old = crate::audit::state_json(&amendment);
         amendment.withdraw_signature()?;
-        let amendment = self.declaration_amendments.update(amendment).await?;
+        let amendment = self.declaration_amendments.update(amendment, expected_updated_at).await?;
         self.audit
             .record(
                 actor,

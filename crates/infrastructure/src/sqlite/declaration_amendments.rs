@@ -116,12 +116,14 @@ impl DeclarationAmendmentRepository for SqliteDeclarationAmendmentRepository {
     async fn update(
         &self,
         amendment: DeclarationAmendment,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> RepoResult<DeclarationAmendment> {
         let change = to_json(&amendment.change)?;
         let counter = amendment.counter_signature.as_ref().map(to_json).transpose()?;
         let checker = amendment.checker_signature.as_ref().map(to_json).transpose()?;
-        sqlx::query(
-            "UPDATE declaration_amendments SET reason = ?, change = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ?",
+        // Conditional on the loaded timestamp (review O27).
+        let result = sqlx::query(
+            "UPDATE declaration_amendments SET reason = ?, change = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(&amendment.reason)
         .bind(change)
@@ -130,9 +132,15 @@ impl DeclarationAmendmentRepository for SqliteDeclarationAmendmentRepository {
         .bind(to_json(&amendment.status)?)
         .bind(amendment.updated_at)
         .bind(amendment.id)
+        .bind(expected_updated_at)
         .execute(&self.pool.get())
         .await
         .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::Conflict(
+                "declaration amendment was modified by another operation; reload and retry".into(),
+            ));
+        }
         Ok(amendment)
     }
 

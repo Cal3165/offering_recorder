@@ -36,7 +36,12 @@ pub trait DeclarationAmendmentRepository: Send + Sync {
     async fn get(&self, id: Uuid) -> RepoResult<Option<DeclarationAmendment>>;
     async fn list_by_declaration(&self, declaration_id: Uuid) -> RepoResult<Vec<DeclarationAmendment>>;
     async fn list_by_donor(&self, donor_id: Uuid) -> RepoResult<Vec<DeclarationAmendment>>;
-    async fn update(&self, amendment: DeclarationAmendment) -> RepoResult<DeclarationAmendment>;
+    /// Optimistic-concurrency update; see OfferingRepository::update (review O27).
+    async fn update(
+        &self,
+        amendment: DeclarationAmendment,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<DeclarationAmendment>;
     async fn delete(&self, id: Uuid) -> RepoResult<()>;
     async fn delete_all(&self) -> RepoResult<()>;
 }
