@@ -285,7 +285,9 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **FIXED 2026-08-24:** ValidationIssue gains `blocking` flag; no_donations is informational. Sign and lock
   paths reject only blocking issues; ReviewModal shows informational lines separately, disables on blocking
   only (reviewer confirms knowingly). Workflow test locks an attendance-only offering.
-- [ ] **O20.** `delete_deposit` actuals guard ignores `actual_other` (`banking.rs:174`).
+- [x] **O20.** `delete_deposit` actuals guard ignores `actual_other` (`banking.rs:174`).
+  **FIXED 2026-08-24:** guard checks `!deposit.actual_total().is_zero()` — actuals in any bucket block
+  deletion (covered by the banking workflow test).
 - [ ] **O21.** GDPR export omits declaration amendment history (`persistence/repositories/reports.rs:82-88`).
 - [ ] **O22.** Backup filename collision within same second (`backup.rs:130-142`) — uuid suffix.
 - [ ] **O23.** Redundant double pool swap on restore (eager pool then lazy reload discards validated one)
@@ -389,3 +391,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O17 fixed · shared changeLabel/fmtBreakdown/depositExpectedTotals; Dashboard includes actual_other
 - 2026-08-24 · O18 fixed · donor localStorage keys cleared on logout/restore
 - 2026-08-24 · O19 fixed · blocking flag on ValidationIssue; nil collections signable/lockable with informational display · cargo test 322 pass
+- 2026-08-24 · O20 fixed · delete_deposit guard covers actual_other via actual_total()

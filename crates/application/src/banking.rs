@@ -177,7 +177,10 @@ impl<'a> BankingService<'a> {
             .get(deposit_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("deposit not found".into()))?;
-        if !deposit.actual_cash.is_zero() || !deposit.actual_cheques.is_zero() {
+        // Recorded actuals in ANY bucket are banking evidence (review O20:
+        // actual_other was previously ignored, allowing deletion of a
+        // reconciled non-cash deposit).
+        if !deposit.actual_total().is_zero() {
             return Err(crate::error::AppError::Validation(
                 "cannot delete a deposit that has recorded actuals".into(),
             ));
