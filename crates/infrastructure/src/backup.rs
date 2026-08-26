@@ -398,9 +398,9 @@ mod tests {
             )
             .await
             .expect("restore backup");
-        store.reload(db_path.to_str().unwrap()).expect("reload store");
-
-        let remaining = store.users.list().await.expect("list after reload");
+        // The shared-pool swap must propagate to every repository without any
+        // explicit reopen (review O23).
+        let remaining = store.users.list().await.expect("list after restore");
         assert_eq!(remaining.len(), 1);
 
         fs::remove_dir_all(&dir).unwrap();

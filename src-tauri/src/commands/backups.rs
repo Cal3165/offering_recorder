@@ -117,10 +117,11 @@ pub async fn restore_backup(
             .restore_backup(&actor, &db_path, &resolved, &safety_dir, &passphrase)
             .await
             .map_err(|e| e.to_string())?;
-        let store_path = db_path.to_str().ok_or("db path is not valid UTF-8")?;
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        store.reload(store_path).map_err(|e| e.to_string())?;
-        drop(store);
+        // No reopen needed: the storage layer already installed the validated,
+        // migrated pool into the shared handle (draining the displaced one),
+        // and every repository observes the swap through that handle.
+        // Previously a second lazy pool was swapped in here, discarding the
+        // validated one (review O23).
         Ok::<(), String>(())
     }
     .await;

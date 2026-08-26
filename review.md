@@ -293,8 +293,11 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   TS type updated.
 - [x] **O22.** Backup filename collision within same second (`backup.rs:130-142`) — uuid suffix.
   **FIXED 2026-08-24:** backup filenames gain a 6-char uuid segment.
-- [ ] **O23.** Redundant double pool swap on restore (eager pool then lazy reload discards validated one)
+- [x] **O23.** Redundant double pool swap on restore (eager pool then lazy reload discards validated one)
   (`backup.rs:66-78` + `store.rs:72-75` + `commands/backups.rs:89-92`) — pick one owner.
+  **FIXED 2026-08-24:** storage layer is the single owner — its replace_draining swap propagates through
+  the shared handle; store.reload() deleted (was discarding the validated pool with an undrained lazy
+  one); tests assert propagation without explicit reopen.
 - [ ] **O24.** api.ts hand-maintained bindings drifted (see C3) — adopt tauri-specta or contract test.
 - [ ] **O25.** Meeting seq derived from rowid order shifts on deletion; logic duplicated
   (`meetings.rs:117-123`, `offerings.rs:208-214`); `next_offering_number` port has no callers.
@@ -395,3 +398,6 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O18 fixed · donor localStorage keys cleared on logout/restore
 - 2026-08-24 · O19 fixed · blocking flag on ValidationIssue; nil collections signable/lockable with informational display · cargo test 322 pass
 - 2026-08-24 · O20 fixed · delete_deposit guard covers actual_other via actual_total()
+- 2026-08-24 · O21 fixed · GDPR export includes declaration amendment history
+- 2026-08-24 · O22 fixed · uuid segment in backup filenames
+- 2026-08-24 · O23 fixed · single pool-swap owner (store.reload removed); tests assert propagation

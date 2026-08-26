@@ -1,8 +1,6 @@
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
-use std::str::FromStr;
+use sqlx::sqlite::SqlitePool;
 
 use crate::db;
-use crate::error::InfraError;
 use crate::error::InfraResult;
 use crate::SharedPool;
 
@@ -54,25 +52,4 @@ impl SqliteStore {
         }
     }
 
-    /// Reopen the on-disk database after a restore.
-    ///
-    /// Every repository holds a clone of this `SharedPool`, so swapping the pool
-    /// it points to is observed by all repositories (and by the backup storage)
-    /// without mutating the repository values themselves. This avoids the
-    /// unsound in-place mutation of `&'static` repository references that a
-    /// previous implementation relied on.
-    ///
-    /// The pool is created lazily: the restored file already carries the correct
-    /// schema and migrations run at open time, not here.
-    pub fn reload(&self, path: &str) -> InfraResult<()> {
-        let options = SqliteConnectOptions::from_str(path)
-            .map_err(|e| InfraError::Message(format!("invalid sqlite path: {e}")))?
-            .create_if_missing(true)
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect_lazy_with(options);
-        self.pool.replace(pool);
-        Ok(())
-    }
 }

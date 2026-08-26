@@ -1823,7 +1823,7 @@ async fn encrypted_backup_can_be_validated_and_restored() {
         .restore_backup(&admin, &db_path, backup_path, &safety_dir, "correct horse battery staple")
         .await
         .unwrap();
-    store.reload(db_path.to_str().unwrap()).expect("reload store");
+    // The shared-pool swap propagates without an explicit reopen (review O23).
     assert_eq!(store.users.list().await.unwrap().len(), 1);
 
     services
