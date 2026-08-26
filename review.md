@@ -288,7 +288,9 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 - [x] **O20.** `delete_deposit` actuals guard ignores `actual_other` (`banking.rs:174`).
   **FIXED 2026-08-24:** guard checks `!deposit.actual_total().is_zero()` — actuals in any bucket block
   deletion (covered by the banking workflow test).
-- [ ] **O21.** GDPR export omits declaration amendment history (`persistence/repositories/reports.rs:82-88`).
+- [x] **O21.** GDPR export omits declaration amendment history (`persistence/repositories/reports.rs:82-88`).
+  **FIXED 2026-08-24:** GdprReport gains declaration_amendments (joined via the donor's declarations);
+  TS type updated.
 - [ ] **O22.** Backup filename collision within same second (`backup.rs:130-142`) — uuid suffix.
 - [ ] **O23.** Redundant double pool swap on restore (eager pool then lazy reload discards validated one)
   (`backup.rs:66-78` + `store.rs:72-75` + `commands/backups.rs:89-92`) — pick one owner.

@@ -84,6 +84,9 @@ pub struct GdprReport {
     pub donor: Donor,
     pub donations: Vec<GdprDonation>,
     pub gift_aid_declarations: Vec<GiftAidDeclaration>,
+    /// Amendments to this donor's declarations — who changed or cancelled
+    /// them and why (review O21).
+    pub declaration_amendments: Vec<DeclarationAmendment>,
     pub amendments: Vec<Amendment>,
     pub audit_events: Vec<AuditEvent>,
 }

@@ -369,6 +369,7 @@ export interface GdprReport {
   donor: Donor;
   donations: GdprDonation[];
   gift_aid_declarations: GiftAidDeclaration[];
+  declaration_amendments: DeclarationAmendment[];
   amendments: Amendment[];
   audit_events: AuditEvent[];
 }

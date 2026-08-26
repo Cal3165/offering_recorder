@@ -315,6 +315,20 @@ impl ReportRepository for SqliteReportRepository {
             amendments.extend(rows.iter().map(row_to_amendment).collect::<Result<Vec<_>, _>>()?);
         }
 
+        // Declaration amendments reference the donor via their declaration
+        // (review O21).
+        let decl_amend_rows = sqlx::query(
+            "SELECT da.* FROM declaration_amendments da\n             JOIN gift_aid_declarations g ON g.id = da.declaration_id\n             WHERE g.donor_id = ? ORDER BY da.created_at",
+        )
+        .bind(donor_id)
+        .fetch_all(&self.pool.get())
+        .await
+        .map_err(map_db_err)?;
+        let declaration_amendments = decl_amend_rows
+            .iter()
+            .map(super::declaration_amendments::row_to_declaration_amendment)
+            .collect::<Result<Vec<_>, _>>()?;
+
         let audit_rows = sqlx::query("SELECT * FROM audit_events WHERE entity_id = ? ORDER BY timestamp")
             .bind(donor_id)
             .fetch_all(&self.pool.get())
@@ -326,6 +340,7 @@ impl ReportRepository for SqliteReportRepository {
             donor,
             donations,
             gift_aid_declarations,
+            declaration_amendments,
             amendments,
             audit_events,
         })
