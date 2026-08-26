@@ -138,11 +138,14 @@ impl BackupManager {
     ) -> InfraResult<(String, u64)> {
         fs::create_dir_all(backup_dir)?;
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-        let plain_path = backup_dir.join(format!("backup_{timestamp}.sqlite"));
+        // Short uuid suffix: two backups in the same second must not collide
+        // (VACUUM INTO fails if the target exists) (review O22).
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..6];
+        let plain_path = backup_dir.join(format!("backup_{timestamp}_{suffix}.sqlite"));
         let final_path = if passphrase.trim().is_empty() {
             plain_path.clone()
         } else {
-            backup_dir.join(format!("backup_{timestamp}.sqlite.enc"))
+            backup_dir.join(format!("backup_{timestamp}_{suffix}.sqlite.enc"))
         };
 
         // VACUUM INTO writes the full plaintext database (donor PII + password

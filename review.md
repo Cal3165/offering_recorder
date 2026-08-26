@@ -291,7 +291,8 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
 - [x] **O21.** GDPR export omits declaration amendment history (`persistence/repositories/reports.rs:82-88`).
   **FIXED 2026-08-24:** GdprReport gains declaration_amendments (joined via the donor's declarations);
   TS type updated.
-- [ ] **O22.** Backup filename collision within same second (`backup.rs:130-142`) — uuid suffix.
+- [x] **O22.** Backup filename collision within same second (`backup.rs:130-142`) — uuid suffix.
+  **FIXED 2026-08-24:** backup filenames gain a 6-char uuid segment.
 - [ ] **O23.** Redundant double pool swap on restore (eager pool then lazy reload discards validated one)
   (`backup.rs:66-78` + `store.rs:72-75` + `commands/backups.rs:89-92`) — pick one owner.
 - [ ] **O24.** api.ts hand-maintained bindings drifted (see C3) — adopt tauri-specta or contract test.
