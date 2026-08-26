@@ -2225,3 +2225,22 @@ async fn gift_aid_report_respects_tax_year_boundary() {
     assert_eq!(cur_for_donor[0].donation_date, cur_apr6);
 }
 
+
+#[tokio::test]
+async fn nil_collection_can_be_signed_and_locked() {
+    // Regression (review O19): a genuinely empty collection (attendance-only
+    // service) previously dead-ended — no_donations blocked signing forever.
+    // It is now informational: the reviewer confirms knowingly.
+    let services = build_services().await;
+    let admin = services.auth.bootstrap("admin", "pw", "Admin").await.unwrap();
+
+    let meeting = services.meetings.create_meeting(&admin, "NilTest", 0, "10:00", None).await.unwrap();
+    let offering = services.offerings.create_offering(&admin, meeting.id, None).await.unwrap();
+    services.offerings.set_attendance(&admin, offering.id, 12).await.unwrap();
+
+    lock_offering(&services, &admin, offering.id).await;
+
+    let stored = services.offerings.get_stored_offering(&admin, offering.id).await.unwrap().unwrap();
+    assert!(stored.is_locked());
+    assert!(stored.donations.is_empty());
+}

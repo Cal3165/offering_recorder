@@ -280,8 +280,11 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   clear on logout or scope key to DB identity.
   **FIXED 2026-08-24:** clearDonorUsage() removes or-fav-donors/or-donor-freq on logout and after a
   database restore.
-- [ ] **O19.** Zero-collection offerings cannot be signed/locked — workflow dead-end for nil collections
+- [x] **O19.** Zero-collection offerings cannot be signed/locked — workflow dead-end for nil collections
   (`validation.rs:95-104`, `offerings.rs:351-361,388-398`). Consider nil-collection confirmation.
+  **FIXED 2026-08-24:** ValidationIssue gains `blocking` flag; no_donations is informational. Sign and lock
+  paths reject only blocking issues; ReviewModal shows informational lines separately, disables on blocking
+  only (reviewer confirms knowingly). Workflow test locks an attendance-only offering.
 - [ ] **O20.** `delete_deposit` actuals guard ignores `actual_other` (`banking.rs:174`).
 - [ ] **O21.** GDPR export omits declaration amendment history (`persistence/repositories/reports.rs:82-88`).
 - [ ] **O22.** Backup filename collision within same second (`backup.rs:130-142`) — uuid suffix.
@@ -384,3 +387,5 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O14 fixed · Checking uses list_all_offerings; DonorDetail parallel fetches
 - 2026-08-24 · O16 fixed · shared localYmd/localDateTimeInput replace all toISOString().slice() sites
 - 2026-08-24 · O17 fixed · shared changeLabel/fmtBreakdown/depositExpectedTotals; Dashboard includes actual_other
+- 2026-08-24 · O18 fixed · donor localStorage keys cleared on logout/restore
+- 2026-08-24 · O19 fixed · blocking flag on ValidationIssue; nil collections signable/lockable with informational display · cargo test 322 pass

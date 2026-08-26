@@ -7,6 +7,11 @@ use offering_domain::money::Money;
 pub struct ValidationIssue {
     pub code: String,
     pub message: String,
+    /// Blocking issues prevent signing/locking. Non-blocking issues are
+    /// surfaced to the reviewer but do not stop the workflow — e.g. a
+    /// genuinely nil collection may be signed and locked deliberately
+    /// (review O19).
+    pub blocking: bool,
 }
 
 pub struct ValidationService;
@@ -26,6 +31,7 @@ impl ValidationService {
             vec![ValidationIssue {
                 code: "attendance_missing".into(),
                 message: "Attendance has not been recorded".into(),
+                blocking: true,
             }]
         } else {
             Vec::new()
@@ -43,6 +49,7 @@ impl ValidationService {
         if denominated != cash_donations {
             vec![ValidationIssue {
                 code: "cash_denomination_mismatch".into(),
+                blocking: true,
                 message: format!(
                     "Cash denominations total {} does not match cash donations total {}",
                     Money::from_pence_unchecked(denominated),
@@ -72,6 +79,7 @@ impl ValidationService {
             if offering.cash_denominations.get(denom) != *count {
                 issues.push(ValidationIssue {
                     code: "cash_denomination_mismatch".into(),
+                    blocking: true,
                     message: format!(
                         "{} counted {} but recorded cash donations sum to {}",
                         denom.display(),
@@ -84,6 +92,7 @@ impl ValidationService {
         if missing_breakdowns > 0 {
             issues.push(ValidationIssue {
                 code: "cash_denomination_missing".into(),
+                blocking: true,
                 message: format!(
                     "{missing_breakdowns} cash donation(s) have no denomination breakdown"
                 ),
@@ -94,9 +103,13 @@ impl ValidationService {
 
     fn validate_has_donations(offering: &Offering) -> Vec<ValidationIssue> {
         if offering.donations.is_empty() && offering.cash_total().is_zero() {
+            // A genuinely nil collection (e.g. an attendance-only service)
+            // must be signable and lockable; surface it as informational so
+            // the reviewer confirms it knowingly (review O19).
             vec![ValidationIssue {
                 code: "no_donations".into(),
-                message: "Offering has no donations recorded".into(),
+                message: "No donations have been recorded yet.".into(),
+                blocking: false,
             }]
         } else {
             Vec::new()

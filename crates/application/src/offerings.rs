@@ -359,10 +359,13 @@ impl<'a> OfferingService<'a> {
         // Snapshot for optimistic-concurrency check at save time (review R4).
         let expected_updated_at = offering.updated_at;
         let issues = ValidationService::validate(&offering);
-        if !issues.is_empty() {
+        // Only blocking issues stop signing; informational ones (e.g. a nil
+        // collection) are surfaced to the reviewer instead (review O19).
+        let blocking: Vec<_> = issues.iter().filter(|i| i.blocking).collect();
+        if !blocking.is_empty() {
             return Err(crate::error::AppError::Validation(format!(
                 "cannot counter sign: offering has unresolved issues ({})",
-                issues
+                blocking
                     .iter()
                     .map(|i| i.message.clone())
                     .collect::<Vec<_>>()
@@ -398,10 +401,13 @@ impl<'a> OfferingService<'a> {
         // Snapshot for optimistic-concurrency check at save time (review R4).
         let expected_updated_at = offering.updated_at;
         let issues = ValidationService::validate(&offering);
-        if !issues.is_empty() {
+        // Only blocking issues stop signing; informational ones (e.g. a nil
+        // collection) are surfaced to the reviewer instead (review O19).
+        let blocking: Vec<_> = issues.iter().filter(|i| i.blocking).collect();
+        if !blocking.is_empty() {
             return Err(crate::error::AppError::Validation(format!(
                 "cannot checker sign: offering has unresolved issues ({})",
-                issues
+                blocking
                     .iter()
                     .map(|i| i.message.clone())
                     .collect::<Vec<_>>()
@@ -461,10 +467,12 @@ impl<'a> OfferingService<'a> {
         // Snapshot for optimistic-concurrency check at save time (review R4).
         let expected_updated_at = offering.updated_at;
         let issues = ValidationService::validate(&offering);
-        if !issues.is_empty() {
+        // Only blocking issues stop locking (review O19).
+        let blocking: Vec<_> = issues.iter().filter(|i| i.blocking).collect();
+        if !blocking.is_empty() {
             return Err(crate::error::AppError::Validation(format!(
                 "cannot lock offering: {}",
-                issues
+                blocking
                     .iter()
                     .map(|i| i.message.clone())
                     .collect::<Vec<_>>()

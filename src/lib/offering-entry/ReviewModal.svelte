@@ -26,8 +26,7 @@
     onClose,
   }: {
     offering: Offering;
-    issues: ValidationIssue[];
-    user: User;
+    issues: ValidationIssue[];    user: User;
     canSign: boolean;
     reviewAction: "counter" | "checker" | "lock";
     reviewConfirmed: boolean;
@@ -47,6 +46,11 @@
     onConfirm: () => void;
     onClose: () => void;
   } = $props();
+
+  // Only blocking issues prevent signing; informational ones (e.g. a nil
+  // collection) are shown so the reviewer confirms knowingly (review O19).
+  const blockingIssues = $derived(issues.filter((i) => i.blocking));
+  const informationalIssues = $derived(issues.filter((i) => !i.blocking));
 </script>
 
 <div class="overlay">
@@ -99,9 +103,12 @@
       <li class={offering.attendance ? 'check-item' : 'check-item bad'}>
         {offering.attendance ? '✓ Attendance entered' : '✕ Attendance missing'}
       </li>
-      <li class={issues.length === 0 ? 'check-item' : 'check-item bad'}>
-        {issues.length === 0 ? '✓ No validation errors' : `✕ ${issues.length} validation ${issues.length === 1 ? 'error' : 'errors'} to resolve`}
+      <li class={blockingIssues.length === 0 ? 'check-item' : 'check-item bad'}>
+        {blockingIssues.length === 0 ? '✓ No blocking validation errors' : `✕ ${blockingIssues.length} validation ${blockingIssues.length === 1 ? 'error' : 'errors'} to resolve`}
       </li>
+      {#each informationalIssues as info (info.code)}
+        <li class="check-item" title="Informational: you may continue after confirming">ℹ {info.message}</li>
+      {/each}
     </ul>
     {#if reviewAction !== "lock"}
       <div class="sign-confirm">
@@ -134,7 +141,7 @@
         </span>
       </label>
     </div>
-    <button onclick={onConfirm} disabled={!reviewConfirmed || issues.length > 0 || (reviewGuest && !reviewGuestName.trim())}>
+    <button onclick={onConfirm} disabled={!reviewConfirmed || issues.some((i) => i.blocking) || (reviewGuest && !reviewGuestName.trim())}>
       {reviewAction === "counter" ? "Sign as Counter" : reviewAction === "checker" ? "Sign as Checker" : "Lock offering"}
     </button>
   </div>

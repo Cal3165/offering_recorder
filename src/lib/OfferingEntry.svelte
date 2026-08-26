@@ -645,6 +645,9 @@
   );
 
   const gasdsByDonation = $derived(new Map((gasds?.evaluations ?? []).map((e) => [e.donation_id, e])));
+  // Only blocking issues stop signing; informational ones (e.g. a nil
+  // collection) are shown but knowingly confirmed by the reviewer (review O19).
+  const blockingIssues = $derived(issues.filter((i) => i.blocking));
 </script>
 
 <div>
@@ -987,13 +990,13 @@
           <p class="locked-note">🔒 This offering is locked and cannot be edited. Use <strong>Correct an offering</strong> below to record a change.</p>
         {:else}
           {#if canSign && offering.status === 'Draft' && !offering.counter_signature}
-            <button onclick={() => openReview("counter")} disabled={issues.length > 0}>Review & sign as Counter</button>
+            <button onclick={() => openReview("counter")} disabled={blockingIssues.length > 0}>Review & sign as Counter</button>
           {/if}
           {#if canSign && offering.status === 'CounterSigned' && !offering.checker_signature}
-            <button onclick={() => openReview("checker")} disabled={issues.length > 0}>Review & sign as Checker</button>
+            <button onclick={() => openReview("checker")} disabled={blockingIssues.length > 0}>Review & sign as Checker</button>
           {/if}
           {#if canSign && offering.status === 'CheckerSigned'}
-            <button onclick={() => openReview("lock")} disabled={issues.length > 0}>Confirm & lock offering</button>
+            <button onclick={() => openReview("lock")} disabled={blockingIssues.length > 0}>Confirm & lock offering</button>
           {/if}
           {#if canSign && (offering.status === 'CounterSigned' || offering.status === 'CheckerSigned')}
             <button class="secondary" onclick={withdrawSig}>Withdraw signature</button>

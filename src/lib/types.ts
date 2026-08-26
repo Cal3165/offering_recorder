@@ -187,6 +187,8 @@ export interface AddDonationInput {
 export interface ValidationIssue {
   code: string;
   message: string;
+  /** Blocking issues prevent signing/locking; others are informational. */
+  blocking: boolean;
 }
 
 export interface GasdsResult {
