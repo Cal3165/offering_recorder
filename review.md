@@ -322,7 +322,10 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   **DOCUMENTED 2026-08-24:** limitation documented at the rename site with the required alternative
   design. Windows is not currently a supported target; the pool-swap-before-rename redesign is deferred
   until it is.
-- [ ] **O29.** (follow-up from R19) CSV-import integration test and audit-trail completeness assertions.
+- [x] **O29.** (follow-up from R19) CSV-import integration test and audit-trail completeness assertions.
+  **FIXED 2026-08-24:** csv_import_creates_donors_end_to_end (import → donors persisted → re-import
+  yields duplicates); mutations_leave_a_complete_audit_trail (DonorCreated/DonorChanged present, every
+  event carries the acting user). En route the CSV test exposed a broken ESCAPE clause from O10 — fixed.
 
 ## Nit (batch when convenient)
 
@@ -419,3 +422,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O26 fixed · selectOffering resets entry/removal state; AmendmentPanel keyed by offeringId
 - 2026-08-24 · O27 fixed · optimistic concurrency on amendment + declaration-amendment updates (8 call sites)
 - 2026-08-24 · O28 documented · Windows rename limitation noted at restore site; redesign deferred until Windows is a target
+- 2026-08-24 · O29 fixed · CSV import integration test + audit completeness assertions; exposed and fixed broken ESCAPE clause from O10 · cargo test 325 pass

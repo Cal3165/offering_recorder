@@ -160,7 +160,7 @@ impl DonorRepository for SqliteDonorRepository {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = if include_inactive {
             sqlx::query(
-                "SELECT * FROM donors WHERE first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\' ORDER BY last_name, first_name LIMIT ? OFFSET ?",
+                "SELECT * FROM donors WHERE first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\\' ORDER BY last_name, first_name LIMIT ? OFFSET ?",
             )
             .bind(&like)
             .bind(&like)
@@ -178,7 +178,7 @@ impl DonorRepository for SqliteDonorRepository {
             .map_err(map_db_err)?
         } else {
             sqlx::query(
-                "SELECT * FROM donors WHERE is_active = 1 AND (first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\') ORDER BY last_name, first_name LIMIT ? OFFSET ?",
+                "SELECT * FROM donors WHERE is_active = 1 AND (first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\\') ORDER BY last_name, first_name LIMIT ? OFFSET ?",
             )
             .bind(&like)
             .bind(&like)

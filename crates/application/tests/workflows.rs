@@ -2244,3 +2244,88 @@ async fn nil_collection_can_be_signed_and_locked() {
     assert!(stored.is_locked());
     assert!(stored.donations.is_empty());
 }
+
+#[tokio::test]
+async fn csv_import_creates_donors_end_to_end() {
+    // Regression (review O29): the import path had no integration coverage.
+    let services = build_services().await;
+    let admin = services.auth.bootstrap("admin", "pw", "Admin").await.unwrap();
+
+    let csv = "\
+first_name,last_name,address_line1,postcode,email
+Ada,Lovelace,1 Analytical Way,AB1 2CD,ada@example.com
+Grace,Hopper,,NY1 1NY,
+";
+    let summary = services.migration.import_donors_csv(&admin, csv).await.unwrap();
+    assert_eq!(summary.created, 2, "{summary:?}");
+    assert_eq!(summary.errors, 0);
+
+    let donors = services.donors.list_donors(&admin).await.unwrap();
+    let ada = donors.iter().find(|d| d.last_name == "Lovelace").expect("Ada imported");
+    assert_eq!(ada.first_name, "Ada");
+    assert_eq!(
+        ada.address.as_ref().map(|a| a.postcode.as_str()),
+        Some("AB12CD")
+    );
+
+    // Re-importing the same rows yields duplicates, not second donors.
+    let again = services.migration.import_donors_csv(&admin, csv).await.unwrap();
+    assert_eq!(again.created, 0);
+    assert_eq!(again.duplicates, 2);
+}
+
+#[tokio::test]
+async fn mutations_leave_a_complete_audit_trail() {
+    // Regression (review O29): every mutation in the donor/offering flow must
+    // append an audit event naming the actor.
+    use offering_domain::entities::audit_event::AuditAction;
+    let services = build_services().await;
+    let admin = services.auth.bootstrap("admin", "pw", "Admin").await.unwrap();
+
+    let donor = services
+        .donors
+        .create_donor(
+            &admin,
+            CreateDonorInput {
+                first_name: "Audit".into(),
+                last_name: "Trail".into(),
+                preferred_name: None,
+                donor_type: offering_domain::entities::donor::DonorType::Uk,
+                address_line1: None,
+                address_line2: None,
+                address_line3: None,
+                postcode: None,
+                email: None,
+                phone: None,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    services.donors.update_donor(
+        &admin,
+        donor.id,
+        CreateDonorInput {
+            first_name: "Audit".into(),
+            last_name: "Trail-Updated".into(),
+            preferred_name: None,
+            donor_type: offering_domain::entities::donor::DonorType::Uk,
+            address_line1: None,
+            address_line2: None,
+            address_line3: None,
+            postcode: None,
+            email: None,
+            phone: None,
+        },
+    ).await.unwrap();
+
+    let events = services.audit.list_recent(&admin, 100).await.unwrap();
+    let actions: Vec<_> = events.iter().map(|e| e.action.clone()).collect();
+    assert!(actions.contains(&AuditAction::DonorCreated), "actions: {actions:?}");
+    assert!(actions.contains(&AuditAction::DonorChanged), "actions: {actions:?}");
+
+    // Every event carries the acting user.
+    for e in &events {
+        assert_eq!(e.user_id, admin.id, "audit event without actor: {e:?}");
+    }
+}
