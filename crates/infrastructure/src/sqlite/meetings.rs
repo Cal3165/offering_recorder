@@ -1,7 +1,6 @@
 use super::{from_json, map_db_err, to_json};
 use async_trait::async_trait;
 use offering_domain::entities::meeting::{Meeting, MeetingEventType};
-use offering_domain::offering_number::OfferingNumber;
 use offering_persistence::{MeetingRepository, RepoError, RepoResult};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
@@ -38,9 +37,12 @@ fn row_to_meeting(row: &SqliteRow) -> Result<Meeting, RepoError> {
 #[async_trait]
 impl MeetingRepository for SqliteMeetingRepository {
     async fn create(&self, meeting: Meeting) -> RepoResult<Meeting> {
+        // Allocate the stable ordinal under IMMEDIATE so concurrent creates
+        // serialise; deletion of other meetings must never shift it (O25).
+        let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
         sqlx::query(
-            "INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, community_building_id, event_type, estimated_attendance, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, community_building_id, event_type, estimated_attendance, meeting_seq, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(meeting_seq), 0) + 1 FROM meetings), ?, ?)",
         )
         .bind(meeting.id)
         .bind(&meeting.name)
@@ -52,9 +54,10 @@ impl MeetingRepository for SqliteMeetingRepository {
         .bind(meeting.estimated_attendance)
         .bind(meeting.created_at)
         .bind(meeting.updated_at)
-        .execute(&self.pool.get())
+        .execute(&mut *tx)
         .await
         .map_err(map_db_err)?;
+        tx.commit().await.map_err(map_db_err)?;
         Ok(meeting)
     }
 
@@ -111,28 +114,6 @@ impl MeetingRepository for SqliteMeetingRepository {
             .await
             .map_err(map_db_err)?;
         Ok(())
-    }
-
-    async fn next_offering_number(&self, meeting_id: Uuid, year: i32) -> RepoResult<OfferingNumber> {
-        let seq: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) + 1 FROM meetings WHERE rowid < (SELECT rowid FROM meetings WHERE id = ?)",
-        )
-        .bind(meeting_id)
-        .fetch_one(&self.pool.get())
-        .await
-        .map_err(map_db_err)?;
-
-        let prefix = format!("{}/", year);
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM offerings WHERE meeting_id = ? AND offering_number LIKE ?",
-        )
-        .bind(meeting_id)
-        .bind(format!("{}%", prefix))
-        .fetch_one(&self.pool.get())
-        .await
-        .map_err(map_db_err)?;
-
-        Ok(OfferingNumber::generated(year, seq as u32, count as u32 + 1))
     }
 
     async fn delete_all(&self) -> RepoResult<()> {

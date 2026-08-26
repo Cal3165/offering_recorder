@@ -205,8 +205,10 @@ impl OfferingRepository for SqliteOfferingRepository {
             .await
             .map_err(map_db_err)?;
 
+        // Stable persisted ordinal (review O25) - deletion of other meetings
+        // no longer shifts the numbers this meeting generates.
         let seq: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) + 1 FROM meetings WHERE rowid < (SELECT rowid FROM meetings WHERE id = ?)",
+            "SELECT COALESCE(meeting_seq, 0) FROM meetings WHERE id = ?",
         )
         .bind(offering.meeting_id)
         .fetch_one(&mut *conn)
@@ -566,7 +568,7 @@ mod tests {
         let pool = connect_in_memory().await.unwrap();
         let now = chrono::Utc::now().to_rfc3339();
         let meeting = Uuid::new_v4();
-        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, ?, ?)")
+        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, meeting_seq, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, 1, ?, ?)")
             .bind(meeting).bind(&now).bind(&now)
             .execute(&pool).await.unwrap();
         (SqliteOfferingRepository::new(SharedPool::new(pool)), meeting)
