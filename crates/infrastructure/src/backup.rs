@@ -280,6 +280,14 @@ impl BackupManager {
         drop(file);
         // `keep` so the guard does not try to remove the file after we rename it.
         let final_path = restoring.keep();
+        // NOTE (review O28): on POSIX the rename replaces the live database
+        // file even while displaced pool connections still hold it open (they
+        // keep the old inode; their writes are discarded by the drain in
+        // `SharedPool::replace_draining`). Windows refuses to rename over an
+        // open file, so a restore there can fail if any connection is still
+        // checked out. Supporting Windows requires staging to a temp file and
+        // swapping pools BEFORE the rename — deliberately deferred until
+        // Windows is a supported target.
         fs::rename(&final_path, db_path)?;
         if let Ok(dir) = fs::File::open(db_dir) {
             let _ = dir.sync_all();

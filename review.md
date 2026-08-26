@@ -316,9 +316,12 @@ Status legend: `[ ]` open · `[x]` fixed · `[~]` partially fixed / deferred wit
   transitions; lower severity than the offering aggregate but same TOCTOU pattern).
   **FIXED 2026-08-24:** both ports take expected_updated_at; SQL guards `WHERE id = ? AND updated_at = ?`,
   0 rows ⇒ Conflict; all 8 service call sites snapshot at load.
-- [ ] **O28.** (follow-up from R10) Restore promotes the restored file by `fs::rename` over a database
+- [~] **O28.** (follow-up from R10) Restore promotes the restored file by `fs::rename` over a database
   that may still be open by a displaced pool connection — safe on POSIX, fails on Windows. Stage to
   temp + swap under a lock or document Windows behavior explicitly.
+  **DOCUMENTED 2026-08-24:** limitation documented at the rename site with the required alternative
+  design. Windows is not currently a supported target; the pool-swap-before-rename redesign is deferred
+  until it is.
 - [ ] **O29.** (follow-up from R19) CSV-import integration test and audit-trail completeness assertions.
 
 ## Nit (batch when convenient)
@@ -415,3 +418,4 @@ Append entries here as fixes land (date · finding IDs · commit/branch · notes
 - 2026-08-24 · O25 fixed · persisted meetings.meeting_seq (migration 20240114) replaces rowid-order derivation; dead port method removed
 - 2026-08-24 · O26 fixed · selectOffering resets entry/removal state; AmendmentPanel keyed by offeringId
 - 2026-08-24 · O27 fixed · optimistic concurrency on amendment + declaration-amendment updates (8 call sites)
+- 2026-08-24 · O28 documented · Windows rename limitation noted at restore site; redesign deferred until Windows is a target
