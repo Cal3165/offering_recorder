@@ -23,6 +23,9 @@ impl<'a> MeetingService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn create_meeting(
         &self,
         actor: &User,
@@ -51,16 +54,25 @@ impl<'a> MeetingService<'a> {
         Ok(meeting)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_meetings(&self, actor: &User) -> AppResult<Vec<Meeting>> {
         ViewPermission::ReadMeetings.check(actor)?;
         Ok(self.meetings.list().await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_active_meetings(&self, actor: &User) -> AppResult<Vec<Meeting>> {
         ViewPermission::ReadMeetings.check(actor)?;
         Ok(self.meetings.list_active().await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn update_meeting(
         &self,
         actor: &User,
@@ -94,6 +106,9 @@ impl<'a> MeetingService<'a> {
         Ok(updated)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn set_active(
         &self,
         actor: &User,
@@ -132,6 +147,9 @@ impl<'a> MeetingService<'a> {
     /// Set the GASDS-relevant event details on a meeting: the community
     /// building it is associated with, the event type, and the estimated
     /// attendance.
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn set_event_details(
         &self,
         actor: &User,

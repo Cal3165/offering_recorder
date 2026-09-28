@@ -1,4 +1,5 @@
 use super::{from_json, map_db_err, to_json};
+use crate::SharedPool;
 use async_trait::async_trait;
 use offering_domain::entities::declaration_amendment::{
     DeclarationAmendment, DeclarationAmendmentStatus, DeclarationChange,
@@ -8,7 +9,6 @@ use offering_persistence::{DeclarationAmendmentRepository, RepoError, RepoResult
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteDeclarationAmendmentRepository {
@@ -16,14 +16,16 @@ pub struct SqliteDeclarationAmendmentRepository {
 }
 
 impl SqliteDeclarationAmendmentRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteDeclarationAmendmentRepository { pool }
     }
 }
 
-pub fn row_to_declaration_amendment(
-    row: &SqliteRow,
-) -> Result<DeclarationAmendment, RepoError> {
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
+pub fn row_to_declaration_amendment(row: &SqliteRow) -> Result<DeclarationAmendment, RepoError> {
     let change: DeclarationChange = from_json(&row.get::<String, _>("change"))?;
     let status: DeclarationAmendmentStatus = from_json(&row.get::<String, _>("status"))?;
     let counter_signature: Option<Signature> = row
@@ -51,13 +53,18 @@ pub fn row_to_declaration_amendment(
 
 #[async_trait]
 impl DeclarationAmendmentRepository for SqliteDeclarationAmendmentRepository {
-    async fn create(
-        &self,
-        amendment: DeclarationAmendment,
-    ) -> RepoResult<DeclarationAmendment> {
+    async fn create(&self, amendment: DeclarationAmendment) -> RepoResult<DeclarationAmendment> {
         let change = to_json(&amendment.change)?;
-        let counter = amendment.counter_signature.as_ref().map(to_json).transpose()?;
-        let checker = amendment.checker_signature.as_ref().map(to_json).transpose()?;
+        let counter = amendment
+            .counter_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
+        let checker = amendment
+            .checker_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
         sqlx::query(
             "INSERT INTO declaration_amendments (id, declaration_id, donor_id, reason, change, created_by, created_at, counter_signature, checker_signature, status, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -119,8 +126,16 @@ impl DeclarationAmendmentRepository for SqliteDeclarationAmendmentRepository {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> RepoResult<DeclarationAmendment> {
         let change = to_json(&amendment.change)?;
-        let counter = amendment.counter_signature.as_ref().map(to_json).transpose()?;
-        let checker = amendment.checker_signature.as_ref().map(to_json).transpose()?;
+        let counter = amendment
+            .counter_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
+        let checker = amendment
+            .checker_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
         // Conditional on the loaded timestamp (review O27).
         let result = sqlx::query(
             "UPDATE declaration_amendments SET reason = ?, change = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ? AND updated_at = ?",

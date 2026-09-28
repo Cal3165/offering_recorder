@@ -1,11 +1,11 @@
 use super::{from_json, map_db_err, to_json};
+use crate::SharedPool;
 use async_trait::async_trait;
 use offering_domain::entities::audit_event::{AuditAction, AuditEvent};
 use offering_persistence::{AuditRepository, RepoError, RepoResult};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteAuditRepository {
@@ -13,11 +13,15 @@ pub struct SqliteAuditRepository {
 }
 
 impl SqliteAuditRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteAuditRepository { pool }
     }
 }
 
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
 pub fn row_to_event(row: &SqliteRow) -> Result<AuditEvent, RepoError> {
     let action: AuditAction = from_json(&row.get::<String, _>("action"))?;
     let old_state: Option<serde_json::Value> = row
@@ -69,35 +73,43 @@ impl AuditRepository for SqliteAuditRepository {
     }
 
     async fn list(&self) -> RepoResult<Vec<AuditEvent>> {
-        let rows = sqlx::query("SELECT * FROM audit_events ORDER BY timestamp DESC")
+        let rows = sqlx::query("SELECT * FROM audit_events ORDER BY timestamp DESC, rowid DESC")
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
         rows.iter().map(row_to_event).collect()
     }
 
-    async fn list_recent(&self, limit: u32) -> RepoResult<Vec<AuditEvent>> {
-        let rows =
-            sqlx::query("SELECT * FROM audit_events ORDER BY timestamp DESC LIMIT ?")
-                .bind(limit)
-                .fetch_all(&self.pool.get())
-                .await
-                .map_err(map_db_err)?;
+    async fn list_recent(&self, limit: u32, offset: u32) -> RepoResult<Vec<AuditEvent>> {
+        let rows = sqlx::query(
+            "SELECT * FROM audit_events ORDER BY timestamp DESC, rowid DESC LIMIT ? OFFSET ?",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool.get())
+        .await
+        .map_err(map_db_err)?;
         rows.iter().map(row_to_event).collect()
     }
 
     async fn list_by_user(&self, user_id: Uuid) -> RepoResult<Vec<AuditEvent>> {
-        let rows = sqlx::query("SELECT * FROM audit_events WHERE user_id = ? ORDER BY timestamp DESC")
-            .bind(user_id)
-            .fetch_all(&self.pool.get())
-            .await
-            .map_err(map_db_err)?;
+        let rows = sqlx::query(
+            "SELECT * FROM audit_events WHERE user_id = ? ORDER BY timestamp DESC, rowid DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool.get())
+        .await
+        .map_err(map_db_err)?;
         rows.iter().map(row_to_event).collect()
     }
 
-    async fn list_by_entity(&self, entity_type: &str, entity_id: Uuid) -> RepoResult<Vec<AuditEvent>> {
+    async fn list_by_entity(
+        &self,
+        entity_type: &str,
+        entity_id: Uuid,
+    ) -> RepoResult<Vec<AuditEvent>> {
         let rows = sqlx::query(
-            "SELECT * FROM audit_events WHERE entity = ? AND entity_id = ? ORDER BY timestamp DESC",
+            "SELECT * FROM audit_events WHERE entity = ? AND entity_id = ? ORDER BY timestamp DESC, rowid DESC",
         )
         .bind(entity_type)
         .bind(entity_id)
@@ -112,8 +124,8 @@ impl AuditRepository for SqliteAuditRepository {
 mod tests {
     use super::*;
     use crate::db::connect_in_memory;
-    use sqlx::{Pool, Sqlite};
     use offering_domain::entities::audit_event::{AuditAction, AuditEvent};
+    use sqlx::{Pool, Sqlite};
 
     async fn seed(pool: &Pool<Sqlite>) -> AuditEvent {
         let repo = SqliteAuditRepository::new(SharedPool::new(pool.clone()));

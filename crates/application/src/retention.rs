@@ -1,7 +1,5 @@
 use chrono::{DateTime, Utc};
-use offering_domain::retention::{
-    days_until_deadline, retention_deadline, RetentionStatus,
-};
+use offering_domain::retention::{days_until_deadline, retention_deadline, RetentionStatus};
 use offering_domain::tax_year::TaxYear;
 use offering_persistence::{
     AuditRepository, BankDepositRepository, GasdsClaimRepository, GiftAidRepository,
@@ -85,7 +83,7 @@ impl<'a> RetentionService<'a> {
         }
     }
 
-    fn require_permission(&self, actor: &offering_domain::entities::user::User) -> AppResult<()> {
+    fn require_permission(actor: &offering_domain::entities::user::User) -> AppResult<()> {
         if can_run_claim_reports(actor) {
             Ok(())
         } else {
@@ -93,11 +91,15 @@ impl<'a> RetentionService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    #[allow(clippy::too_many_lines)]
     pub async fn report(
         &self,
         actor: &offering_domain::entities::user::User,
     ) -> AppResult<RetentionReport> {
-        self.require_permission(actor)?;
+        Self::require_permission(actor)?;
         let today = Utc::now().date_naive();
 
         let mut report = RetentionReport {
@@ -117,13 +119,19 @@ impl<'a> RetentionService<'a> {
         let offerings = self.offerings.list(None, None).await?;
         for offering in &offerings {
             for donation in &offering.donations {
-                let record_date = donation.created_at.date_naive();
+                // Retention follows the donation RECEIVED date (plan Phase 6):
+                // a backdated donation across 5 April belongs to the earlier
+                // tax year's window, not the recording date's.
+                let record_date = donation.date;
                 let status = RetentionStatus::classify(today, retention_deadline(record_date));
                 report.donations.add(status);
                 let item = RetentionItem {
                     record_type: "Donation".into(),
                     record_id: donation.id,
-                    detail: format!("{} {} {}", offering.offering_number, donation.donation_type, donation.payment_method),
+                    detail: format!(
+                        "{} {} {}",
+                        offering.offering_number, donation.donation_type, donation.payment_method
+                    ),
                     record_date,
                     tax_year: TaxYear::from_date(record_date),
                     deadline: retention_deadline(record_date),
@@ -161,7 +169,9 @@ impl<'a> RetentionService<'a> {
 
         let claims = self.gasds_claims.list().await?;
         for claim in &claims {
-            let record_date = claim.created_at.date_naive();
+            // Retention follows the CLAIMED tax year, not when the claim row
+            // was created (plan Phase 6).
+            let record_date = claim.tax_year.end_date();
             let status = RetentionStatus::classify(today, retention_deadline(record_date));
             report.gasds_claims.add(status);
             push_expired_or_expiring(
@@ -181,7 +191,9 @@ impl<'a> RetentionService<'a> {
 
         let deposits = self.deposits.list().await?;
         for deposit in &deposits {
-            let record_date = deposit.created_at.date_naive();
+            // Retention follows the banking date, not the record-creation
+            // timestamp (plan Phase 6).
+            let record_date = deposit.deposit_date.date_naive();
             let status = RetentionStatus::classify(today, retention_deadline(record_date));
             report.bank_deposits.add(status);
             push_expired_or_expiring(
@@ -200,17 +212,19 @@ impl<'a> RetentionService<'a> {
         }
 
         if report.expired.is_empty() && report.expiring.is_empty() {
-            report
-                .warnings
-                .push("no records have reached or are approaching their retention deadline.".into());
+            report.warnings.push(
+                "no records have reached or are approaching their retention deadline.".into(),
+            );
         } else if report.expired.is_empty() {
-            report
-                .warnings
-                .push("some records are approaching their retention deadline; review before disposal.".into());
+            report.warnings.push(
+                "some records are approaching their retention deadline; review before disposal."
+                    .into(),
+            );
         } else {
-            report
-                .warnings
-                .push("some records have passed their retention deadline; review before any disposal.".into());
+            report.warnings.push(
+                "some records have passed their retention deadline; review before any disposal."
+                    .into(),
+            );
         }
 
         self.audit

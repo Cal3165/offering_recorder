@@ -10,9 +10,29 @@
   const repBankTotal = $derived(repDonations.filter(d => d.payment_method === "BankTransfer").reduce((s, d) => s + d.amount.pence, 0));
   const repCardTotal = $derived(repDonations.filter(d => d.payment_method === "Contactless" || d.payment_method === "ChipAndPin").reduce((s, d) => s + d.amount.pence, 0));
   const repTotal = $derived(repCashTotal + repChequeTotal + repBankTotal + repCardTotal);
+
+  $effect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 </script>
 
-<div class="export-overlay">
+<div
+  class="export-overlay"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Offering report"
+  tabindex="-1"
+  onclick={(e) => {
+    if (e.target === e.currentTarget) onClose();
+  }}
+  onkeydown={(e) => {
+    if (e.target === e.currentTarget && e.key === "Escape") onClose();
+  }}
+>
   <div class="export-card print-area">
     <div class="row no-print" style="justify-content: flex-end;">
       <button onclick={() => window.print()}>Print / Save PDF</button>
@@ -28,7 +48,9 @@
     </p>
 
     <h3>Cash denominations</h3>
+    <div class="table-scroll">
     <table>
+      <caption class="sr-only">Cash denominations</caption>
       <thead><tr><th>Denomination</th><th>Counted</th><th>Recorded</th><th>Value</th></tr></thead>
       <tbody>
         {#each DENOMINATIONS as d (d.name)}
@@ -42,9 +64,12 @@
         {/each}
       </tbody>
     </table>
+    </div>
 
     <h3>Donations</h3>
+    <div class="table-scroll">
     <table>
+      <caption class="sr-only">Donations</caption>
       <thead><tr><th>Classification</th><th>Type</th><th>Method</th><th>Amount</th><th>Reference</th></tr></thead>
       <tbody>
         {#each repDonations as d (d.id)}
@@ -58,6 +83,7 @@
         {/each}
       </tbody>
     </table>
+    </div>
 
     <h3>Totals</h3>
     <p class="total">Cash: {fmtPence(repCashTotal)} • Cheques: {fmtPence(repChequeTotal)}{#if repBankTotal > 0} • Bank transfers: {fmtPence(repBankTotal)}{/if}{#if repCardTotal > 0} • Card: {fmtPence(repCardTotal)}{/if} • Total: {fmtPence(repTotal)}</p>

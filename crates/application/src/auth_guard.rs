@@ -2,6 +2,9 @@ use crate::error::{unauthorized, AppResult};
 use offering_domain::entities::role::Role;
 use offering_domain::entities::user::User;
 
+/// # Errors
+///
+/// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
 pub fn require_role(user: &User, roles: &[Role]) -> AppResult<()> {
     if !user_is_active(user) {
         return Err(unauthorized("user inactive"));
@@ -12,6 +15,9 @@ pub fn require_role(user: &User, roles: &[Role]) -> AppResult<()> {
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
 pub fn require_all_roles(user: &User, roles: &[Role]) -> AppResult<()> {
     if !user_is_active(user) {
         return Err(unauthorized("user inactive"));
@@ -22,6 +28,7 @@ pub fn require_all_roles(user: &User, roles: &[Role]) -> AppResult<()> {
     Ok(())
 }
 
+#[must_use]
 pub fn user_is_active(user: &User) -> bool {
     user.is_active
 }
@@ -38,6 +45,7 @@ pub enum ViewPermission {
 }
 
 impl ViewPermission {
+    #[must_use]
     pub fn required_roles(&self) -> &'static [Role] {
         match self {
             ViewPermission::ReadOfferings => &[
@@ -48,15 +56,20 @@ impl ViewPermission {
                 Role::Bookkeeper,
                 Role::Trustee,
             ],
-            ViewPermission::ReadDonors => &[Role::Admin, Role::Counter, Role::Trustee],
-            ViewPermission::ReadGiftAid => &[Role::Admin, Role::GiftAid, Role::Trustee],
+            ViewPermission::ReadDonors | ViewPermission::ReadMeetings => {
+                &[Role::Admin, Role::Counter, Role::Trustee]
+            }
+            ViewPermission::ReadGiftAid | ViewPermission::ReadGasdsClaims => {
+                &[Role::Admin, Role::GiftAid, Role::Trustee]
+            }
             ViewPermission::ReadBanking => &[Role::Admin, Role::Banker, Role::Trustee],
-            ViewPermission::ReadGasdsClaims => &[Role::Admin, Role::GiftAid, Role::Trustee],
             ViewPermission::ReadAudit => &[Role::Admin, Role::Trustee],
-            ViewPermission::ReadMeetings => &[Role::Admin, Role::Counter, Role::Trustee],
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub fn check(&self, user: &User) -> AppResult<()> {
         require_role(user, self.required_roles())
     }

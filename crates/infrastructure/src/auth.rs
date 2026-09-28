@@ -33,6 +33,9 @@ impl offering_application::ports::PasswordHasher for PasswordHasherService {
 }
 
 impl PasswordHasherService {
+    /// # Errors
+    ///
+    /// Returns [`RepoError`] if the database operation fails or stored data is invalid.
     pub fn hash_password(password: &str) -> InfraResult<String> {
         if password.is_empty() {
             return Err(InfraError::Auth("password cannot be empty".into()));
@@ -46,13 +49,14 @@ impl PasswordHasherService {
         Ok(hash)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`RepoError`] if the database operation fails or stored data is invalid.
     pub fn verify_password(password: &str, password_hash: &str) -> InfraResult<bool> {
         let parsed =
             PasswordHash::new(password_hash).map_err(|e| InfraError::Auth(e.to_string()))?;
         let argon2 = Argon2::default();
-        Ok(argon2
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok())
+        Ok(argon2.verify_password(password.as_bytes(), &parsed).is_ok())
     }
 }
 

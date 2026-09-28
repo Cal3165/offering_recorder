@@ -2,6 +2,7 @@
   import type { Amendment, AmendmentChange, CashTotal, Offering, User } from "../types";
   import DenominationGrid from "../DenominationGrid.svelte";
   import AmendmentSignModal from "./AmendmentSignModal.svelte";
+  import ConfirmDialog from "../ConfirmDialog.svelte";
   import {
     approveAmendment,
     createAmendment,
@@ -40,12 +41,14 @@
   let amendSignFor = $state<string | null>(null);
   let amendSignKind = $state<"counter" | "checker">("counter");
   let amendSignGuestName = $state("");
+  let pendingDelete = $state<Amendment | null>(null);
+  let deleteBusy = $state(false);
 
   function startCorrect() {
     amendOpen = true;
     amendMode = "attendance";
     amendAttendance = offering.attendance ?? 0;
-    amendCounts = offering.cash_denominations.counts;
+    amendCounts = { ...offering.cash_denominations.counts };
     amendDescription = offering.description ?? "";
   }
 
@@ -104,13 +107,18 @@
     }
   }
 
-  async function remove(amendment: Amendment) {
-    if (!confirm("Delete this amendment? This cannot be undone.")) return;
+  async function confirmRemove() {
+    if (!pendingDelete) return;
+    const target = pendingDelete;
+    deleteBusy = true;
     try {
-      await deleteAmendment(amendment.id);
+      await deleteAmendment(target.id);
+      pendingDelete = null;
       await onChanged();
     } catch (e) {
       onError(String(e));
+    } finally {
+      deleteBusy = false;
     }
   }
 </script>
@@ -135,14 +143,14 @@
       {:else if amendMode === "denoms"}
         <DenominationGrid bind:counts={amendCounts} />
       {:else}
-        <div class="field" style="flex:1">
+        <div class="field grow">
           <label for="amend-description">Corrected description</label>
-          <input id="amend-description" type="text" bind:value={amendDescription} style="width:100%" />
+          <input id="amend-description" type="text" bind:value={amendDescription} class="input-block" />
         </div>
       {/if}
-      <div class="field" style="flex:1">
+      <div class="field grow">
         <label for="amend-reason">Reason</label>
-        <input id="amend-reason" type="text" bind:value={amendReason} placeholder="Why is this being corrected?" style="width:100%" />
+        <input id="amend-reason" type="text" bind:value={amendReason} placeholder="Why is this being corrected?" class="input-block" />
       </div>
     </div>
     <div class="row">
@@ -153,7 +161,7 @@
   <ul class="plain">
     {#each amendments as a (a.id)}
       <li>
-        <div class="row" style="justify-content: space-between;">
+        <div class="row space-between">
           <span>
             <span class="badge">{a.status}</span> {a.reason}
             {#if a.counter_signature} • Counter: {a.counter_signature.user_name}{#if a.counter_signature.is_guest} (guest){/if}{/if}
@@ -173,7 +181,7 @@
               <button onclick={() => approve(a)}>Approve</button>
             {/if}
             {#if canRecord && a.status !== 'Approved'}
-              <button class="secondary" onclick={() => remove(a)}>Delete</button>
+              <button class="secondary" onclick={() => (pendingDelete = a)}>Delete</button>
             {/if}
           </span>
         </div>
@@ -187,6 +195,16 @@
       {user}
     onConfirm={() => sign(amendSignFor!)}
       onClose={() => (amendSignFor = null)}
+    />
+  {/if}
+  {#if pendingDelete}
+    <ConfirmDialog
+      title="Delete correction"
+      message="Delete this correction? This cannot be undone."
+      confirmLabel="Delete correction"
+      busy={deleteBusy}
+      onConfirm={confirmRemove}
+      onClose={() => { if (!deleteBusy) pendingDelete = null; }}
     />
   {/if}
 </div>

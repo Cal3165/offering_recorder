@@ -36,6 +36,9 @@ impl fmt::Debug for User {
 }
 
 impl User {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create(
         username: &str,
         display_name: &str,
@@ -55,7 +58,7 @@ impl User {
             id: Uuid::new_v4(),
             username: username.to_string(),
             display_name: display_name.to_string(),
-            email: email.map(|s| s.to_string()),
+            email: email.map(std::string::ToString::to_string),
             password_hash: None,
             roles,
             is_active: true,
@@ -69,6 +72,7 @@ impl User {
         self.updated_at = Utc::now();
     }
 
+    #[must_use]
     pub fn is_admin(&self) -> bool {
         self.roles.has(&crate::entities::role::Role::Admin)
     }

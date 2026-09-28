@@ -51,11 +51,47 @@
   // collection) are shown so the reviewer confirms knowingly (review O19).
   const blockingIssues = $derived(issues.filter((i) => i.blocking));
   const informationalIssues = $derived(issues.filter((i) => !i.blocking));
+
+  const reviewLabel = $derived(
+    reviewAction === "lock"
+      ? "Confirm and lock offering"
+      : reviewAction === "checker"
+        ? "Review offering as checker"
+        : "Review offering as counter",
+  );
+
+  let confirmBox = $state<HTMLInputElement | null>(null);
+  let guestInput = $state<HTMLInputElement | null>(null);
+
+  $effect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  $effect(() => {
+    // Focus the guest-name input when present, otherwise the confirm checkbox.
+    (reviewGuest ? (guestInput ?? confirmBox) : confirmBox)?.focus();
+  });
 </script>
 
-<div class="overlay">
+<div
+  class="overlay"
+  role="dialog"
+  aria-modal="true"
+  aria-label={reviewLabel}
+  tabindex="-1"
+  onclick={(e) => {
+    if (e.target === e.currentTarget) onClose();
+  }}
+  onkeydown={(e) => {
+    if (e.key === "Escape") onClose();
+  }}
+>
   <div class="overlay-card">
-    <div class="row" style="justify-content: space-between;">
+    <div class="row space-between">
       <h3>{reviewAction === "lock" ? `Confirm & lock offering ${offering.offering_number}` : `Review offering ${offering.offering_number}`}</h3>
       <button class="secondary" onclick={onClose}>Close</button>
     </div>
@@ -73,6 +109,7 @@
         {/if}
       </div>
     {/if}
+    <p class="muted">Only confirm if you are a different person from the {reviewAction === "checker" ? "counter" : "previous signer"} — two invented guest names by one operator defeat the two-person check and are detectable in the audit trail.</p>
     <div class="row">
       <span class="total">Cash: {fmtPence(cashDonationTotal)}</span>
       <span class="total">Cheques: {fmtPence(chequeDonationTotal)}</span>
@@ -80,7 +117,9 @@
       <span class="total">Total: {fmtPence(donationTotal)}</span>
       <span class="muted">Attendance: {offering.attendance ?? "—"}</span>
     </div>
+    <div class="table-scroll">
     <table>
+      <caption class="sr-only">Offering donations under review</caption>
       <thead><tr><th>Donor</th><th>Category</th><th>Method</th><th>Amount</th></tr></thead>
       <tbody>
         {#each offering.donations ?? [] as d (d.id)}
@@ -95,6 +134,7 @@
         {/each}
       </tbody>
     </table>
+    </div>
     <h4>Verification</h4>
     <ul class="plain">
       <li class={cashReconciled ? 'check-item' : 'check-item bad'}>
@@ -123,9 +163,9 @@
         </label>
         {#if reviewGuest}
           <div class="row">
-            <div class="field" style="flex:1">
+            <div class="field grow">
               <label for="guest-name">Signer's full name</label>
-              <input id="guest-name" type="text" bind:value={reviewGuestName} oninput={(e) => onGuestNameChange(e.currentTarget.value)} placeholder="e.g. Jane Smith" style="width:100%" />
+              <input id="guest-name" type="text" bind:this={guestInput} value={reviewGuestName} oninput={(e) => onGuestNameChange(e.currentTarget.value)} placeholder="e.g. Jane Smith" class="input-block" />
             </div>
           </div>
         {/if}
@@ -133,7 +173,7 @@
     {/if}
     <div class="sign-confirm">
       <label>
-        <input type="checkbox" checked={reviewConfirmed} onchange={(e) => onConfirmedChange(e.currentTarget.checked)} />
+        <input type="checkbox" bind:this={confirmBox} checked={reviewConfirmed} onchange={(e) => onConfirmedChange(e.currentTarget.checked)} />
         <span>
           {reviewAction === "lock"
             ? "I confirm that I have checked the offering above, that the information is correct, and that both counter and checker signatures are recorded."

@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "offering_recorder",
-        "width": 800,
-        "height": 600,
+        "title": "Offering Recorder",
+        "width": 1024,
+        "height": 700,
         "backgroundColor": "#f6f6f6"
       }
     ],

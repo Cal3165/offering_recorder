@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    offering_recorder_lib::run()
+    offering_recorder_lib::run();
 }

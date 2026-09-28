@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { currentUser, listActiveDonors, listMeetings, logout } from "./api";
+  import { currentUser, searchDonors as apiSearchDonors, listMeetings, logout } from "./api";
   import type { Donor, Meeting, User } from "./types";
   import Login from "./Login.svelte";
   import Dashboard from "./Dashboard.svelte";
@@ -19,13 +19,23 @@
 
   let user = $state<User | null>(null);
   let view = $state("home");
+  // Remount keys for the read-only views so reselecting their tab reloads
+  // fresh data. Entry/form views are never keyed: remounting them would
+  // discard in-progress form state.
+  let dashKey = $state(0);
+  let checkKey = $state(0);
   let focusOfferingId = $state<string | null>(null);
   let focusMeetingId = $state<string | null>(null);
   let focusDonorId = $state<string | null>(null);
   let searchQuery = $state("");
   let searchOpen = $state(false);
   let searchMeetings = $state<Meeting[]>([]);
-  let searchDonors = $state<Donor[]>([]);
+  // Server-side donor hits for the current query only (plan Phase 3): unlike
+  // the old full-table preload, donor PII is fetched per keystroke (debounced)
+  // and only the latest results stay in memory.
+  let searchDonorHits = $state<Donor[]>([]);
+  let searchError = $state("");
+  let searchSeq = 0;
 
   onMount(async () => {
     user = await currentUser();
@@ -36,19 +46,51 @@
   // stayed empty until restart (review O13).
   $effect(() => {
     if (user === null) {
+      searchSeq++;
       searchMeetings = [];
-      searchDonors = [];
+      searchDonorHits = [];
+      searchError = "";
       return;
     }
+    const seq = ++searchSeq;
+    searchError = "";
     (async () => {
       try {
-        searchMeetings = await listMeetings();
-        if (canViewDonors) searchDonors = await listActiveDonors();
-      } catch {
+        const meetings = await listMeetings();
+        if (seq !== searchSeq) return;
+        searchMeetings = meetings;
+      } catch (e) {
+        if (seq !== searchSeq) return;
+        searchError = String(e);
         searchMeetings = [];
-        searchDonors = [];
+        searchDonorHits = [];
       }
     })();
+  });
+
+  // Debounced server-side donor search (plan Phase 3): 200ms after the last
+  // keystroke, ask the backend instead of filtering a preloaded full table.
+  $effect(() => {
+    const q = searchQuery.trim();
+    const session = user;
+    if (session === null || !canViewDonors || q.length === 0) {
+      searchSeq++;
+      searchDonorHits = [];
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const seq = ++searchSeq;
+      try {
+        const hits = await apiSearchDonors(q, false);
+        if (seq !== searchSeq) return;
+        searchDonorHits = hits;
+      } catch (e) {
+        if (seq !== searchSeq) return;
+        searchError = String(e);
+        searchDonorHits = [];
+      }
+    }, 200);
+    return () => clearTimeout(timer);
   });
 
   // Pseudonymous donor usage data (favourites + per-donor frequency) lives in
@@ -86,6 +128,8 @@
     focusOfferingId = offeringId ?? null;
     focusMeetingId = null;
     focusDonorId = null;
+    if (id === "home") dashKey++;
+    if (id === "checking") checkKey++;
     view = id;
   }
 
@@ -94,16 +138,7 @@
     searchQ.length > 0 ? searchMeetings.filter((m) => m.name.toLowerCase().includes(searchQ)).slice(0, 5) : [],
   );
   const searchDonorResults = $derived(
-    canViewDonors && searchQ.length > 0
-      ? searchDonors
-          .filter((d) =>
-            [d.first_name, d.last_name, d.preferred_name ?? "", d.email ?? "", d.address?.line1 ?? "", d.address?.postcode ?? ""]
-              .join(" ")
-              .toLowerCase()
-              .includes(searchQ),
-          )
-          .slice(0, 5)
-      : [],
+    canViewDonors && searchQ.length > 0 ? searchDonorHits.slice(0, 5) : [],
   );
   const searchHasResults = $derived(searchMeetingResults.length > 0 || searchDonorResults.length > 0);
 
@@ -139,7 +174,9 @@
       />
       {#if searchOpen && searchQ.length > 0}
         <div class="search-dropdown">
-          {#if !searchHasResults}
+          {#if searchError}
+            <div class="drop-hint">Search unavailable: {searchError}</div>
+          {:else if !searchHasResults}
             <div class="drop-hint">No meetings or donors found.</div>
           {/if}
           {#if searchMeetingResults.length > 0}
@@ -172,11 +209,15 @@
   </nav>
   <main>
     {#if view === 'home'}
-      <Dashboard user={user} onNavigate={switchView} />
+      {#key dashKey}
+        <Dashboard user={user} onNavigate={switchView} />
+      {/key}
     {:else if view === 'offerings'}
       <OfferingEntry user={user} focusId={focusOfferingId} focusMeetingId={focusMeetingId} />
     {:else if view === 'checking'}
-      <Checking user={user} onNavigate={switchView} />
+      {#key checkKey}
+        <Checking user={user} onNavigate={switchView} />
+      {/key}
     {:else if view === 'meetings'}
       <Meetings />
     {:else if view === 'donors'}
@@ -188,7 +229,7 @@
     {:else if view === 'reports'}
       <Reports />
     {:else if view === 'claims'}
-      <Claims />
+      <Claims user={user} />
     {:else if view === 'retention'}
       <Retention />
     {:else if view === 'audit'}

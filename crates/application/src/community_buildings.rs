@@ -20,6 +20,9 @@ pub struct CommunityBuildingInput {
 }
 
 impl CommunityBuildingInput {
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub fn build(&self) -> Result<CommunityBuilding, offering_domain::errors::DomainError> {
         let address = match (&self.address_line1, &self.postcode) {
             (Some(line1), Some(pc)) => {
@@ -33,7 +36,11 @@ impl CommunityBuildingInput {
             }
             _ => None,
         };
-        CommunityBuilding::create_with_local_authority(&self.name, address, self.local_authority.clone())
+        CommunityBuilding::create_with_local_authority(
+            &self.name,
+            address,
+            self.local_authority.clone(),
+        )
     }
 }
 
@@ -54,6 +61,9 @@ impl<'a> CommunityBuildingService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn create(
         &self,
         actor: &User,
@@ -78,6 +88,9 @@ impl<'a> CommunityBuildingService<'a> {
         Ok(building)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list(&self, actor: &User) -> AppResult<Vec<CommunityBuilding>> {
         if !can_manage_donors(actor) {
             return Err(unauthorized("manage community buildings"));
@@ -85,6 +98,9 @@ impl<'a> CommunityBuildingService<'a> {
         Ok(self.buildings.list().await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn update(
         &self,
         actor: &User,
@@ -94,11 +110,9 @@ impl<'a> CommunityBuildingService<'a> {
         if !can_manage_donors(actor) {
             return Err(unauthorized("manage community buildings"));
         }
-        let current = self
-            .buildings
-            .get(id)
-            .await?
-            .ok_or_else(|| crate::error::AppError::NotFound("community building not found".into()))?;
+        let current = self.buildings.get(id).await?.ok_or_else(|| {
+            crate::error::AppError::NotFound("community building not found".into())
+        })?;
         let mut building = input.build()?;
         building.id = current.id;
         building.created_at = current.created_at;

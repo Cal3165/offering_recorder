@@ -15,12 +15,14 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri.workspace = true
-tauri-plugin-opener = "2"
 serde.workspace = true
-serde_json = "1"
+serde_json.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 tokio = { version = "1", features = ["rt", "macros"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
 offering-domain = { path = "../crates/domain" }
 offering-application = { path = "../crates/application" }
 offering-persistence = { path = "../crates/persistence" }

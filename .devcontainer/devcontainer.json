@@ -1,0 +1,22 @@
+
+{
+  "name": "Rust Dev + VPN",
+  "dockerComposeFile": "./docker-compose.yaml",
+  "service": "rust-dev",
+  "workspaceFolder": "/home/caleb/Projects/offering_recorder",
+  "shutdownAction": "stopCompose",
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy"
+      }
+    }
+  },
+  "postCreateCommand": "rustc --version && cargo --version"
+}

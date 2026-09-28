@@ -1,4 +1,7 @@
-# Code Review: Offering Recorder — Working Log
+# Code Review: Offering Recorder — Working Log (FROZEN 2026-09-22 — historical record)
+
+> Frozen. Do not append. Outstanding/deferred items now live in `REVIEW_FIX_PLAN.md`
+> and GitHub issues. Preserved verbatim below for audit history.
 
 Full-repo first review (no prior reviews assumed): ~15.5k lines Rust across 4 crates + ~6k lines Svelte/TS.
 Review date: 2026-08-24. Verdict at time of review: **Request changes** (3 Critical).

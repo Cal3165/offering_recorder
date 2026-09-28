@@ -67,6 +67,9 @@ pub struct GiftAidDeclaration {
     pub declaration_method: DeclarationMethod,
     pub received_at: Option<DateTime<Utc>>,
     pub declaration_text_version: Option<String>,
+    /// For `Single` declarations: the one identified gift covered (plan Phase
+    /// 4.3). Must be `Some` for Single, `None` for `MultipleDonations`.
+    pub single_donation_id: Option<Uuid>,
     pub cancelled_at: Option<DateTime<Utc>>,
     pub cancellation_reason: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -75,6 +78,9 @@ pub struct GiftAidDeclaration {
 }
 
 impl GiftAidDeclaration {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create(
         donor_id: Uuid,
         effective_from: DateTime<Utc>,
@@ -90,11 +96,15 @@ impl GiftAidDeclaration {
             DeclarationMethod::Written,
             None,
             None,
+            None,
             created_by,
             1,
         )
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     #[allow(clippy::too_many_arguments)]
     pub fn create_full(
         donor_id: Uuid,
@@ -106,6 +116,7 @@ impl GiftAidDeclaration {
         declaration_method: DeclarationMethod,
         received_at: Option<DateTime<Utc>>,
         declaration_text_version: Option<String>,
+        single_donation_id: Option<Uuid>,
         created_by: Uuid,
     ) -> DomainResult<Self> {
         Self::create_versioned(
@@ -118,11 +129,15 @@ impl GiftAidDeclaration {
             declaration_method,
             received_at,
             declaration_text_version,
+            single_donation_id,
             created_by,
             1,
         )
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     #[allow(clippy::too_many_arguments)]
     pub fn create_versioned(
         donor_id: Uuid,
@@ -134,6 +149,7 @@ impl GiftAidDeclaration {
         declaration_method: DeclarationMethod,
         received_at: Option<DateTime<Utc>>,
         declaration_text_version: Option<String>,
+        single_donation_id: Option<Uuid>,
         created_by: Uuid,
         version: u32,
     ) -> DomainResult<Self> {
@@ -152,6 +168,21 @@ impl GiftAidDeclaration {
                 ));
             }
         }
+        // A Single declaration covers exactly one identified gift (plan Phase
+        // 4.3); without the link it would behave like an open-ended Multiple.
+        match (declaration_type, single_donation_id) {
+            (DeclarationType::Single, None) => {
+                return Err(DomainError::Validation(
+                    "a single-donation declaration must identify the gift it covers".into(),
+                ));
+            }
+            (DeclarationType::MultipleDonations, Some(_)) => {
+                return Err(DomainError::Validation(
+                    "a multiple-donations declaration must not identify a single gift".into(),
+                ));
+            }
+            _ => {}
+        }
         let now = Utc::now();
         Ok(GiftAidDeclaration {
             id: Uuid::new_v4(),
@@ -166,6 +197,7 @@ impl GiftAidDeclaration {
             declaration_method,
             received_at,
             declaration_text_version,
+            single_donation_id,
             cancelled_at: None,
             cancellation_reason: None,
             created_at: now,
@@ -174,19 +206,38 @@ impl GiftAidDeclaration {
         })
     }
 
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.status == DeclarationStatus::Active
     }
 
-    /// Whether this declaration carries the donor details HMRC requires for a
-    /// claim. A `MultipleDonations` declaration must state the donor's full
-    /// name and address; a `Single` declaration's details are captured on the
-    /// claim form itself (review O6).
+    /// Whether this declaration carries what HMRC requires for a claim
+    /// (plan Phase 4.2). A `MultipleDonations` declaration must state the
+    /// donor's full name and address plus the charity name, the declaration
+    /// date and the tax-wording version. A `Single` declaration must state
+    /// name + address and identify its gift. Incomplete declarations are
+    /// valid records but are EXCLUDED from claim schedules until completed.
+    #[must_use]
     pub fn is_complete_for_claim(&self) -> bool {
+        let name_ok = self
+            .donor_full_name
+            .as_deref()
+            .is_some_and(|n| !n.trim().is_empty());
+        let address_ok = self.donor_address.is_some();
         match self.declaration_type {
-            DeclarationType::Single => true,
+            DeclarationType::Single => name_ok && address_ok && self.single_donation_id.is_some(),
             DeclarationType::MultipleDonations => {
-                self.donor_full_name.is_some() && self.donor_address.is_some()
+                name_ok
+                    && address_ok
+                    && self
+                        .charity_name
+                        .as_deref()
+                        .is_some_and(|n| !n.trim().is_empty())
+                    && self.received_at.is_some()
+                    && self
+                        .declaration_text_version
+                        .as_deref()
+                        .is_some_and(|n| !n.trim().is_empty())
             }
         }
     }
@@ -196,16 +247,44 @@ impl GiftAidDeclaration {
     /// retroactively void donations received while the declaration was live
     /// (HMRC rules); `revoke`/`end` stamp `effective_until`, so the window
     /// check below is authoritative for every status.
+    ///
+    /// Comparison is by CALENDAR DAY (plan Phase 4.6): donations carry a date
+    /// without a time, and the SQL schedule compares `date(...)` values, so a
+    /// declaration starting mid-day covers that day's donations on both paths.
+    #[must_use]
     pub fn covers_date(&self, date: DateTime<Utc>) -> bool {
-        if date < self.effective_from {
+        let day = date.date_naive();
+        if day < self.effective_from.date_naive() {
             return false;
         }
         match self.effective_until {
             None => true,
-            Some(until) => date <= until,
+            Some(until) => day <= until.date_naive(),
         }
     }
 
+    /// Whether this declaration covers a specific identified gift (plan Phase
+    /// 4.3). `MultipleDonations` declarations cover any gift in the window; a
+    /// Single declaration covers ONLY its linked gift. Prefer this over
+    /// `covers_date` wherever the donation id is known.
+    #[must_use]
+    pub fn covers_donation(&self, date: DateTime<Utc>, donation_id: Uuid) -> bool {
+        if !self.covers_date(date) {
+            return false;
+        }
+        match (self.declaration_type, self.single_donation_id) {
+            (DeclarationType::Single, Some(linked)) => linked == donation_id,
+            // Legacy Single rows created before linkage existed have no linked
+            // gift and cover nothing: they surface as incomplete (see
+            // `is_complete_for_claim`) so they can be completed, not claimed.
+            (DeclarationType::Single, None) => false,
+            (DeclarationType::MultipleDonations, _) => true,
+        }
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn end(&mut self, at: DateTime<Utc>) -> DomainResult<()> {
         if self.status != DeclarationStatus::Active {
             return Err(DomainError::Validation(
@@ -222,13 +301,19 @@ impl GiftAidDeclaration {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn end_with_reason(&mut self, at: DateTime<Utc>, reason: Option<&str>) -> DomainResult<()> {
         self.end(at)?;
         self.cancelled_at = Some(at);
-        self.cancellation_reason = reason.map(|s| s.to_string());
+        self.cancellation_reason = reason.map(std::string::ToString::to_string);
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn revoke(&mut self, at: DateTime<Utc>) -> DomainResult<()> {
         if self.status != DeclarationStatus::Active {
             return Err(DomainError::Validation(
@@ -245,13 +330,23 @@ impl GiftAidDeclaration {
         Ok(())
     }
 
-    pub fn revoke_with_reason(&mut self, at: DateTime<Utc>, reason: Option<&str>) -> DomainResult<()> {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
+    pub fn revoke_with_reason(
+        &mut self,
+        at: DateTime<Utc>,
+        reason: Option<&str>,
+    ) -> DomainResult<()> {
         self.revoke(at)?;
         self.cancelled_at = Some(at);
-        self.cancellation_reason = reason.map(|s| s.to_string());
+        self.cancellation_reason = reason.map(std::string::ToString::to_string);
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     #[allow(clippy::too_many_arguments)]
     pub fn next_version(
         &self,
@@ -287,6 +382,7 @@ impl GiftAidDeclaration {
             declaration_method,
             received_at,
             declaration_text_version,
+            single_donation_id: self.single_donation_id,
             cancelled_at: None,
             cancellation_reason: None,
             created_at: now,
@@ -301,7 +397,7 @@ mod tests {
     use super::*;
 
     fn base_time() -> DateTime<Utc> {
-        DateTime::from_timestamp(1700000000, 0).unwrap()
+        DateTime::from_timestamp(1_700_000_000, 0).unwrap()
     }
 
     #[test]
@@ -321,14 +417,18 @@ mod tests {
     #[test]
     fn covers_date_within_range() {
         let d = GiftAidDeclaration::create(Uuid::new_v4(), base_time(), Uuid::new_v4()).unwrap();
-        let mid = DateTime::from_timestamp(1700000001, 0).unwrap();
+        let mid = DateTime::from_timestamp(1_700_000_001, 0).unwrap();
         assert!(d.covers_date(mid));
     }
 
     #[test]
     fn covers_date_before_start_fails() {
         let d = GiftAidDeclaration::create(Uuid::new_v4(), base_time(), Uuid::new_v4()).unwrap();
-        let before = DateTime::from_timestamp(1699999999, 0).unwrap();
+        // Day granularity (plan Phase 4.6): one second before start is the
+        // same calendar day and IS covered; the previous day is not.
+        let same_day = DateTime::from_timestamp(1_699_999_999, 0).unwrap();
+        assert!(d.covers_date(same_day));
+        let before = base_time() - chrono::Duration::days(1);
         assert!(!d.covers_date(before));
     }
 
@@ -336,9 +436,9 @@ mod tests {
     fn covers_date_after_end_fails() {
         let mut d =
             GiftAidDeclaration::create(Uuid::new_v4(), base_time(), Uuid::new_v4()).unwrap();
-        let end = DateTime::from_timestamp(1700100000, 0).unwrap();
+        let end = DateTime::from_timestamp(1_700_100_000, 0).unwrap();
         d.end(end).unwrap();
-        let after = DateTime::from_timestamp(1700200000, 0).unwrap();
+        let after = DateTime::from_timestamp(1_700_200_000, 0).unwrap();
         assert!(!d.covers_date(after));
     }
 
@@ -346,7 +446,7 @@ mod tests {
     fn end_declaration() {
         let mut d =
             GiftAidDeclaration::create(Uuid::new_v4(), base_time(), Uuid::new_v4()).unwrap();
-        let end = DateTime::from_timestamp(1700100000, 0).unwrap();
+        let end = DateTime::from_timestamp(1_700_100_000, 0).unwrap();
         d.end(end).unwrap();
         assert_eq!(d.status, DeclarationStatus::Ended);
         assert_eq!(d.effective_until, Some(end));
@@ -356,7 +456,7 @@ mod tests {
     fn cannot_end_already_ended() {
         let mut d =
             GiftAidDeclaration::create(Uuid::new_v4(), base_time(), Uuid::new_v4()).unwrap();
-        let end = DateTime::from_timestamp(1700100000, 0).unwrap();
+        let end = DateTime::from_timestamp(1_700_100_000, 0).unwrap();
         d.end(end).unwrap();
         assert!(d.end(end).is_err());
     }
@@ -374,52 +474,132 @@ mod tests {
         assert!(!d.covers_date(now + chrono::Duration::days(1)));
     }
 
+    fn test_address() -> Address {
+        Address::new(
+            "1 Road".to_string(),
+            None,
+            None,
+            crate::postcode::Postcode::new("AB1 2CD").unwrap(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn completeness_for_claim_depends_on_donor_details() {
-        // Regression (review O6): HMRC requires name + address on a
-        // MultipleDonations declaration.
+        // Regression (review O6) + plan Phase 4.2: a MultipleDonations
+        // declaration supports a claim only with donor name + address AND the
+        // HMRC-required charity name, declaration date and wording version.
         let donor = Uuid::new_v4();
         let user = Uuid::new_v4();
         let bare = GiftAidDeclaration::create(donor, base_time(), user).unwrap();
         assert!(!bare.is_complete_for_claim());
 
-        let with_address = GiftAidDeclaration::create_full(
+        let name_only = GiftAidDeclaration::create_full(
             donor,
             DeclarationType::MultipleDonations,
             base_time(),
             None,
             Some("Complete Person".to_string()),
-            Some(
-                Address::new(
-                    "1 Road".to_string(),
-                    None,
-                    None,
-                    crate::postcode::Postcode::new("AB1 2CD").unwrap(),
-                )
-                .unwrap(),
-            ),
+            Some(test_address()),
             DeclarationMethod::Written,
+            None,
             None,
             None,
             user,
         )
         .unwrap();
-        assert!(with_address.is_complete_for_claim());
+        assert!(!name_only.is_complete_for_claim());
 
+        let complete = GiftAidDeclaration::create_full(
+            donor,
+            DeclarationType::MultipleDonations,
+            base_time(),
+            Some("Test Church".to_string()),
+            Some("Complete Person".to_string()),
+            Some(test_address()),
+            DeclarationMethod::Written,
+            Some(base_time()),
+            Some("Gift Aid declaration v1".to_string()),
+            None,
+            user,
+        )
+        .unwrap();
+        assert!(complete.is_complete_for_claim());
+    }
+
+    #[test]
+    fn single_declaration_requires_linked_gift() {
+        // Plan Phase 4.3: a Single declaration without an identified gift is
+        // rejected at creation — otherwise it behaves like an open-ended
+        // MultipleDonations declaration.
+        let donor = Uuid::new_v4();
+        let user = Uuid::new_v4();
+        assert!(GiftAidDeclaration::create_full(
+            donor,
+            DeclarationType::Single,
+            base_time(),
+            None,
+            Some("Single Person".to_string()),
+            Some(test_address()),
+            DeclarationMethod::Written,
+            Some(base_time()),
+            None,
+            None,
+            user,
+        )
+        .is_err());
+
+        let gift = Uuid::new_v4();
         let single = GiftAidDeclaration::create_full(
             donor,
             DeclarationType::Single,
             base_time(),
             None,
-            None,
-            None,
+            Some("Single Person".to_string()),
+            Some(test_address()),
             DeclarationMethod::Written,
+            Some(base_time()),
             None,
-            None,
+            Some(gift),
             user,
         )
         .unwrap();
         assert!(single.is_complete_for_claim());
+        // Covers only the linked gift, not other gifts in the window.
+        assert!(single.covers_donation(base_time(), gift));
+        assert!(!single.covers_donation(base_time(), Uuid::new_v4()));
+
+        // A Multiple declaration must not carry a linked gift.
+        assert!(GiftAidDeclaration::create_full(
+            donor,
+            DeclarationType::MultipleDonations,
+            base_time(),
+            Some("Test Church".to_string()),
+            Some("Complete Person".to_string()),
+            Some(test_address()),
+            DeclarationMethod::Written,
+            Some(base_time()),
+            Some("v1".to_string()),
+            Some(gift),
+            user,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn coverage_is_calendar_day_not_timestamp() {
+        // Plan Phase 4.6: the SQL schedule compares date() values, so a
+        // declaration starting mid-day must cover that day's donations
+        // (recorded at midnight) on the domain path too.
+        let noon = DateTime::from_timestamp(1_700_049_600, 0).unwrap(); // 2023-11-15 12:00 UTC
+        let midnight = DateTime::from_timestamp(1_700_006_400, 0).unwrap(); // 2023-11-15 00:00 UTC
+        assert_eq!(noon.date_naive(), midnight.date_naive());
+        let mut d = GiftAidDeclaration::create(Uuid::new_v4(), noon, Uuid::new_v4()).unwrap();
+        assert!(d.covers_date(midnight));
+        let next_midnight = midnight + chrono::Duration::days(1);
+        d.end(noon + chrono::Duration::hours(1)).unwrap();
+        assert!(d.covers_date(midnight));
+        assert!(!d.covers_date(next_midnight));
     }
 
     #[test]
@@ -439,9 +619,17 @@ mod tests {
     #[test]
     fn version_increment() {
         let d = GiftAidDeclaration::create(Uuid::new_v4(), base_time(), Uuid::new_v4()).unwrap();
-        let later = DateTime::from_timestamp(1700100000, 0).unwrap();
+        let later = DateTime::from_timestamp(1_700_100_000, 0).unwrap();
         let v2 = d
-            .next_version(later, None, None, None, DeclarationMethod::Written, None, None)
+            .next_version(
+                later,
+                None,
+                None,
+                None,
+                DeclarationMethod::Written,
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(v2.version, 2);
         assert_eq!(v2.donor_id, d.donor_id);
@@ -451,9 +639,17 @@ mod tests {
     #[test]
     fn version_rejects_earlier_date() {
         let d = GiftAidDeclaration::create(Uuid::new_v4(), base_time(), Uuid::new_v4()).unwrap();
-        let earlier = DateTime::from_timestamp(1699999999, 0).unwrap();
+        let earlier = DateTime::from_timestamp(1_699_999_999, 0).unwrap();
         assert!(d
-            .next_version(earlier, None, None, None, DeclarationMethod::Written, None, None)
+            .next_version(
+                earlier,
+                None,
+                None,
+                None,
+                DeclarationMethod::Written,
+                None,
+                None
+            )
             .is_err());
     }
 }

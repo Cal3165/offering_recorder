@@ -25,6 +25,10 @@ pub struct CsvImportSummary {
     pub duplicates: usize,
     pub errors: usize,
     pub rows: Vec<CsvImportRow>,
+    /// Transparency note (plan Phase 5.2): migrated donors predate basis
+    /// recording, so their lawful basis is recorded as Legitimate interest
+    /// and MUST be reviewed per donor. The UI surfaces this note.
+    pub basis_note: String,
 }
 
 #[derive(Clone)]
@@ -33,6 +37,7 @@ pub struct MigrationService<'a> {
 }
 
 impl<'a> MigrationService<'a> {
+    #[must_use]
     pub fn new(donors: DonorService<'a>) -> Self {
         MigrationService { donors }
     }
@@ -41,6 +46,9 @@ impl<'a> MigrationService<'a> {
     /// first-name and last-name columns (aliases such as "Forename"/"Surname"
     /// are recognised). Rows whose first/last name matches an existing donor
     /// are skipped as duplicates; invalid rows are reported per-row.
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn import_donors_csv(&self, actor: &User, csv: &str) -> AppResult<CsvImportSummary> {
         if !can_manage_migration(actor) {
             return Err(unauthorized("manage migration"));
@@ -104,6 +112,12 @@ impl<'a> MigrationService<'a> {
                 }
             }
         }
+        if summary.created > 0 {
+            summary.basis_note = format!(
+                "{} imported donor(s) had their lawful basis recorded as Legitimate interest because the source data predates basis recording — review each donor's basis and privacy notice.",
+                summary.created
+            );
+        }
         Ok(summary)
     }
 }
@@ -159,20 +173,46 @@ fn parse_csv(input: &str) -> Vec<Vec<String>> {
 // --- column mapping ---
 
 const FIRST_NAME: &[&str] = &[
-    "first_name", "firstname", "first name", "forename", "given name", "given",
+    "first_name",
+    "firstname",
+    "first name",
+    "forename",
+    "given name",
+    "given",
 ];
 const LAST_NAME: &[&str] = &[
-    "last_name", "lastname", "last name", "surname", "family name", "family",
+    "last_name",
+    "lastname",
+    "last name",
+    "surname",
+    "family name",
+    "family",
 ];
 const PREFERRED_NAME: &[&str] = &["preferred_name", "preferred name", "preferred", "known as"];
 const ADDRESS_LINE1: &[&str] = &[
-    "address_line1", "address line 1", "address1", "address", "line1", "line 1", "addr1",
+    "address_line1",
+    "address line 1",
+    "address1",
+    "address",
+    "line1",
+    "line 1",
+    "addr1",
 ];
 const ADDRESS_LINE2: &[&str] = &[
-    "address_line2", "address line 2", "address2", "line2", "line 2", "addr2",
+    "address_line2",
+    "address line 2",
+    "address2",
+    "line2",
+    "line 2",
+    "addr2",
 ];
 const ADDRESS_LINE3: &[&str] = &[
-    "address_line3", "address line 3", "address3", "line3", "line 3", "addr3",
+    "address_line3",
+    "address line 3",
+    "address3",
+    "line3",
+    "line 3",
+    "addr3",
 ];
 const POSTCODE: &[&str] = &["postcode", "post code", "postal code", "zip", "zip code"];
 const EMAIL: &[&str] = &["email", "email address", "e-mail", "e mail"];
@@ -196,7 +236,11 @@ fn normalize_header(h: &str) -> String {
     // header cell and is not char::is_whitespace — strip it explicitly so the
     // first column still matches its aliases (review O11).
     let h = h.trim_start_matches('\u{feff}');
-    h.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    h.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn field_index(norm: &str, aliases: &[&str]) -> bool {
@@ -248,7 +292,8 @@ fn detect_header(first_row: &[String]) -> AppResult<ColumnMap> {
 }
 
 fn cell(raw: &[String], idx: Option<usize>) -> &str {
-    idx.and_then(|i| raw.get(i)).map(|s| s.as_str()).unwrap_or("")
+    idx.and_then(|i| raw.get(i))
+        .map_or("", std::string::String::as_str)
 }
 
 fn opt_cell(raw: &[String], idx: Option<usize>) -> Option<String> {
@@ -277,6 +322,11 @@ fn build_input(raw: &[String], map: &ColumnMap) -> Result<CreateDonorInput, Stri
         postcode: opt_cell(raw, map.postcode),
         email: opt_cell(raw, map.email),
         phone: opt_cell(raw, map.phone),
+        // Migrated donors predate basis recording: record Legitimate interest
+        // explicitly (it IS recorded, not silent) and flag it for per-donor
+        // review via the summary basis_note (plan Phase 5.2).
+        lawful_basis: Some(offering_domain::entities::donor::LawfulBasis::LegitimateInterest),
+        privacy_notice_version: None,
     })
 }
 
@@ -326,15 +376,16 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn header_with_bom_still_detected() {
         // Excel UTF-8 CSVs start with U+FEFF; the service strips it before
         // parsing (review O11).
-        let map = detect_header(&[format!("\u{feff}First Name"), "Last Name".to_string()]).unwrap();
+        let map =
+            detect_header(&["\u{feff}First Name".to_string(), "Last Name".to_string()]).unwrap();
         assert_eq!(map.first, Some(0));
         assert_eq!(map.last, Some(1));
     }
 
+    #[test]
     fn detect_header_missing_name_columns() {
         let header = parse_csv("email,phone\n")[0].clone();
         assert!(detect_header(&header).is_err());
@@ -348,7 +399,7 @@ mod tests {
             preferred: Some(2),
             ..Default::default()
         };
-        assert!(build_input(&["a".into(), "".into()], &map).is_err());
+        assert!(build_input(&["a".into(), String::new()], &map).is_err());
         let input = build_input(&["A".into(), "B".into(), "Pref".into()], &map).unwrap();
         assert_eq!(input.first_name, "A");
         assert_eq!(input.preferred_name.as_deref(), Some("Pref"));
@@ -362,7 +413,7 @@ mod tests {
             email: Some(2),
             ..Default::default()
         };
-        let input = build_input(&["A".into(), "B".into(), "".into()], &map).unwrap();
+        let input = build_input(&["A".into(), "B".into(), String::new()], &map).unwrap();
         assert_eq!(input.email, None);
     }
 }

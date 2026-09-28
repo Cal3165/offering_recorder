@@ -8,6 +8,7 @@ pub struct DateRange {
 }
 
 impl DateRange {
+    #[must_use]
     pub fn new(start: NaiveDate, end: NaiveDate) -> Option<Self> {
         if end < start {
             return None;
@@ -15,10 +16,12 @@ impl DateRange {
         Some(DateRange { start, end })
     }
 
+    #[must_use]
     pub fn contains(&self, date: NaiveDate) -> bool {
         date >= self.start && date <= self.end
     }
 
+    #[must_use]
     pub fn intersect(&self, other: &DateRange) -> Option<DateRange> {
         let start = if self.start > other.start {
             self.start
@@ -33,10 +36,12 @@ impl DateRange {
         DateRange::new(start, end)
     }
 
+    #[must_use]
     pub fn days(&self) -> i64 {
         (self.end - self.start).num_days() + 1
     }
 
+    #[must_use]
     pub fn overlaps(&self, other: &DateRange) -> bool {
         self.start <= other.end && other.start <= self.end
     }

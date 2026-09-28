@@ -16,12 +16,14 @@
     value = $bindable(""),
     onError,
     onOk,
+    onDonorsChanged,
   }: {
     donors: Donor[];
     offering: Offering | null;
     value?: string;
     onError: (message: string) => void;
     onOk: (message: string) => void;
+    onDonorsChanged: (donors: Donor[]) => void;
   } = $props();
 
   let donorQuery = $state("");
@@ -137,6 +139,10 @@
       postcode: ndPostcode.trim() || null,
       email: ndEmail.trim() || null,
       phone: null,
+      // Quick-create defaults to Legitimate interest (visible in the donor
+      // record for later review); use Donors page for other bases.
+      lawful_basis: "Legitimate interest",
+      privacy_notice_version: null,
     };
   }
 
@@ -182,7 +188,8 @@
     // Refresh the parent's donor cache before selecting the new donor so
     // recents/favourites resolve.
     try {
-      await listActiveDonors();
+      const fresh = await listActiveDonors();
+      onDonorsChanged(fresh);
     } catch {
       /* cache refresh is best-effort */
     }
@@ -228,7 +235,7 @@
   const favDonorList = $derived(donors.filter((d) => favDonors.includes(d.id)));
   const donorList = $derived(
     donorQuery.trim()
-      ? donorMatches.sort((a, b) => (favDonors.includes(b.id) ? 1 : 0) - (favDonors.includes(a.id) ? 1 : 0))
+      ? [...donorMatches].sort((a, b) => (favDonors.includes(b.id) ? 1 : 0) - (favDonors.includes(a.id) ? 1 : 0))
       : [...favDonorList, ...recentDonors.filter((d) => !favDonors.includes(d.id))],
   );
   const donorVisible = $derived(donorOpen && donorList.length > 0);
@@ -304,11 +311,11 @@
       <div class="field"><label for="nd-last">Last name</label><input id="nd-last" bind:value={ndLast} /></div>
     </div>
     <div class="row">
-      <div class="field" style="flex:1"><label for="nd-addr">Address</label><input id="nd-addr" bind:value={ndLine1} /></div>
+      <div class="field grow"><label for="nd-addr">Address</label><input id="nd-addr" bind:value={ndLine1} /></div>
       <div class="field"><label for="nd-postcode">Postcode</label><input id="nd-postcode" bind:value={ndPostcode} /></div>
     </div>
     <div class="row">
-      <div class="field" style="flex:1"><label for="nd-email">Email</label><input id="nd-email" bind:value={ndEmail} /></div>
+      <div class="field grow"><label for="nd-email">Email</label><input id="nd-email" bind:value={ndEmail} /></div>
       <button onclick={saveNewDonor} disabled={ndSaving}>Create donor</button>
       <button class="secondary" onclick={() => { newDonorOpen = false; ndDuplicates = []; }}>Cancel</button>
     </div>

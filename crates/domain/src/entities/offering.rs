@@ -28,10 +28,12 @@ impl std::fmt::Display for OfferingStatus {
 }
 
 impl OfferingStatus {
+    #[must_use]
     pub fn is_locked(&self) -> bool {
         matches!(self, OfferingStatus::Locked)
     }
 
+    #[must_use]
     pub fn is_signed(&self) -> bool {
         matches!(
             self,
@@ -57,6 +59,9 @@ pub struct Offering {
 }
 
 impl Offering {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create(
         meeting_id: Uuid,
         offering_number: OfferingNumber,
@@ -66,6 +71,9 @@ impl Offering {
         Self::create_with_time(meeting_id, offering_number, description, now)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create_with_time(
         meeting_id: Uuid,
         offering_number: OfferingNumber,
@@ -88,34 +96,44 @@ impl Offering {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn require_editable(&self) -> DomainResult<()> {
-        if !self.can_edit() {
+        if self.can_edit() {
+            Ok(())
+        } else {
             Err(DomainError::InvalidTransition(
                 "offering must be in draft status to edit".into(),
             ))
-        } else {
-            Ok(())
         }
     }
 
+    #[must_use]
     pub fn can_edit(&self) -> bool {
         self.status == OfferingStatus::Draft
     }
 
+    #[must_use]
     pub fn can_counter_sign(&self) -> bool {
         self.status == OfferingStatus::Draft && self.counter_signature.is_none()
     }
 
+    #[must_use]
     pub fn can_checker_sign(&self) -> bool {
         self.status == OfferingStatus::CounterSigned && self.checker_signature.is_none()
     }
 
+    #[must_use]
     pub fn can_lock(&self) -> bool {
         self.status == OfferingStatus::CheckerSigned
             && self.counter_signature.is_some()
             && self.checker_signature.is_some()
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn set_attendance(&mut self, attendance: u32) -> DomainResult<()> {
         self.require_editable()?;
         self.attendance = Some(attendance);
@@ -123,6 +141,9 @@ impl Offering {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn add_donation(&mut self, donation: Donation) -> DomainResult<()> {
         self.require_editable()?;
         self.donations.push(donation);
@@ -130,6 +151,9 @@ impl Offering {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn set_cash_denominations(&mut self, denominations: CashTotal) -> DomainResult<()> {
         self.require_editable()?;
         self.cash_denominations = denominations;
@@ -137,6 +161,9 @@ impl Offering {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn counter_sign(&mut self, signature: Signature) -> DomainResult<()> {
         if !self.can_counter_sign() {
             return Err(DomainError::InvalidTransition(format!(
@@ -150,6 +177,9 @@ impl Offering {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn checker_sign(&mut self, signature: Signature) -> DomainResult<()> {
         if !self.can_checker_sign() {
             return Err(DomainError::InvalidTransition(format!(
@@ -157,7 +187,11 @@ impl Offering {
                 self.status
             )));
         }
-        let counter = self.counter_signature.as_ref().unwrap();
+        // Total (not panicking): the guard above guarantees a counter
+        // signature is present; a corrupt state yields an error, never a panic.
+        let counter = self.counter_signature.as_ref().ok_or_else(|| {
+            DomainError::InvalidTransition("cannot checker sign: counter signature missing".into())
+        })?;
         if counter.is_same_person_as(&signature) {
             return Err(DomainError::Validation(
                 "counter and checker must be different users".into(),
@@ -172,6 +206,9 @@ impl Offering {
     /// Withdraw the most recent signature, returning the offering to the
     /// previous state so the data can be corrected before re-signing.
     /// Only applies to signed-but-not-locked offerings.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn withdraw_signature(&mut self) -> DomainResult<()> {
         match self.status {
             OfferingStatus::CheckerSigned => {
@@ -203,6 +240,9 @@ impl Offering {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn lock(&mut self) -> DomainResult<()> {
         if self.counter_signature.is_none() {
             return Err(DomainError::Validation(
@@ -225,16 +265,21 @@ impl Offering {
         Ok(())
     }
 
+    #[must_use]
     pub fn is_locked(&self) -> bool {
         self.status.is_locked()
     }
 
+    #[must_use]
     pub fn cash_total(&self) -> Money {
         self.cash_denominations.total()
     }
 
     /// Total of all cheque donations, using checked arithmetic: an overflow
     /// is a data bug, not a value to saturate away (review O7).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn cheque_total(&self) -> DomainResult<Money> {
         Money::sum(
             self.donations
@@ -245,6 +290,9 @@ impl Offering {
     }
 
     /// Total across all donations, using checked arithmetic (review O7).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn donation_total(&self) -> DomainResult<Money> {
         Money::sum(self.donations.iter().map(|d| d.amount))
     }
@@ -440,15 +488,18 @@ mod tests {
     #[test]
     fn cash_and_donation_totals() {
         let mut o = make_offering();
-        o.add_donation(Donation::named(
-            o.id,
-            Uuid::new_v4(),
-            Money::from_pence(500).unwrap(),
-            crate::donation_type::DonationType::Tithe,
-            crate::payment_method::PaymentMethod::Cash,
-            None,
-            None,
-        ).unwrap())
+        o.add_donation(
+            Donation::named(
+                o.id,
+                Uuid::new_v4(),
+                Money::from_pence(500).unwrap(),
+                crate::donation_type::DonationType::Tithe,
+                crate::payment_method::PaymentMethod::Cash,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
         .unwrap();
         assert_eq!(o.donation_total().unwrap().pence(), 500);
     }

@@ -19,6 +19,7 @@ pub struct SqliteOfferingRepository {
 }
 
 impl SqliteOfferingRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteOfferingRepository { pool }
     }
@@ -53,11 +54,13 @@ fn row_to_offering_base(row: &SqliteRow) -> Result<Offering, RepoError> {
 }
 
 async fn load_cash_total(pool: &Pool<Sqlite>, offering_id: Uuid) -> RepoResult<CashTotal> {
-    let rows = sqlx::query("SELECT denomination, count FROM offering_cash_denominations WHERE offering_id = ?")
-        .bind(offering_id)
-        .fetch_all(pool)
-        .await
-        .map_err(map_db_err)?;
+    let rows = sqlx::query(
+        "SELECT denomination, count FROM offering_cash_denominations WHERE offering_id = ?",
+    )
+    .bind(offering_id)
+    .fetch_all(pool)
+    .await
+    .map_err(map_db_err)?;
     let mut total = CashTotal::new();
     for row in rows {
         let denom: Denomination = from_json(&row.get::<String, _>("denomination"))?;
@@ -93,8 +96,7 @@ async fn load_cash_totals_batch(
     }
     let placeholders = super::in_placeholders(offering_ids.len());
     let query = format!(
-        "SELECT offering_id, denomination, count FROM offering_cash_denominations WHERE offering_id IN ({})",
-        placeholders
+        "SELECT offering_id, denomination, count FROM offering_cash_denominations WHERE offering_id IN ({placeholders})"
     );
     let mut q = sqlx::query(&query);
     for id in offering_ids {
@@ -121,8 +123,7 @@ async fn load_donations_batch(
     }
     let placeholders = super::in_placeholders(offering_ids.len());
     let query = format!(
-        "SELECT * FROM donations WHERE offering_id IN ({}) ORDER BY offering_id, created_at",
-        placeholders
+        "SELECT * FROM donations WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
     );
     let mut q = sqlx::query(&query);
     for id in offering_ids {
@@ -148,8 +149,7 @@ async fn load_cash_breakdowns_batch(
     }
     let placeholders = super::in_placeholders(donation_ids.len());
     let query = format!(
-        "SELECT donation_id, denomination, count FROM donation_cash_denominations WHERE donation_id IN ({})",
-        placeholders
+        "SELECT donation_id, denomination, count FROM donation_cash_denominations WHERE donation_id IN ({placeholders})"
     );
     let mut q = sqlx::query(&query);
     for id in donation_ids {
@@ -175,19 +175,13 @@ fn offering_row_query() -> &'static str {
 #[async_trait]
 impl OfferingRepository for SqliteOfferingRepository {
     async fn create(&self, offering: Offering) -> RepoResult<Offering> {
-        let mut conn = self.pool.get().acquire().await.map_err(map_db_err)?;
-        sqlx::query("BEGIN")
-            .execute(&mut *conn)
-            .await
-            .map_err(map_db_err)?;
-        if let Err(e) = self.insert_offering(&mut *conn, &offering).await {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            return Err(e);
-        }
-        sqlx::query("COMMIT")
-            .execute(&mut *conn)
-            .await
-            .map_err(map_db_err)?;
+        // Idiomatic transaction: rollback is automatic on early return or
+        // panic, unlike the raw BEGIN/COMMIT strings this replaced
+        // (plan Phase 8). The IMMEDIATE variant below keeps raw SQL because
+        // sqlx has no immediate-begin API and the write lock is required.
+        let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
+        self.insert_offering(tx.as_mut(), &offering).await?;
+        tx.commit().await.map_err(map_db_err)?;
         Ok(offering)
     }
 
@@ -207,13 +201,12 @@ impl OfferingRepository for SqliteOfferingRepository {
 
         // Stable persisted ordinal (review O25) - deletion of other meetings
         // no longer shifts the numbers this meeting generates.
-        let seq: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(meeting_seq, 0) FROM meetings WHERE id = ?",
-        )
-        .bind(offering.meeting_id)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(map_db_err)?;
+        let seq: i64 =
+            sqlx::query_scalar("SELECT COALESCE(meeting_seq, 0) FROM meetings WHERE id = ?")
+                .bind(offering.meeting_id)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(map_db_err)?;
 
         // Consume the meeting's monotonic sequence counter. COUNT(*)+1 (and
         // MAX over remaining rows) reused numbers after a deletion; a
@@ -228,10 +221,11 @@ impl OfferingRepository for SqliteOfferingRepository {
         .await
         .map_err(map_db_err)?;
 
-        offering.offering_number =
-            OfferingNumber::generated(year, seq as u32, offering_seq as u32);
+        let seq_u32 = u32::try_from(seq).unwrap_or(u32::MAX);
+        let offering_seq_u32 = u32::try_from(offering_seq).unwrap_or(u32::MAX);
+        offering.offering_number = OfferingNumber::generated(year, seq_u32, offering_seq_u32);
 
-        if let Err(e) = self.insert_offering(&mut *conn, &offering).await {
+        if let Err(e) = self.insert_offering(&mut conn, &offering).await {
             let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
             return Err(e);
         }
@@ -270,15 +264,22 @@ impl OfferingRepository for SqliteOfferingRepository {
         self.assemble(rows).await
     }
 
-    async fn list_by_meeting(&self, meeting_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Offering>> {
+    async fn list_by_meeting(
+        &self,
+        meeting_id: Uuid,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> RepoResult<Vec<Offering>> {
         let (limit, offset) = super::page_binds(limit, offset);
-        let rows = sqlx::query("SELECT * FROM offerings WHERE meeting_id = ? ORDER BY created_at LIMIT ? OFFSET ?")
-            .bind(meeting_id)
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool.get())
-            .await
-            .map_err(map_db_err)?;
+        let rows = sqlx::query(
+            "SELECT * FROM offerings WHERE meeting_id = ? ORDER BY created_at LIMIT ? OFFSET ?",
+        )
+        .bind(meeting_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool.get())
+        .await
+        .map_err(map_db_err)?;
         self.assemble(rows).await
     }
 
@@ -315,8 +316,16 @@ impl OfferingRepository for SqliteOfferingRepository {
     ) -> RepoResult<Offering> {
         let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
 
-        let counter = offering.counter_signature.as_ref().map(to_json).transpose()?;
-        let checker = offering.checker_signature.as_ref().map(to_json).transpose()?;
+        let counter = offering
+            .counter_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
+        let checker = offering
+            .checker_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
 
         // Optimistic concurrency: the WHERE clause rejects the write when the
         // row changed since the caller loaded it (review R4).
@@ -437,7 +446,35 @@ impl OfferingRepository for SqliteOfferingRepository {
             query = query.bind(super::to_json(&st)?);
         }
         query = query.bind(limit).bind(offset);
-        let rows = query.fetch_all(&self.pool.get()).await.map_err(map_db_err)?;
+        let rows = query
+            .fetch_all(&self.pool.get())
+            .await
+            .map_err(map_db_err)?;
+        self.assemble(rows).await
+    }
+
+    async fn list_by_statuses(
+        &self,
+        statuses: Vec<OfferingStatus>,
+        limit: Option<u32>,
+    ) -> RepoResult<Vec<Offering>> {
+        if statuses.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = super::in_placeholders(statuses.len());
+        let (limit, _) = super::page_binds(limit, None);
+        let sql = format!(
+            "SELECT * FROM offerings WHERE status IN ({placeholders}) ORDER BY created_at DESC LIMIT ?"
+        );
+        let mut query = sqlx::query(&sql);
+        for st in statuses {
+            query = query.bind(super::to_json(&st)?);
+        }
+        query = query.bind(limit);
+        let rows = query
+            .fetch_all(&self.pool.get())
+            .await
+            .map_err(map_db_err)?;
         self.assemble(rows).await
     }
 
@@ -488,8 +525,16 @@ impl SqliteOfferingRepository {
         conn: &mut sqlx::sqlite::SqliteConnection,
         offering: &Offering,
     ) -> RepoResult<()> {
-        let counter = offering.counter_signature.as_ref().map(to_json).transpose()?;
-        let checker = offering.checker_signature.as_ref().map(to_json).transpose()?;
+        let counter = offering
+            .counter_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
+        let checker = offering
+            .checker_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
 
         sqlx::query(
             "INSERT INTO offerings (id, meeting_id, offering_number, description, attendance, counter_signature, checker_signature, status, created_at, updated_at)
@@ -571,7 +616,10 @@ mod tests {
         sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, meeting_seq, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, 1, ?, ?)")
             .bind(meeting).bind(&now).bind(&now)
             .execute(&pool).await.unwrap();
-        (SqliteOfferingRepository::new(SharedPool::new(pool)), meeting)
+        (
+            SqliteOfferingRepository::new(SharedPool::new(pool)),
+            meeting,
+        )
     }
 
     #[tokio::test]
@@ -632,16 +680,24 @@ mod tests {
 
         let o1 = repo
             .create_with_generated_number(
-                Offering::create(meeting_id, OfferingNumber::new("2024/01/0001").unwrap(), None)
-                    .unwrap(),
+                Offering::create(
+                    meeting_id,
+                    OfferingNumber::new("2024/01/0001").unwrap(),
+                    None,
+                )
+                .unwrap(),
                 2024,
             )
             .await
             .unwrap();
         let o2 = repo
             .create_with_generated_number(
-                Offering::create(meeting_id, OfferingNumber::new("2024/01/0002").unwrap(), None)
-                    .unwrap(),
+                Offering::create(
+                    meeting_id,
+                    OfferingNumber::new("2024/01/0002").unwrap(),
+                    None,
+                )
+                .unwrap(),
                 2024,
             )
             .await
@@ -653,8 +709,12 @@ mod tests {
 
         let o3 = repo
             .create_with_generated_number(
-                Offering::create(meeting_id, OfferingNumber::new("2024/01/0003").unwrap(), None)
-                    .unwrap(),
+                Offering::create(
+                    meeting_id,
+                    OfferingNumber::new("2024/01/0003").unwrap(),
+                    None,
+                )
+                .unwrap(),
                 2024,
             )
             .await

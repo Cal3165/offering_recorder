@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 pub struct GiftAidService;
 
 impl GiftAidService {
+    #[must_use]
     pub fn find_declaration_for_date(
         declarations: &[GiftAidDeclaration],
         date: DateTime<Utc>,
@@ -14,6 +15,7 @@ impl GiftAidService {
             .max_by_key(|d| d.version)
     }
 
+    #[must_use]
     pub fn is_gift_aid_eligible(declarations: &[GiftAidDeclaration], date: DateTime<Utc>) -> bool {
         Self::find_declaration_for_date(declarations, date).is_some()
     }
@@ -50,6 +52,7 @@ mod tests {
             None,
             None,
             crate::entities::gift_aid::DeclarationMethod::Written,
+            None,
             None,
             None,
             by,
@@ -135,7 +138,15 @@ mod tests {
 
         let start2 = dt(2024, 6, 2);
         let d2 = d1
-            .next_version(start2, None, None, None, crate::entities::gift_aid::DeclarationMethod::Written, None, None)
+            .next_version(
+                start2,
+                None,
+                None,
+                None,
+                crate::entities::gift_aid::DeclarationMethod::Written,
+                None,
+                None,
+            )
             .unwrap();
 
         let all = vec![d1, d2];
@@ -208,7 +219,10 @@ mod tests {
         d.revoke(dt(2024, 6, 1)).unwrap();
         // Donations received while the declaration was live remain Gift Aid
         // eligible after revocation (review R1)…
-        assert!(GiftAidService::is_gift_aid_eligible(&[d.clone()], dt(2024, 3, 1)));
+        assert!(GiftAidService::is_gift_aid_eligible(
+            &[d.clone()],
+            dt(2024, 3, 1)
+        ));
         // …but anything received after the revocation date is not covered.
         assert!(!GiftAidService::is_gift_aid_eligible(&[d], dt(2024, 7, 1)));
     }
@@ -221,7 +235,15 @@ mod tests {
 
         let d1 = make_declaration(donor, start1, user);
         let d2 = d1
-            .next_version(dt(2024, 6, 2), None, None, None, crate::entities::gift_aid::DeclarationMethod::Written, None, None)
+            .next_version(
+                dt(2024, 6, 2),
+                None,
+                None,
+                None,
+                crate::entities::gift_aid::DeclarationMethod::Written,
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(d1.version, 1);

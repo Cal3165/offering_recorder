@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listBackups, recentAuditEvents, listDeposits, listMeetings, listAllOfferings } from "./api";
+  import { listBackups, recentAuditEvents, listDeposits, listMeetings, listActiveOfferings, listLockedOfferings } from "./api";
   import type { AuditEvent, Backup, BankDeposit, Meeting, Offering, User } from "./types";
   import { fmtPence, depositExpectedTotals } from "./types";
 
@@ -12,6 +12,10 @@
   let backups = $state<Backup[]>([]);
   let audit = $state<AuditEvent[]>([]);
   let loaded = $state(false);
+  let error = $state("");
+  // Per-section load errors: one failing endpoint must not blank the whole
+  // dashboard (Promise.all would reject everything on the first failure).
+  let sectionErrors = $state<Record<string, string>>({});
 
   const OVERDUE_DAYS = 7;
   const roles = $derived(user.roles.roles);
@@ -24,23 +28,35 @@
   });
 
   onMount(async () => {
-    try {
-      const [m, offs, dep, bk, aud] = await Promise.all([
-        listMeetings(),
-        listAllOfferings(),
-        listDeposits(),
-        listBackups(),
-        recentAuditEvents(50),
-      ]);
-      meetings = m;
-      offerings = offs;
-      offerings.sort((a, b) => b.created_at.localeCompare(a.created_at));
-      deposits = dep;
-      backups = bk;
-      audit = aud;
-    } finally {
-      loaded = true;
-    }
+    const results = await Promise.allSettled([
+      listMeetings(),
+      listActiveOfferings(1000),
+      listLockedOfferings(2000),
+      listDeposits(),
+      listBackups(),
+      recentAuditEvents(50, 0),
+    ]);
+    const keys = ["meetings", "active offerings", "locked offerings", "deposits", "backups", "recent activity"] as const;
+    const values: unknown[] = [];
+    const errs: Record<string, string> = {};
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") values[i] = r.value;
+      else errs[keys[i]] = String(r.reason);
+    });
+    sectionErrors = errs;
+    const failed = Object.keys(errs);
+    error = failed.length === 6 ? `Couldn't load dashboard: ${errs[keys[0]]}` : "";
+    const [m, active, locked, dep, bk, aud] = values as [
+      Meeting[], Offering[], Offering[], BankDeposit[], Backup[], AuditEvent[],
+    ];
+    meetings = (m ?? []) as Meeting[];
+    // Caps bound IPC while covering realistic parish volumes.
+    offerings = ((active ?? []) as Offering[]).concat((locked ?? []) as Offering[]);
+    offerings.sort((a, b) => b.created_at.localeCompare(a.created_at));
+    deposits = (dep ?? []) as BankDeposit[];
+    backups = (bk ?? []) as Backup[];
+    audit = (aud ?? []) as AuditEvent[];
+    loaded = true;
   });
 
   const depositedIds = $derived(new Set(deposits.flatMap((d) => d.items.map((i) => i.offering_id))));
@@ -154,14 +170,39 @@ const attention = $derived<AttentionItem[]>([
 <div class="card">
   <h1>Dashboard</h1>
   <p class="muted">Welcome, {user.display_name}.</p>
+  {#if error}<div class="error">{error}</div>{/if}
+  {#if Object.keys(sectionErrors).length > 0 && !error}
+    {#each Object.entries(sectionErrors) as [section, message] (section)}
+      <p class="error" role="alert">Couldn't load {section}: {message}</p>
+    {/each}
+  {/if}
 </div>
 
 {#if !loaded}
   <p class="muted">Loading…</p>
 {:else}
+  {#if backupOverdue && (is.admin || roles.includes("Trustee"))}
+    <!-- Startup overdue nudge: backups have no OS-scheduled automation by
+      design (a volunteer desktop app must not silently delete or schedule
+      compliance-relevant backups in the background) — so an overdue backup
+      surfaces here as a prominent banner prompting manual action instead. -->
+    <div class="card">
+      <div class="row space-between">
+        <span>
+          <span class="badge error-badge">Backup overdue</span>
+          {#if lastBackup}
+            <span> — last backup {new Date(lastBackup.created_at).toLocaleString()}; create a fresh one.</span>
+          {:else}
+            <span> — no backup yet. Backups protect offering and Gift Aid records; create one now.</span>
+          {/if}
+        </span>
+        <button onclick={() => onNavigate("backups")}>Open backups</button>
+      </div>
+    </div>
+  {/if}
   {#if is.admin || is.counter}
     <div class="card">
-      <div class="row" style="justify-content: space-between;">
+      <div class="row space-between">
         <h2>Today's work</h2>
         {#if is.counter || is.admin}
           <button onclick={() => onNavigate("offerings")}>Start new collection</button>
@@ -205,9 +246,9 @@ const attention = $derived<AttentionItem[]>([
     <div class="card">
       <h2>⚠ Needs attention</h2>
       <ul class="plain">
-        {#each attention as a (a.kind + a.text)}
+        {#each attention as a (a.kind + (a.offering?.id ?? "") + (a.deposit?.id ?? "") + a.text)}
           <li>
-            <span class="row" style="justify-content: space-between;">
+            <span class="row space-between">
               <span>
                 {#if a.kind === 'discrepancy'}
                   <span class="badge error-badge">{a.deposit?.reference ?? "Deposit"}</span> {a.text}
@@ -231,7 +272,7 @@ const attention = $derived<AttentionItem[]>([
       <ul class="plain">
         {#each unfinished.slice(0, 5) as o (o.id)}
           <li>
-            <span class="row" style="justify-content: space-between;">
+            <span class="row space-between">
               <span>
                 Offering <strong>{o.offering_number}</strong> —
                 {fmtPence((o.donations ?? []).reduce((s, d) => s + d.amount.pence, 0))} recorded
@@ -275,7 +316,7 @@ const attention = $derived<AttentionItem[]>([
       <ul class="plain">
         {#each audit.slice(0, 8) as e (e.id)}
           <li>
-            <span class="row" style="justify-content: space-between;">
+            <span class="row space-between">
               <span>{activityLabel(e)} — {entityLabel(e)}</span>
               <span class="muted">{new Date(e.timestamp).toLocaleString()}</span>
             </span>

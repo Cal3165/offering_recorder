@@ -45,6 +45,9 @@ impl Donation {
     ///
     /// Cash donations must carry a denomination breakdown whose total equals
     /// the amount; non-cash donations must not carry one.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn validate_cash_consistency(&self) -> DomainResult<()> {
         match self.cash_denominations {
             Some(_) => {
@@ -53,7 +56,7 @@ impl Donation {
                         "only cash donations may carry a denomination breakdown".into(),
                     ));
                 }
-                cash_amount(self.amount, &self.cash_denominations).map(|_| ())
+                cash_amount(self.amount, self.cash_denominations.as_ref()).map(|_| ())
             }
             None => Ok(()),
         }
@@ -61,6 +64,9 @@ impl Donation {
 }
 
 impl Donation {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn named(
         offering_id: Uuid,
         donor_id: Uuid,
@@ -71,7 +77,7 @@ impl Donation {
         cash_denominations: Option<CashTotal>,
     ) -> DomainResult<Self> {
         let now = Utc::now();
-        let amount = cash_amount(amount, &cash_denominations)?;
+        let amount = cash_amount(amount, cash_denominations.as_ref())?;
         Ok(Donation {
             id: Uuid::new_v4(),
             donor_id: Some(donor_id),
@@ -88,6 +94,9 @@ impl Donation {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn anonymous(
         offering_id: Uuid,
         amount: Money,
@@ -97,7 +106,7 @@ impl Donation {
         cash_denominations: Option<CashTotal>,
     ) -> DomainResult<Self> {
         let now = Utc::now();
-        let amount = cash_amount(amount, &cash_denominations)?;
+        let amount = cash_amount(amount, cash_denominations.as_ref())?;
         Ok(Donation {
             id: Uuid::new_v4(),
             donor_id: None,
@@ -114,6 +123,9 @@ impl Donation {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn loose_cash(offering_id: Uuid, cash_denominations: CashTotal) -> DomainResult<Self> {
         if cash_denominations.total().is_zero() {
             return Err(DomainError::Validation(
@@ -137,32 +149,35 @@ impl Donation {
         })
     }
 
+    #[must_use]
     pub fn with_date(mut self, date: NaiveDate) -> Self {
         self.date = date;
         self
     }
 
+    #[must_use]
     pub fn is_named(&self) -> bool {
         self.classification == DonationClassification::Named
     }
 
+    #[must_use]
     pub fn is_anonymous(&self) -> bool {
         self.classification == DonationClassification::Anonymous
     }
 
+    #[must_use]
     pub fn is_loose_cash(&self) -> bool {
         self.classification == DonationClassification::LooseCash
     }
 }
 
-fn cash_amount(amount: Money, breakdown: &Option<CashTotal>) -> DomainResult<Money> {
+fn cash_amount(amount: Money, breakdown: Option<&CashTotal>) -> DomainResult<Money> {
     match breakdown {
         Some(total) => {
             let breakdown_total = total.total();
             if amount != breakdown_total {
                 return Err(DomainError::Validation(format!(
-                    "donation amount ({}) must match cash breakdown total ({})",
-                    amount, breakdown_total
+                    "donation amount ({amount}) must match cash breakdown total ({breakdown_total})"
                 )));
             }
             Ok(breakdown_total)
@@ -189,7 +204,8 @@ mod tests {
             PaymentMethod::Cheque,
             Some("Ref123".to_string()),
             None,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(d.is_named());
         assert_eq!(d.donor_id, Some(donor_id));
         assert_eq!(d.amount.pence(), 500);
@@ -207,7 +223,8 @@ mod tests {
             PaymentMethod::Cash,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(d.is_anonymous());
         assert!(d.donor_id.is_none());
     }
@@ -242,7 +259,8 @@ mod tests {
             PaymentMethod::Cash,
             None,
             Some(ct),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(d.amount.pence(), 1300);
     }
 

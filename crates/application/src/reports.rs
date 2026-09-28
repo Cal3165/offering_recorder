@@ -1,9 +1,9 @@
 use offering_domain::entities::user::User;
 use offering_domain::gasds::{GasdsCalculator, GasdsConfig, GasdsResult};
 use offering_persistence::{
-    AuditRepository, BankDepositRepository, BookkeepingEntry, DonorReportEntry, GdprReport,
-    GiftAidRepository, GiftAidReportEntry, IifDonationRow, MeetingRepository, OfferingRepository,
-    ReportRepository, GasdsReportEntry,
+    AmendmentRepository, AuditRepository, BankDepositRepository, BookkeepingEntry,
+    DonorReportEntry, GasdsReportEntry, GdprReport, GiftAidReportEntry, GiftAidRepository,
+    IifDonationRow, MeetingRepository, OfferingRepository, ReportRepository,
 };
 use uuid::Uuid;
 
@@ -18,6 +18,7 @@ pub struct ReportService<'a> {
     meetings: &'a dyn MeetingRepository,
     gift_aid: &'a dyn GiftAidRepository,
     deposits: &'a dyn BankDepositRepository,
+    amendments: &'a dyn AmendmentRepository,
     audit: AuditLog<'a>,
 }
 
@@ -29,6 +30,7 @@ impl<'a> ReportService<'a> {
         meetings: &'a dyn MeetingRepository,
         gift_aid: &'a dyn GiftAidRepository,
         deposits: &'a dyn BankDepositRepository,
+        amendments: &'a dyn AmendmentRepository,
         audit_repo: &'a dyn AuditRepository,
     ) -> Self {
         ReportService {
@@ -37,11 +39,12 @@ impl<'a> ReportService<'a> {
             meetings,
             gift_aid,
             deposits,
+            amendments,
             audit: AuditLog::new(audit_repo),
         }
     }
 
-    fn require_reports_permission(&self, actor: &User) -> AppResult<()> {
+    fn require_reports_permission(actor: &User) -> AppResult<()> {
         if can_run_claim_reports(actor) {
             Ok(())
         } else {
@@ -49,6 +52,9 @@ impl<'a> ReportService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn bookkeeping_report(
         &self,
         actor: &User,
@@ -56,8 +62,11 @@ impl<'a> ReportService<'a> {
         end: chrono::NaiveDate,
         meeting_id: Option<Uuid>,
     ) -> AppResult<Vec<BookkeepingEntry>> {
-        self.require_reports_permission(actor)?;
-        let entries = self.reports.bookkeeping_report(start, end, meeting_id).await?;
+        Self::require_reports_permission(actor)?;
+        let entries = self
+            .reports
+            .bookkeeping_report(start, end, meeting_id)
+            .await?;
         self.audit
             .record(
                 actor,
@@ -72,13 +81,16 @@ impl<'a> ReportService<'a> {
         Ok(entries)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn donor_report(
         &self,
         actor: &User,
         start: chrono::NaiveDate,
         end: chrono::NaiveDate,
     ) -> AppResult<Vec<DonorReportEntry>> {
-        self.require_reports_permission(actor)?;
+        Self::require_reports_permission(actor)?;
         let entries = self.reports.donor_report(start, end).await?;
         self.audit
             .record(
@@ -94,13 +106,16 @@ impl<'a> ReportService<'a> {
         Ok(entries)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn iif_export(
         &self,
         actor: &User,
         start: chrono::NaiveDate,
         end: chrono::NaiveDate,
     ) -> AppResult<String> {
-        self.require_reports_permission(actor)?;
+        Self::require_reports_permission(actor)?;
         let rows = self.reports.iif_donation_export(start, end).await?;
         let iif = build_iif(&rows);
         self.audit
@@ -117,8 +132,11 @@ impl<'a> ReportService<'a> {
         Ok(iif)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn gdpr_report(&self, actor: &User, donor_id: Uuid) -> AppResult<GdprReport> {
-        self.require_reports_permission(actor)?;
+        Self::require_reports_permission(actor)?;
         let report = self.reports.gdpr_report(donor_id).await?;
         self.audit
             .record(
@@ -134,12 +152,15 @@ impl<'a> ReportService<'a> {
         Ok(report)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn gift_aid_report(
         &self,
         actor: &User,
         tax_year: offering_domain::tax_year::TaxYear,
     ) -> AppResult<Vec<GiftAidReportEntry>> {
-        self.require_reports_permission(actor)?;
+        Self::require_reports_permission(actor)?;
         let label = format!("gift aid report generated for {tax_year}");
         let entries = self.reports.gift_aid_report(tax_year).await?;
         self.audit
@@ -156,49 +177,76 @@ impl<'a> ReportService<'a> {
         Ok(entries)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn gasds_report(
         &self,
         actor: &User,
         start: chrono::NaiveDate,
         end: chrono::NaiveDate,
     ) -> AppResult<Vec<GasdsReportEntry>> {
-        self.require_reports_permission(actor)?;
-        let offerings = self.offerings.list_by_date_range(start, end, None, None).await?;
+        Self::require_reports_permission(actor)?;
+        let stored = self
+            .offerings
+            .list_by_date_range(start, end, None, None)
+            .await?;
+        // Current (post-amendment) state, like the claim paths (plan Phase 4.6).
+        let offerings =
+            crate::offerings::apply_approved_amendments(self.amendments, stored).await?;
         let declarations = self.gift_aid.list(None, None).await?;
 
-        let mut by_donor: std::collections::HashMap<Uuid, Vec<offering_domain::entities::GiftAidDeclaration>> =
-            std::collections::HashMap::new();
+        let mut by_donor: std::collections::HashMap<
+            Uuid,
+            Vec<offering_domain::entities::GiftAidDeclaration>,
+        > = std::collections::HashMap::new();
         for d in &declarations {
             by_donor.entry(d.donor_id).or_default().push(d.clone());
         }
 
-        let mut by_meeting: std::collections::HashMap<Uuid, Vec<offering_domain::entities::Offering>> =
-            std::collections::HashMap::new();
+        let mut by_meeting: std::collections::HashMap<
+            Uuid,
+            Vec<offering_domain::entities::Offering>,
+        > = std::collections::HashMap::new();
         for o in &offerings {
             by_meeting.entry(o.meeting_id).or_default().push(o.clone());
         }
 
         let mut entries = Vec::new();
         for (meeting_id, meeting_offerings) in by_meeting {
-            let result: GasdsResult =
-                GasdsCalculator::calculate_period(&meeting_offerings, &by_donor, &GasdsConfig::default());
+            let result: GasdsResult = GasdsCalculator::calculate_period(
+                &meeting_offerings,
+                &by_donor,
+                &GasdsConfig::default(),
+            );
+            // Attendance is the LARGEST single collection in the range (plan
+            // Phase 5.1): summing headcounts across weeks is meaningless for
+            // HMRC's per-collection test. The frontend labels this accordingly.
             let attendance: u32 = meeting_offerings
                 .iter()
                 .filter_map(|o| o.attendance)
-                .sum();
+                .max()
+                .unwrap_or(0);
             let meeting_name = self
                 .meetings
                 .get(meeting_id)
                 .await?
-                .map(|m| m.name)
-                .unwrap_or_else(|| "Unknown".to_string());
-            let claimable = result.claimable_amount();
+                .map_or_else(|| "Unknown".to_string(), |m| m.name);
+            // "Claimable" here is eligible-before-matching (plan Phase 4.5):
+            // the Gift Aid matching limit and annual ceiling are year-scoped
+            // and applied when a claim is prepared (see claim_readiness), not
+            // in an arbitrary date-range report. Never present this column as
+            // a final claim figure.
             entries.push(GasdsReportEntry {
                 meeting_id,
                 meeting_name,
-                attendance: if attendance == 0 { None } else { Some(attendance) },
+                attendance: if attendance == 0 {
+                    None
+                } else {
+                    Some(attendance)
+                },
                 eligible_amount: result.eligible_amount,
-                claimable_amount: claimable,
+                claimable_amount: result.eligible_amount,
             });
         }
         entries.sort_by_key(|e| e.meeting_id);
@@ -217,19 +265,33 @@ impl<'a> ReportService<'a> {
         Ok(entries)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn deposit_report(
         &self,
         actor: &User,
         start: chrono::NaiveDate,
         end: chrono::NaiveDate,
     ) -> AppResult<Vec<offering_domain::entities::BankDeposit>> {
-        self.require_reports_permission(actor)?;
+        Self::require_reports_permission(actor)?;
         let mut deposits = self.deposits.list().await?;
         deposits.retain(|d| {
             let date = d.deposit_date.date_naive();
             date >= start && date <= end
         });
         deposits.sort_by_key(|d| d.deposit_date);
+        self.audit
+            .record(
+                actor,
+                offering_domain::entities::audit_event::AuditAction::ReportGenerated,
+                "Report",
+                None,
+                None,
+                None,
+                Some("deposit report generated".into()),
+            )
+            .await?;
         Ok(deposits)
     }
 }
@@ -238,30 +300,42 @@ const IIF_INCOME_ACCOUNT: &str = "Donations";
 const IIF_OFFSET_ACCOUNT: &str = "Undeposited Funds";
 
 fn build_iif(rows: &[IifDonationRow]) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
     out.push_str("!TRNS\tTRNSID\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tMEMO\n");
     out.push_str("!SPL\tSPLID\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tMEMO\n");
     out.push_str("!ENDTRNS\n");
 
     for (idx, row) in rows.iter().enumerate() {
-        let trns_id = idx as u32 + 1;
+        // Row counts are tiny in practice; saturate rather than truncate on
+        // absurdly large inputs.
+        let trns_id = u32::try_from(idx).unwrap_or(u32::MAX).saturating_add(1);
         let date = row.donation_date.format("%m/%d/%Y");
         let name = row.donor_name.clone().unwrap_or_else(|| "Anonymous".into());
+        // IIF amounts render to 2dp; realistic pence totals convert exactly.
+        #[allow(clippy::cast_precision_loss)]
         let amount = row.amount_pence as f64 / 100.0;
-        let memo = format!("Offering {} - {} ({})", row.offering_number, row.donation_type, row.payment_method);
+        let memo = format!(
+            "Offering {} - {} ({})",
+            row.offering_number, row.donation_type, row.payment_method
+        );
+        let debit_spl_id = trns_id.saturating_mul(2).saturating_sub(1);
+        let credit_spl_id = trns_id.saturating_mul(2);
+        let neg_amount = -amount;
 
-        out.push_str(&format!(
-            "TRNS\t{}\tGENERAL JOURNAL\t{}\t{}\t{}\t{:.2}\t{}\n",
-            trns_id, date, IIF_INCOME_ACCOUNT, name, amount, memo
-        ));
-        out.push_str(&format!(
-            "SPL\t{}\tGENERAL JOURNAL\t{}\t{}\t{}\t{:.2}\t{}\n",
-            trns_id * 2 - 1, date, IIF_INCOME_ACCOUNT, name, amount, memo
-        ));
-        out.push_str(&format!(
-            "SPL\t{}\tGENERAL JOURNAL\t{}\t{}\t{}\t{:.2}\t{}\n",
-            trns_id * 2, date, IIF_OFFSET_ACCOUNT, name, -amount, memo
-        ));
+        let _ = writeln!(
+            out,
+            "TRNS\t{trns_id}\tGENERAL JOURNAL\t{date}\t{IIF_INCOME_ACCOUNT}\t{name}\t{amount:.2}\t{memo}"
+        );
+        let _ = writeln!(
+            out,
+            "SPL\t{debit_spl_id}\tGENERAL JOURNAL\t{date}\t{IIF_INCOME_ACCOUNT}\t{name}\t{amount:.2}\t{memo}"
+        );
+        let _ = writeln!(
+            out,
+            "SPL\t{credit_spl_id}\tGENERAL JOURNAL\t{date}\t{IIF_OFFSET_ACCOUNT}\t{name}\t{neg_amount:.2}\t{memo}"
+        );
     }
     out
 }
@@ -277,7 +351,7 @@ mod tests {
         IifDonationRow {
             donation_date: NaiveDate::from_ymd_opt(2026, 6, day).unwrap(),
             offering_number: "2026/06/0001".into(),
-            donor_name: donor.map(|s| s.to_string()),
+            donor_name: donor.map(std::string::ToString::to_string),
             amount_pence,
             donation_type: DonationType::Tithe,
             payment_method: PaymentMethod::Cash,

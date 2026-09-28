@@ -1,4 +1,5 @@
 use super::{from_json, map_db_err, to_json};
+use crate::SharedPool;
 use async_trait::async_trait;
 use offering_domain::entities::amendment::{Amendment, AmendmentChange, AmendmentStatus};
 use offering_domain::signature::Signature;
@@ -6,7 +7,6 @@ use offering_persistence::{AmendmentRepository, RepoError, RepoResult};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteAmendmentRepository {
@@ -14,11 +14,15 @@ pub struct SqliteAmendmentRepository {
 }
 
 impl SqliteAmendmentRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteAmendmentRepository { pool }
     }
 }
 
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
 pub fn row_to_amendment(row: &SqliteRow) -> Result<Amendment, RepoError> {
     let changes: Vec<AmendmentChange> = from_json(&row.get::<String, _>("changes"))?;
     let status: AmendmentStatus = from_json(&row.get::<String, _>("status"))?;
@@ -48,8 +52,16 @@ pub fn row_to_amendment(row: &SqliteRow) -> Result<Amendment, RepoError> {
 impl AmendmentRepository for SqliteAmendmentRepository {
     async fn create(&self, amendment: Amendment) -> RepoResult<Amendment> {
         let changes = to_json(&amendment.changes)?;
-        let counter = amendment.counter_signature.as_ref().map(to_json).transpose()?;
-        let checker = amendment.checker_signature.as_ref().map(to_json).transpose()?;
+        let counter = amendment
+            .counter_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
+        let checker = amendment
+            .checker_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
         sqlx::query(
             "INSERT INTO amendments (id, offering_id, reason, changes, created_by, created_at, counter_signature, checker_signature, status, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -80,18 +92,22 @@ impl AmendmentRepository for SqliteAmendmentRepository {
     }
 
     async fn list_by_offering(&self, offering_id: Uuid) -> RepoResult<Vec<Amendment>> {
-        let rows = sqlx::query("SELECT * FROM amendments WHERE offering_id = ? ORDER BY created_at")
-            .bind(offering_id)
-            .fetch_all(&self.pool.get())
-            .await
-            .map_err(map_db_err)?;
+        let rows =
+            sqlx::query("SELECT * FROM amendments WHERE offering_id = ? ORDER BY created_at")
+                .bind(offering_id)
+                .fetch_all(&self.pool.get())
+                .await
+                .map_err(map_db_err)?;
         rows.iter().map(row_to_amendment).collect()
     }
 
-    async fn approved_amendments_for_offering(&self, offering_id: Uuid) -> RepoResult<Vec<Amendment>> {
+    async fn approved_amendments_for_offering(
+        &self,
+        offering_id: Uuid,
+    ) -> RepoResult<Vec<Amendment>> {
         let approved = to_json(&AmendmentStatus::Approved)?;
         let rows = sqlx::query(
-            "SELECT * FROM amendments WHERE offering_id = ? AND status = ? ORDER BY created_at",
+            "SELECT * FROM amendments WHERE offering_id = ? AND status = ? ORDER BY created_at, rowid",
         )
         .bind(offering_id)
         .bind(approved)
@@ -107,8 +123,16 @@ impl AmendmentRepository for SqliteAmendmentRepository {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> RepoResult<Amendment> {
         let changes = to_json(&amendment.changes)?;
-        let counter = amendment.counter_signature.as_ref().map(to_json).transpose()?;
-        let checker = amendment.checker_signature.as_ref().map(to_json).transpose()?;
+        let counter = amendment
+            .counter_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
+        let checker = amendment
+            .checker_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
         // Conditional on the loaded timestamp so a concurrent transition is
         // rejected instead of overwritten (review O27).
         let result = sqlx::query(

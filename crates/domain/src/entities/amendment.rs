@@ -35,18 +35,19 @@ pub enum AmendmentChange {
 }
 
 impl AmendmentChange {
+    #[must_use]
     pub fn description(&self) -> String {
         match self {
             AmendmentChange::AddDonation(d) => {
                 format!("Add donation: {} {}", d.amount, d.donation_type)
             }
-            AmendmentChange::RemoveDonation(id) => format!("Remove donation: {}", id),
+            AmendmentChange::RemoveDonation(id) => format!("Remove donation: {id}"),
             AmendmentChange::SetCashDenominations(ct) => {
                 format!("Set cash denominations (total: {})", ct.total())
             }
-            AmendmentChange::SetAttendance(n) => format!("Set attendance: {}", n),
+            AmendmentChange::SetAttendance(n) => format!("Set attendance: {n}"),
             AmendmentChange::SetDescription(desc) => {
-                format!("Set description: {:?}", desc)
+                format!("Set description: {desc:?}")
             }
         }
     }
@@ -67,6 +68,9 @@ pub struct Amendment {
 }
 
 impl Amendment {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create(
         offering_id: Uuid,
         reason: &str,
@@ -103,20 +107,26 @@ impl Amendment {
         })
     }
 
+    #[must_use]
     pub fn can_counter_sign(&self) -> bool {
         self.status == AmendmentStatus::Draft && self.counter_signature.is_none()
     }
 
+    #[must_use]
     pub fn can_checker_sign(&self) -> bool {
         self.status == AmendmentStatus::CounterSigned && self.checker_signature.is_none()
     }
 
+    #[must_use]
     pub fn can_approve(&self) -> bool {
         self.status == AmendmentStatus::CheckerSigned
             && self.counter_signature.is_some()
             && self.checker_signature.is_some()
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn counter_sign(&mut self, signature: Signature) -> DomainResult<()> {
         if !self.can_counter_sign() {
             return Err(DomainError::InvalidTransition(format!(
@@ -130,6 +140,9 @@ impl Amendment {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn checker_sign(&mut self, signature: Signature) -> DomainResult<()> {
         if !self.can_checker_sign() {
             return Err(DomainError::InvalidTransition(format!(
@@ -137,7 +150,13 @@ impl Amendment {
                 self.status
             )));
         }
-        let counter = self.counter_signature.as_ref().unwrap();
+        // Total (not panicking): the guard above guarantees a counter
+        // signature is present; a corrupt state yields an error, never a panic.
+        let counter = self.counter_signature.as_ref().ok_or_else(|| {
+            DomainError::InvalidTransition(
+                "cannot checker sign amendment: counter signature missing".into(),
+            )
+        })?;
         if counter.is_same_person_as(&signature) {
             return Err(DomainError::Validation(
                 "counter and checker must be different users".into(),
@@ -151,6 +170,9 @@ impl Amendment {
 
     /// Withdraw the most recent signature so a mistaken amendment can be
     /// corrected or removed before it is approved.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn withdraw_signature(&mut self) -> DomainResult<()> {
         match self.status {
             AmendmentStatus::CheckerSigned => {
@@ -172,6 +194,9 @@ impl Amendment {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn approve(&mut self) -> DomainResult<()> {
         if !self.can_approve() {
             return Err(DomainError::InvalidTransition(format!(
@@ -184,6 +209,7 @@ impl Amendment {
         Ok(())
     }
 
+    #[must_use]
     pub fn is_approved(&self) -> bool {
         self.status == AmendmentStatus::Approved
     }
@@ -209,7 +235,7 @@ impl Offering {
                 clone.attendance = Some(*n);
             }
             AmendmentChange::SetDescription(desc) => {
-                clone.description = desc.clone();
+                clone.description.clone_from(desc);
             }
         }
         clone.updated_at = Utc::now();
@@ -220,6 +246,9 @@ impl Offering {
     /// append-only correction protocol: only approved amendments may be
     /// applied, only to the offering they target, and a removal must name an
     /// existing donation (a typo'd id must fail loudly, not silently no-op).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn apply_amendment(&self, amendment: &Amendment) -> DomainResult<Self> {
         if !amendment.is_approved() {
             return Err(DomainError::InvalidTransition(format!(
@@ -236,8 +265,7 @@ impl Offering {
             if let AmendmentChange::RemoveDonation(id) = change {
                 if !self.donations.iter().any(|d| &d.id == id) {
                     return Err(DomainError::Validation(format!(
-                        "amendment removes donation {} which does not exist",
-                        id
+                        "amendment removes donation {id} which does not exist"
                     )));
                 }
             }
@@ -258,6 +286,11 @@ pub struct OfferingReconstruction {
 }
 
 impl OfferingReconstruction {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
+    // Takes `Vec` by value to keep the public API stable (clippy::needless_pass_by_value).
+    #[allow(clippy::needless_pass_by_value)]
     pub fn from_amendments(original: Offering, amendments: Vec<Amendment>) -> DomainResult<Self> {
         let mut states = vec![original.clone()];
         let mut amendment_ids = Vec::new();
@@ -276,18 +309,22 @@ impl OfferingReconstruction {
         })
     }
 
+    #[must_use]
     pub fn at_index(&self, index: usize) -> Option<&Offering> {
         self.states.get(index)
     }
 
+    #[must_use]
     pub fn current(&self) -> &Offering {
         self.states.last().unwrap_or(&self.original)
     }
 
+    #[must_use]
     pub fn original(&self) -> &Offering {
         &self.original
     }
 
+    #[must_use]
     pub fn state_count(&self) -> usize {
         self.states.len()
     }
@@ -386,10 +423,7 @@ mod tests {
     }
 
     /// Create a fully signed + approved amendment ready to be applied.
-    fn approved_amendment(
-        offering_id: Uuid,
-        changes: Vec<AmendmentChange>,
-    ) -> Amendment {
+    fn approved_amendment(offering_id: Uuid, changes: Vec<AmendmentChange>) -> Amendment {
         let mut a = Amendment::create(offering_id, "reason", changes, Uuid::new_v4()).unwrap();
         a.counter_sign(counter_sig()).unwrap();
         a.checker_sign(checker_sig()).unwrap();
@@ -419,10 +453,7 @@ mod tests {
     fn apply_rejects_amendment_for_different_offering() {
         let o = make_offering();
         let other = make_offering();
-        let a = approved_amendment(
-            other.id,
-            vec![AmendmentChange::SetAttendance(100)],
-        );
+        let a = approved_amendment(other.id, vec![AmendmentChange::SetAttendance(100)]);
         assert!(matches!(
             o.apply_amendment(&a),
             Err(DomainError::Validation(_))
@@ -445,10 +476,7 @@ mod tests {
         )
         .unwrap();
         o.add_donation(keep).unwrap();
-        let a = approved_amendment(
-            o.id,
-            vec![AmendmentChange::RemoveDonation(Uuid::new_v4())],
-        );
+        let a = approved_amendment(o.id, vec![AmendmentChange::RemoveDonation(Uuid::new_v4())]);
         assert!(matches!(
             o.apply_amendment(&a),
             Err(DomainError::Validation(_))
@@ -554,7 +582,8 @@ mod tests {
             PaymentMethod::Cheque,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         original.add_donation(donation).unwrap();
         assert_eq!(original.donation_total().unwrap().pence(), 10000);
 
@@ -568,7 +597,8 @@ mod tests {
             PaymentMethod::Cheque,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         let changes1 = vec![
             AmendmentChange::RemoveDonation(original_donations[0]),
@@ -598,7 +628,8 @@ mod tests {
             PaymentMethod::Cheque,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let changes2 = vec![
             AmendmentChange::RemoveDonation(donation_after_a1[0]),
             AmendmentChange::AddDonation(newer_donation),
@@ -631,7 +662,10 @@ mod tests {
         assert_eq!(after_a2.donation_total().unwrap().pence(), 11500);
 
         // Current state is after amendment 2
-        assert_eq!(reconstruction.current().donation_total().unwrap().pence(), 11500);
+        assert_eq!(
+            reconstruction.current().donation_total().unwrap().pence(),
+            11500
+        );
     }
 
     #[test]
@@ -645,7 +679,8 @@ mod tests {
             PaymentMethod::Cash,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let change = AmendmentChange::AddDonation(donation);
         let new_offering = o.apply_change(&change);
         assert_eq!(new_offering.donations.len(), 1);
@@ -663,7 +698,8 @@ mod tests {
             PaymentMethod::Cash,
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         o.add_donation(donation.clone()).unwrap();
         let change = AmendmentChange::RemoveDonation(donation.id);
         let new_offering = o.apply_change(&change);

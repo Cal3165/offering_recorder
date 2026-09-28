@@ -29,11 +29,17 @@ impl<'a> AuthService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn needs_bootstrap(&self) -> AppResult<bool> {
         let users = self.users.list().await?;
         Ok(users.is_empty())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn bootstrap(
         &self,
         username: &str,
@@ -63,6 +69,9 @@ impl<'a> AuthService<'a> {
         Ok(user)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn login(&self, username: &str, password: &str) -> AppResult<User> {
         let user = self.users.get_by_username(username).await?;
         match user {
@@ -133,6 +142,9 @@ impl<'a> AuthService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_users(&self, actor: &User) -> AppResult<Vec<User>> {
         if !can_manage_users(actor) {
             return Err(unauthorized("manage users"));
@@ -140,6 +152,9 @@ impl<'a> AuthService<'a> {
         Ok(self.users.list().await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn get_user(&self, actor: &User, id: Uuid) -> AppResult<Option<User>> {
         if !can_manage_users(actor) {
             return Err(unauthorized("manage users"));
@@ -147,6 +162,9 @@ impl<'a> AuthService<'a> {
         Ok(self.users.get(id).await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn create_user(
         &self,
         actor: &User,
@@ -160,7 +178,9 @@ impl<'a> AuthService<'a> {
             return Err(unauthorized("manage users"));
         }
         if self.users.get_by_username(username).await?.is_some() {
-            return Err(crate::error::AppError::Conflict("username already exists".into()));
+            return Err(crate::error::AppError::Conflict(
+                "username already exists".into(),
+            ));
         }
         let mut user = User::create(username, display_name, email, roles)?;
         let hash = self.hasher.hash_password(password).await?;
@@ -180,6 +200,9 @@ impl<'a> AuthService<'a> {
         Ok(user)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn set_password(
         &self,
         actor: &User,
@@ -212,6 +235,9 @@ impl<'a> AuthService<'a> {
         Ok(user)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn set_active(&self, actor: &User, user_id: Uuid, active: bool) -> AppResult<User> {
         if !can_manage_users(actor) {
             return Err(unauthorized("manage users"));
@@ -233,13 +259,17 @@ impl<'a> AuthService<'a> {
                     "you cannot deactivate your own account".into(),
                 ));
             }
-            if user.roles.has(&offering_domain::entities::role::Role::Admin)
+            if user
+                .roles
+                .has(&offering_domain::entities::role::Role::Admin)
                 && user.is_active
             {
                 let users = self.users.list().await?;
-                let other_active_admins = users
-                    .iter()
-                    .any(|u| u.id != user.id && u.is_active && u.roles.has(&offering_domain::entities::role::Role::Admin));
+                let other_active_admins = users.iter().any(|u| {
+                    u.id != user.id
+                        && u.is_active
+                        && u.roles.has(&offering_domain::entities::role::Role::Admin)
+                });
                 if !other_active_admins {
                     return Err(crate::error::AppError::Conflict(
                         "cannot deactivate the last active administrator".into(),

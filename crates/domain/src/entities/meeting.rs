@@ -36,6 +36,9 @@ pub struct Meeting {
 }
 
 impl Meeting {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create(name: &str, day_of_week: u8, time_of_day: &str) -> DomainResult<Self> {
         if name.trim().is_empty() {
             return Err(DomainError::Validation(
@@ -70,7 +73,15 @@ impl Meeting {
         self.updated_at = Utc::now();
     }
 
-    pub fn update_schedule(&mut self, name: &str, day_of_week: u8, time_of_day: &str) -> DomainResult<()> {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
+    pub fn update_schedule(
+        &mut self,
+        name: &str,
+        day_of_week: u8,
+        time_of_day: &str,
+    ) -> DomainResult<()> {
         if name.trim().is_empty() {
             return Err(DomainError::Validation(
                 "meeting name cannot be empty".into(),
@@ -179,7 +190,13 @@ mod tests {
 
     #[test]
     fn event_type_display() {
-        assert_eq!(MeetingEventType::RegularService.to_string(), "Regular Service");
-        assert_eq!(MeetingEventType::CommunityEvent.to_string(), "Community Event");
+        assert_eq!(
+            MeetingEventType::RegularService.to_string(),
+            "Regular Service"
+        );
+        assert_eq!(
+            MeetingEventType::CommunityEvent.to_string(),
+            "Community Event"
+        );
     }
 }

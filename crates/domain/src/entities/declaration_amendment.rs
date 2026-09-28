@@ -36,6 +36,7 @@ pub enum DeclarationChange {
 }
 
 impl DeclarationChange {
+    #[must_use]
     pub fn description(&self) -> String {
         match self {
             DeclarationChange::EndDeclaration { at, reason } => {
@@ -72,6 +73,9 @@ pub struct DeclarationAmendment {
 }
 
 impl DeclarationAmendment {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create(
         declaration_id: Uuid,
         donor_id: Uuid,
@@ -100,20 +104,26 @@ impl DeclarationAmendment {
         })
     }
 
+    #[must_use]
     pub fn can_counter_sign(&self) -> bool {
         self.status == DeclarationAmendmentStatus::Draft && self.counter_signature.is_none()
     }
 
+    #[must_use]
     pub fn can_checker_sign(&self) -> bool {
         self.status == DeclarationAmendmentStatus::CounterSigned && self.checker_signature.is_none()
     }
 
+    #[must_use]
     pub fn can_approve(&self) -> bool {
         self.status == DeclarationAmendmentStatus::CheckerSigned
             && self.counter_signature.is_some()
             && self.checker_signature.is_some()
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn counter_sign(&mut self, signature: Signature) -> DomainResult<()> {
         if !self.can_counter_sign() {
             return Err(DomainError::InvalidTransition(format!(
@@ -127,6 +137,9 @@ impl DeclarationAmendment {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn checker_sign(&mut self, signature: Signature) -> DomainResult<()> {
         if !self.can_checker_sign() {
             return Err(DomainError::InvalidTransition(format!(
@@ -134,7 +147,13 @@ impl DeclarationAmendment {
                 self.status
             )));
         }
-        let counter = self.counter_signature.as_ref().unwrap();
+        // Total (not panicking): the guard above guarantees a counter
+        // signature is present; a corrupt state yields an error, never a panic.
+        let counter = self.counter_signature.as_ref().ok_or_else(|| {
+            DomainError::InvalidTransition(
+                "cannot checker sign declaration amendment: counter signature missing".into(),
+            )
+        })?;
         if counter.is_same_person_as(&signature) {
             return Err(DomainError::Validation(
                 "counter and checker must be different users".into(),
@@ -146,6 +165,9 @@ impl DeclarationAmendment {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn withdraw_signature(&mut self) -> DomainResult<()> {
         match self.status {
             DeclarationAmendmentStatus::CheckerSigned => {
@@ -167,6 +189,9 @@ impl DeclarationAmendment {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn approve(&mut self) -> DomainResult<()> {
         if !self.can_approve() {
             return Err(DomainError::InvalidTransition(format!(
@@ -179,6 +204,7 @@ impl DeclarationAmendment {
         Ok(())
     }
 
+    #[must_use]
     pub fn is_approved(&self) -> bool {
         self.status == DeclarationAmendmentStatus::Approved
     }

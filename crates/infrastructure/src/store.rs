@@ -4,7 +4,13 @@ use crate::db;
 use crate::error::InfraResult;
 use crate::SharedPool;
 
-use super::sqlite::*;
+use super::sqlite::{
+    SqliteAmendmentRepository, SqliteAuditRepository, SqliteBackupRepository,
+    SqliteBankDepositRepository, SqliteCommunityBuildingRepository,
+    SqliteDeclarationAmendmentRepository, SqliteDonationRepository, SqliteDonorRepository,
+    SqliteGasdsClaimRepository, SqliteGiftAidRepository, SqliteMeetingRepository,
+    SqliteOfferingRepository, SqliteReportRepository, SqliteUserRepository,
+};
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -26,11 +32,15 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    /// # Errors
+    ///
+    /// Returns [`RepoError`] if the database operation fails or stored data is invalid.
     pub async fn open(path: &str) -> InfraResult<Self> {
         let pool = db::connect(path).await?;
         Ok(Self::from_pool(pool))
     }
 
+    #[must_use]
     pub fn from_pool(pool: SqlitePool) -> Self {
         let pool = SharedPool::new(pool);
         SqliteStore {
@@ -51,5 +61,4 @@ impl SqliteStore {
             pool,
         }
     }
-
 }

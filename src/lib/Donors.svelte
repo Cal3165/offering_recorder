@@ -2,12 +2,13 @@
   import { onMount } from "svelte";
   import {
     createDonor,
+    getDonor,
     listActiveDonors,
     listDonors,
     searchDonors,
     setDonorActive,
   } from "./api";
-  import type { Donor, User } from "./types";
+  import type { Donor, LawfulBasis, User } from "./types";
   import DonorDetail from "./donors/DonorDetail.svelte";
 
   let { user, focusDonorId = null }: { user: User; focusDonorId?: string | null } = $props();
@@ -17,6 +18,7 @@
   let includeInactive = $state(false);
   let error = $state("");
   let ok = $state("");
+  let busy = $state(false);
 
   let showCreate = $state(false);
   let cFirst = $state("");
@@ -27,6 +29,8 @@
   let cPhone = $state("");
   let cLine1 = $state("");
   let cPostcode = $state("");
+  let cLawfulBasis = $state<LawfulBasis>("Legitimate interest");
+  let cPrivacyNotice = $state("");
   let cConfirm = $state(false);
 
   let selected: Donor | null = $state(null);
@@ -40,20 +44,39 @@
   onMount(async () => {
     await refresh();
     if (focusDonorId) {
-      const found = donors.find((d) => d.id === focusDonorId) ?? (await listDonors()).find((d) => d.id === focusDonorId);
+      const found =
+        donors.find((d) => d.id === focusDonorId) ??
+        (await getDonor(focusDonorId)) ??
+        (await listDonors()).find((d) => d.id === focusDonorId);
       if (found) selected = found;
     }
   });
 
   async function refresh() {
-    donors = await listActiveDonors();
+    busy = true;
+    error = "";
+    try {
+      donors = await listActiveDonors();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
   }
 
   async function runSearch() {
-    if (query.trim()) {
-      donors = await searchDonors(query.trim(), includeInactive);
-    } else {
-      donors = includeInactive ? await listDonors() : await listActiveDonors();
+    busy = true;
+    error = "";
+    try {
+      if (query.trim()) {
+        donors = await searchDonors(query.trim(), includeInactive);
+      } else {
+        donors = includeInactive ? await listDonors() : await listActiveDonors();
+      }
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
     }
   }
 
@@ -72,13 +95,16 @@
           postcode: cPostcode || null,
           email: cEmail || null,
           phone: cPhone || null,
+          lawful_basis: cLawfulBasis,
+          privacy_notice_version: cPrivacyNotice.trim() || null,
         },
         cConfirm,
       );
       ok = `Created ${donor.first_name} ${donor.last_name}`;
       showCreate = false;
-      cFirst = cLast = cPreferred = cEmail = cPhone = cLine1 = cPostcode = "";
+      cFirst = cLast = cPreferred = cEmail = cPhone = cLine1 = cPostcode = cPrivacyNotice = "";
       cDonorType = "Unknown";
+      cLawfulBasis = "Legitimate interest";
       cConfirm = false;
       await refresh();
     } catch (e) {
@@ -99,11 +125,11 @@
 <div class="card">
   <h1>Donors</h1>
   <div class="row">
-    <input type="text" placeholder="Search name…" bind:value={query} />
+    <input type="text" placeholder="Search name…" bind:value={query} aria-label="Search donors" />
     <label style="display:flex; align-items:center; gap:0.3rem;">
       <input type="checkbox" bind:checked={includeInactive} /> include inactive
     </label>
-    <button onclick={runSearch}>Search</button>
+    <button onclick={runSearch} disabled={busy}>Search</button>
     {#if canManage && !showCreate}
       <button onclick={() => (showCreate = true)}>New donor</button>
     {/if}
@@ -136,6 +162,18 @@
       <div class="field"><label for="donor-address-line1">Address line 1</label><input id="donor-address-line1" bind:value={cLine1} /></div>
       <div class="field"><label for="donor-postcode">Postcode</label><input id="donor-postcode" bind:value={cPostcode} /></div>
     </div>
+    <div class="row">
+      <div class="field">
+        <label for="donor-lawful-basis">Lawful basis *</label>
+        <select id="donor-lawful-basis" bind:value={cLawfulBasis} required>
+          <option value="Consent">Consent</option>
+          <option value="Contract">Contract</option>
+          <option value="Legal obligation">Legal obligation</option>
+          <option value="Legitimate interest">Legitimate interest</option>
+        </select>
+      </div>
+      <div class="field"><label for="donor-privacy-notice">Privacy notice version</label><input id="donor-privacy-notice" bind:value={cPrivacyNotice} placeholder="e.g. v2 — Jan 2026" /></div>
+    </div>
     <label style="display:flex; align-items:center; gap:0.3rem;">
       <input type="checkbox" bind:checked={cConfirm} /> I confirm this donor does not already exist
     </label>
@@ -147,8 +185,10 @@
 {/if}
 
 <div class="card">
+  <div class="table-scroll">
   <table>
-    <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Status</th><th></th></tr></thead>
+    <caption class="sr-only">Donors</caption>
+    <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Phone</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>
       {#each donors as d (d.id)}
         <tr>
@@ -162,10 +202,16 @@
           <td>{#if canManage}<button class="secondary" onclick={() => toggleActive(d)}>{d.is_active ? "Deactivate" : "Activate"}</button>{/if}</td>
         </tr>
       {/each}
+      {#if donors.length === 0}
+        <tr><td colspan="5" class="muted">No donors found.</td></tr>
+      {/if}
     </tbody>
   </table>
+  </div>
 </div>
 
 {#if selected}
-  <DonorDetail {user} donor={selected} onClose={() => (selected = null)} />
+  {#key selected.id}
+    <DonorDetail {user} donor={selected} onClose={() => (selected = null)} />
+  {/key}
 {/if}

@@ -28,8 +28,7 @@ impl Default for GasdsConfig {
         GasdsConfig {
             annual_limit: Money::from_pence_unchecked(DEFAULT_ANNUAL_LIMIT_PENCE),
             gift_aid_claimed: Money::zero(),
-            matching_multiplier:
-                crate::entities::gasds_claim::GASDS_MATCHING_MULTIPLIER,
+            matching_multiplier: crate::entities::gasds_claim::GASDS_MATCHING_MULTIPLIER,
         }
     }
 }
@@ -54,7 +53,10 @@ impl std::fmt::Display for ExclusionReason {
                 write!(f, "Bank transfers are not eligible for GASDS")
             }
             ExclusionReason::CardNotEligibleYet => {
-                write!(f, "Contactless and chip-&-PIN donations only qualify from 6 April 2019")
+                write!(
+                    f,
+                    "Contactless and chip-&-PIN donations only qualify from 6 April 2019"
+                )
             }
             ExclusionReason::OverThirtyPounds => {
                 write!(f, "Donation exceeds £30 GASDS threshold")
@@ -68,7 +70,7 @@ impl std::fmt::Display for ExclusionReason {
                     "Named donation with valid Gift Aid declaration uses regular Gift Aid"
                 )
             }
-            ExclusionReason::Other(s) => write!(f, "{}", s),
+            ExclusionReason::Other(s) => write!(f, "{s}"),
         }
     }
 }
@@ -101,6 +103,7 @@ impl TaxTreatment {
     /// * Otherwise a donation that passes the GASDS eligibility checks is
     ///   claimed under GASDS.
     /// * Everything else is `Neither`.
+    #[must_use]
     pub fn classify(
         donation: &Donation,
         declarations: &[GiftAidDeclaration],
@@ -126,17 +129,15 @@ impl TaxTreatment {
         declarations: &[GiftAidDeclaration],
         date: DateTime<Utc>,
     ) -> bool {
-        use crate::gift_aid_service::GiftAidService;
-
         let Some(donor_id) = donation.donor_id else {
             return false;
         };
-        let donor_decls: Vec<GiftAidDeclaration> = declarations
+        // Donation-aware coverage (plan Phase 4.3): a Single declaration
+        // covers only its linked gift, never a same-window sibling.
+        declarations
             .iter()
             .filter(|d| d.donor_id == donor_id)
-            .cloned()
-            .collect();
-        GiftAidService::is_gift_aid_eligible(&donor_decls, date)
+            .any(|d| d.covers_donation(date, donation.id))
     }
 
     fn gasds_eligible(
@@ -173,6 +174,7 @@ pub struct GasdsResult {
 }
 
 impl GasdsResult {
+    #[must_use]
     pub fn new() -> Self {
         GasdsResult {
             eligible_amount: Money::zero(),
@@ -185,6 +187,7 @@ impl GasdsResult {
         }
     }
 
+    #[must_use]
     pub fn claimable_amount(&self) -> Money {
         Money::from_pence_unchecked(
             self.eligible_amount
@@ -214,30 +217,45 @@ fn scheme_change_date() -> NaiveDate {
 }
 
 /// Per-donation limit for a donation made on `date` (£20 before April 2019, £30 after).
+#[must_use]
 pub fn per_donation_limit_pence(date: NaiveDate) -> i64 {
-    if date >= scheme_change_date() { 3000 } else { 2000 }
+    if date >= scheme_change_date() {
+        3000
+    } else {
+        2000
+    }
 }
 
 /// Contactless / chip-&-PIN donations only qualify from 6 April 2019.
+#[must_use]
 pub fn card_donations_eligible(date: NaiveDate) -> bool {
     date >= scheme_change_date()
 }
 
 /// Annual ceiling of small donations claimable for a tax year
 /// (£5,000 before the April 2016 change, £8,000 after; review O2).
+#[must_use]
 pub fn annual_ceiling_pence(tax_year_start_year: i32) -> i64 {
-    if tax_year_start_year >= 2016 { 800_000 } else { 500_000 }
+    if tax_year_start_year >= 2016 {
+        800_000
+    } else {
+        500_000
+    }
 }
 
 impl GasdsCalculator {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
+    #[must_use]
     pub fn calculate_offering(
         offering: &Offering,
         declarations: &[GiftAidDeclaration],
         config: &GasdsConfig,
     ) -> GasdsResult {
         let mut result = GasdsResult::new();
-        result.annual_limit = config.annual_limit.clone();
-        result.gift_aid_claimed = config.gift_aid_claimed.clone();
+        result.annual_limit = config.annual_limit;
+        result.gift_aid_claimed = config.gift_aid_claimed;
 
         let raw = config
             .gift_aid_claimed
@@ -255,14 +273,18 @@ impl GasdsCalculator {
         result
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
+    #[must_use]
     pub fn calculate_period(
         offerings: &[Offering],
         declarations_by_donor: &std::collections::HashMap<uuid::Uuid, Vec<GiftAidDeclaration>>,
         config: &GasdsConfig,
     ) -> GasdsResult {
         let mut result = GasdsResult::new();
-        result.annual_limit = config.annual_limit.clone();
-        result.gift_aid_claimed = config.gift_aid_claimed.clone();
+        result.annual_limit = config.annual_limit;
+        result.gift_aid_claimed = config.gift_aid_claimed;
 
         let raw = config
             .gift_aid_claimed
@@ -277,8 +299,7 @@ impl GasdsCalculator {
                 let donor_decls = donation
                     .donor_id
                     .and_then(|id| declarations_by_donor.get(&id))
-                    .map(|d| d.as_slice())
-                    .unwrap_or(&[]);
+                    .map_or(&[] as &[_], Vec::as_slice);
 
                 let donation_date = donation.date;
                 let eval = Self::evaluate_donation_with_date(donation, donor_decls, donation_date);
@@ -302,26 +323,23 @@ impl GasdsCalculator {
         date: NaiveDate,
     ) -> DonationEvaluation {
         // Breakdown-aware evaluation applies the per-donation limit per
-        // denomination. Route any cash donation that carries a breakdown
-        // through it — not just LooseCash — so an Anonymous gift recorded as
-        // e.g. 5×£10 is judged denomination by denomination like the same
-        // money recorded as loose cash (review O4).
-        if donation.classification == DonationClassification::LooseCash
-            || (donation.payment_method == crate::payment_method::PaymentMethod::Cash
-                && donation.cash_denominations.is_some())
-        {
+        // denomination, but ONLY for pooled LooseCash. HMRC's £30 limit is
+        // per gift: a single £40 Named/Anonymous gift recorded as 2×£20 notes
+        // is one £40 donation over the limit, not two eligible £20 notes
+        // (plan Phase 4.1 — the previous routing overclaimed).
+        if donation.classification == DonationClassification::LooseCash {
             return Self::evaluate_loose_cash(donation, declarations);
         }
 
-        let amount = donation.amount.clone();
+        let amount = donation.amount;
 
         let exclusion_reason = Self::exclusion_reason_for(donation, declarations, date);
         let is_eligible = exclusion_reason.is_none();
 
         let (eligible_amount, excluded_amount) = if is_eligible {
-            (amount.clone(), Money::zero())
+            (amount, Money::zero())
         } else {
-            (Money::zero(), amount.clone())
+            (Money::zero(), amount)
         };
 
         DonationEvaluation {
@@ -342,13 +360,11 @@ impl GasdsCalculator {
     ) -> DonationEvaluation {
         // Method / coverage rules apply to the whole donation; the limit is
         // then applied per denomination.
-        if let Some(reason) =
-            Self::exclusion_without_limit(donation, declarations, donation.date)
-        {
-            let total = donation.amount.clone();
+        if let Some(reason) = Self::exclusion_without_limit(donation, declarations, donation.date) {
+            let total = donation.amount;
             return DonationEvaluation {
                 donation_id: donation.id,
-                amount: total.clone(),
+                amount: total,
                 eligible_amount: Money::zero(),
                 excluded_amount: total,
                 classification: donation.classification,
@@ -360,7 +376,7 @@ impl GasdsCalculator {
         // Cash is always an eligible method; the per-donation limit depends on
         // when the donation was made (£20 before April 2019, £30 after).
         let limit = per_donation_limit_pence(donation.date);
-        let total = donation.amount.clone();
+        let total = donation.amount;
         let mut eligible_amount = Money::zero();
         let mut excluded_amount = Money::zero();
         let mut saw_fifty_pound = false;
@@ -368,7 +384,7 @@ impl GasdsCalculator {
         match &donation.cash_denominations {
             Some(breakdown) => {
                 for (denom, count) in breakdown.iter() {
-                    let item = Money::from_pence_unchecked(denom.pence() * (*count as i64));
+                    let item = Money::from_pence_unchecked(denom.pence() * i64::from(*count));
                     if denom.pence() <= limit {
                         eligible_amount = eligible_amount.saturating_add(&item);
                     } else {
@@ -381,9 +397,9 @@ impl GasdsCalculator {
             }
             None => {
                 if total.pence() <= limit {
-                    eligible_amount = total.clone();
+                    eligible_amount = total;
                 } else {
-                    excluded_amount = total.clone();
+                    excluded_amount = total;
                 }
             }
         }
@@ -396,15 +412,21 @@ impl GasdsCalculator {
             Some(ExclusionReason::OverThirtyPounds)
         };
 
+        // A partially-excluded collection still claims its eligible portion:
+        // treatment is GASDS whenever anything is eligible so downstream
+        // claim builders (which must use `eligible_amount`, not `amount`)
+        // include the eligible part instead of dropping it (plan Phase 4.1).
+        // `eligible` stays a fully-eligible flag for display purposes.
+        let has_eligible = !eligible_amount.is_zero();
         DonationEvaluation {
             donation_id: donation.id,
             amount: total,
-            eligible_amount: eligible_amount.clone(),
-            excluded_amount: excluded_amount.clone(),
+            eligible_amount,
+            excluded_amount,
             classification: donation.classification,
             eligible: excluded_amount.is_zero(),
             exclusion_reason,
-            tax_treatment: if excluded_amount.is_zero() {
+            tax_treatment: if has_eligible {
                 TaxTreatment::Gasds
             } else {
                 TaxTreatment::Neither
@@ -441,7 +463,6 @@ impl GasdsCalculator {
         declarations: &[GiftAidDeclaration],
         date: NaiveDate,
     ) -> Option<ExclusionReason> {
-        use crate::gift_aid_service::GiftAidService;
         use crate::payment_method::PaymentMethod;
 
         if donation.payment_method == PaymentMethod::Cheque {
@@ -450,26 +471,24 @@ impl GasdsCalculator {
         if donation.payment_method == PaymentMethod::BankTransfer {
             return Some(ExclusionReason::BankTransferNotEligible);
         }
-        if matches!(donation.payment_method, PaymentMethod::Contactless | PaymentMethod::ChipAndPin)
-            && !card_donations_eligible(date)
+        if matches!(
+            donation.payment_method,
+            PaymentMethod::Contactless | PaymentMethod::ChipAndPin
+        ) && !card_donations_eligible(date)
         {
             return Some(ExclusionReason::CardNotEligibleYet);
         }
+        // Donation-aware coverage (plan Phase 4.3): a Single declaration
+        // covers only its linked gift, never a same-window sibling.
         if matches!(
             donation.classification,
             crate::entities::donation::DonationClassification::Named
-        ) && donation
-            .donor_id
-            .is_some_and(|donor_id| {
-                let donor_decls: Vec<GiftAidDeclaration> = declarations
-                    .iter()
-                    .filter(|d| d.donor_id == donor_id)
-                    .cloned()
-                    .collect();
-                !donor_decls.is_empty()
-                    && GiftAidService::is_gift_aid_eligible(&donor_decls, donation_datetime(date))
-            })
-        {
+        ) && donation.donor_id.is_some_and(|donor_id| {
+            declarations
+                .iter()
+                .filter(|d| d.donor_id == donor_id)
+                .any(|d| d.covers_donation(donation_datetime(date), donation.id))
+        }) {
             return Some(ExclusionReason::NamedWithGiftAid);
         }
         None
@@ -618,7 +637,10 @@ mod tests {
             }
             let count = remaining / pence;
             if count > 0 {
-                total.add(denom, count as u32);
+                // `count` is non-negative here (`remaining > 0`, `pence > 0`);
+                // saturate on hostile oversized amounts instead of truncating.
+                let count_u32 = u32::try_from(count).unwrap_or(u32::MAX);
+                total.add(denom, count_u32);
                 remaining -= count * pence;
             }
         }
@@ -846,7 +868,8 @@ mod tests {
         ct.set(Denomination::Note2000p, 3);
         ct.set(Denomination::Note1000p, 14);
         ct.set(Denomination::Note5000p, 3);
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap()).unwrap();
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+            .unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         // 3×£20 + 14×£10 = £200 eligible; 3×£50 = £150 excluded
         assert_eq!(result.eligible_amount.pence(), 20_000);
@@ -866,7 +889,8 @@ mod tests {
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Note2000p, 3);
         ct.set(Denomination::Note1000p, 14);
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap()).unwrap();
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+            .unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         // 3×£20 + 14×£10 = £200 eligible, nothing excluded
         assert_eq!(result.eligible_amount.pence(), 20_000);
@@ -893,7 +917,8 @@ mod tests {
         let mut o = make_offering();
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Note5000p, 1);
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap()).unwrap();
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+            .unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         assert_eq!(result.eligible_amount.pence(), 0);
         assert_eq!(result.excluded_amount.pence(), 5000);
@@ -986,11 +1011,91 @@ mod tests {
         o.add_donation(cash_donation(o.id, 4000, DonationClassification::Anonymous))
             .unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
-        // With note-level evaluation (review O4), the £40 anonymous gift's
-        // breakdown (2×£20) is judged per denomination: anonymous £20,
-        // £2.50 loose cash and £40 all eligible; cheque excluded.
-        assert_eq!(result.eligible_amount.pence(), 8500);
-        assert_eq!(result.excluded_amount.pence(), 2000);
+        // The £30 per-gift limit applies to the whole gift (plan Phase 4.1):
+        // the £40 anonymous gift is one £40 donation over the limit even
+        // though its breakdown is 2×£20 notes. Eligible: £20 anonymous +
+        // £25 loose cash; excluded: £20 cheque + £40 gift.
+        assert_eq!(result.eligible_amount.pence(), 4500);
+        assert_eq!(result.excluded_amount.pence(), 6000);
+    }
+
+    #[test]
+    fn single_anonymous_gift_with_breakdown_judged_whole() {
+        let mut o = make_offering();
+        // £40 as 2×£20 notes, but recorded as ONE gift (not pooled loose cash).
+        let mut ct = crate::entities::cash_denomination::CashTotal::new();
+        ct.set(
+            crate::entities::cash_denomination::Denomination::Note2000p,
+            2,
+        );
+        o.add_donation(
+            Donation::anonymous(
+                o.id,
+                Money::from_pence(4000).unwrap(),
+                DonationType::Offering,
+                PaymentMethod::Cash,
+                None,
+                Some(ct),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let eval = &result.evaluations[0];
+        assert!(!eval.eligible);
+        assert_eq!(eval.tax_treatment, TaxTreatment::Neither);
+        assert_eq!(result.eligible_amount.pence(), 0);
+        assert_eq!(result.excluded_amount.pence(), 4000);
+        assert!(matches!(
+            eval.exclusion_reason,
+            Some(ExclusionReason::OverThirtyPounds)
+        ));
+    }
+
+    #[test]
+    fn same_notes_as_loose_cash_are_eligible() {
+        let mut o = make_offering();
+        // Identical notes pooled as loose cash: per-denomination evaluation.
+        let mut ct = crate::entities::cash_denomination::CashTotal::new();
+        ct.set(
+            crate::entities::cash_denomination::Denomination::Note2000p,
+            2,
+        );
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+            .unwrap();
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let eval = &result.evaluations[0];
+        assert!(eval.eligible);
+        assert_eq!(eval.tax_treatment, TaxTreatment::Gasds);
+        assert_eq!(result.eligible_amount.pence(), 4000);
+        assert_eq!(result.excluded_amount.pence(), 0);
+    }
+
+    #[test]
+    fn partial_loose_cash_claims_eligible_portion() {
+        let mut o = make_offering();
+        // £350 loose cash with 3×£50 notes: £200 eligible, £150 excluded,
+        // and the evaluation still carries the GASDS treatment so the
+        // eligible portion is claimable (plan Phase 4.1).
+        let mut ct = crate::entities::cash_denomination::CashTotal::new();
+        ct.set(
+            crate::entities::cash_denomination::Denomination::Note5000p,
+            3,
+        );
+        ct.set(
+            crate::entities::cash_denomination::Denomination::Note2000p,
+            10,
+        );
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+            .unwrap();
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let eval = &result.evaluations[0];
+        assert!(!eval.eligible);
+        assert_eq!(eval.tax_treatment, TaxTreatment::Gasds);
+        assert_eq!(eval.eligible_amount.pence(), 20_000);
+        assert_eq!(eval.excluded_amount.pence(), 15_000);
+        assert_eq!(result.eligible_amount.pence(), 20_000);
+        assert_eq!(result.excluded_amount.pence(), 15_000);
     }
 
     #[test]
@@ -1059,13 +1164,21 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn per_donation_limit_depends_on_donation_date() {
         // Regression (review O2): the £30 limit applies only from 6 April 2019;
         // earlier donations were limited to £20.
-        assert_eq!(per_donation_limit_pence(chrono::NaiveDate::from_ymd_opt(2019, 4, 5).unwrap()), 2000);
-        assert_eq!(per_donation_limit_pence(chrono::NaiveDate::from_ymd_opt(2019, 4, 6).unwrap()), 3000);
-        assert_eq!(per_donation_limit_pence(chrono::NaiveDate::from_ymd_opt(2024, 6, 1).unwrap()), 3000);
+        assert_eq!(
+            per_donation_limit_pence(chrono::NaiveDate::from_ymd_opt(2019, 4, 5).unwrap()),
+            2000
+        );
+        assert_eq!(
+            per_donation_limit_pence(chrono::NaiveDate::from_ymd_opt(2019, 4, 6).unwrap()),
+            3000
+        );
+        assert_eq!(
+            per_donation_limit_pence(chrono::NaiveDate::from_ymd_opt(2024, 6, 1).unwrap()),
+            3000
+        );
     }
 
     #[test]
@@ -1129,6 +1242,7 @@ mod tests {
         assert_eq!(annual_ceiling_pence(2024), 800_000);
     }
 
+    #[test]
     fn classify_named_with_declaration_is_gift_aid() {
         let donor = Uuid::new_v4();
         let user = Uuid::new_v4();
@@ -1198,7 +1312,8 @@ mod tests {
         let mut o = make_offering();
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Coin100p, 5);
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap()).unwrap();
+        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+            .unwrap();
         let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
         assert_eq!(result.evaluations[0].tax_treatment, TaxTreatment::Gasds);
     }
@@ -1210,7 +1325,7 @@ mod tests {
         decl.end_with_reason(dt(2025, 1, 1), None).unwrap();
 
         let named_cash = |date: chrono::NaiveDate| {
-            let mut d = Donation::named(
+            Donation::named(
                 Uuid::new_v4(),
                 donor,
                 Money::from_pence(1000).unwrap(),
@@ -1220,8 +1335,7 @@ mod tests {
                 None,
             )
             .unwrap()
-            .with_date(date);
-            d
+            .with_date(date)
         };
 
         let mut inside = make_offering();

@@ -24,7 +24,11 @@ pub struct AppState {
 /// This is a local single-user desktop app, so the in-app session has no idle
 /// timeout by design; the trust boundary is the OS user, not the session.
 async fn actor(state: &AppState) -> AppResult<User> {
-    if *state.restoring.lock().unwrap_or_else(|e| e.into_inner()) {
+    if *state
+        .restoring
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
         return Err(AppError::Unauthorized(
             "a backup restore is in progress; please retry shortly".into(),
         ));
@@ -32,7 +36,7 @@ async fn actor(state: &AppState) -> AppResult<User> {
     let id = state
         .session
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
         .map(|u| u.id)
         .ok_or_else(|| AppError::Unauthorized("not logged in".into()))?;
@@ -48,14 +52,19 @@ async fn actor(state: &AppState) -> AppResult<User> {
     Ok(user)
 }
 
-/// Grab the authenticated actor, mapping auth errors to the Tauri `String` error type.
+/// Grab the authenticated actor, mapping auth errors to the IPC error shape.
 macro_rules! with_actor {
     ($state:expr) => {
-        crate::commands::actor(&$state).await.map_err(|e| e.to_string())?
+        crate::commands::actor(&$state)
+            .await
+            .map_err(offering_application::error::AppErrorDto::from)?
     };
 }
 
 /// Parse a string into a `Uuid`, mapping parse errors to the Tauri `String` error type.
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
 pub fn parse_uuid(s: &str) -> Result<uuid::Uuid, String> {
     uuid::Uuid::parse_str(s).map_err(|e| e.to_string())
 }

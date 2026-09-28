@@ -19,10 +19,13 @@ impl From<InfraError> for offering_persistence::RepoError {
         match value {
             InfraError::Database(e) => offering_persistence::RepoError::Database(e.to_string()),
             InfraError::Migration(e) => offering_persistence::RepoError::Other(e.to_string()),
-            InfraError::Serialization(e) => offering_persistence::RepoError::InvalidData(e.to_string()),
-            InfraError::Auth(e) => offering_persistence::RepoError::Other(e),
+            InfraError::Serialization(e) => {
+                offering_persistence::RepoError::InvalidData(e.to_string())
+            }
+            InfraError::Auth(e) | InfraError::Message(e) => {
+                offering_persistence::RepoError::Other(e)
+            }
             InfraError::Io(e) => offering_persistence::RepoError::Database(e.to_string()),
-            InfraError::Message(e) => offering_persistence::RepoError::Other(e),
         }
     }
 }

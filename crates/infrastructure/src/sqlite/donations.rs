@@ -1,16 +1,16 @@
 use super::{from_json, map_db_err, to_json};
+use crate::SharedPool;
 use async_trait::async_trait;
+use chrono::{DateTime, NaiveDate, Utc};
 use offering_domain::donation_type::DonationType;
 use offering_domain::entities::cash_denomination::{CashTotal, Denomination};
 use offering_domain::entities::donation::{Donation, DonationClassification};
 use offering_domain::money::Money;
 use offering_domain::payment_method::PaymentMethod;
 use offering_persistence::{DonationRepository, RepoError, RepoResult};
-use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Pool, Row, Sqlite};
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteDonationRepository {
@@ -18,15 +18,20 @@ pub struct SqliteDonationRepository {
 }
 
 impl SqliteDonationRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteDonationRepository { pool }
     }
 }
 
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
 pub fn row_to_donation(row: &SqliteRow) -> Result<Donation, RepoError> {
     let donation_type: DonationType = from_json(&row.get::<String, _>("donation_type"))?;
     let payment_method: PaymentMethod = from_json(&row.get::<String, _>("payment_method"))?;
-    let classification: DonationClassification = from_json(&row.get::<String, _>("classification"))?;
+    let classification: DonationClassification =
+        from_json(&row.get::<String, _>("classification"))?;
     Ok(Donation {
         id: row.get("id"),
         donor_id: row.get("donor_id"),
@@ -42,25 +47,74 @@ pub fn row_to_donation(row: &SqliteRow) -> Result<Donation, RepoError> {
         date: {
             let raw: Option<String> = row.get("date");
             match raw.as_deref() {
-                Some(value) if !value.is_empty() => {
-                    NaiveDate::parse_from_str(value, "%F")
-                        .map_err(|e| RepoError::InvalidData(format!("invalid donation date {value:?}: {e}")))?
-                }
+                Some(value) if !value.is_empty() => NaiveDate::parse_from_str(value, "%F")
+                    .map_err(|e| {
+                        RepoError::InvalidData(format!("invalid donation date {value:?}: {e}"))
+                    })?,
                 _ => row.get::<DateTime<Utc>, _>("created_at").date_naive(),
             }
         },
     })
 }
 
+impl SqliteDonationRepository {
+    /// Attach denomination breakdowns to parsed rows with ONE query instead of
+    /// N per-donation round trips (plan Phase 8; mirrors the offering batch
+    /// loaders).
+    async fn attach_breakdowns(
+        &self,
+        rows: Vec<sqlx::sqlite::SqliteRow>,
+    ) -> RepoResult<Vec<Donation>> {
+        use sqlx::Row as _;
+        let mut out = Vec::with_capacity(rows.len());
+        let mut ids = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let mut donation = row_to_donation(row)?;
+            ids.push(donation.id);
+            donation.cash_denominations = None;
+            out.push(donation);
+        }
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let placeholders = super::in_placeholders(ids.len());
+        let query = format!(
+            "SELECT donation_id, denomination, count FROM donation_cash_denominations WHERE donation_id IN ({placeholders})"
+        );
+        let mut q = sqlx::query(&query);
+        for id in &ids {
+            q = q.bind(id);
+        }
+        let pool = self.pool.get();
+        let breakdown_rows = q.fetch_all(&pool).await.map_err(map_db_err)?;
+        let mut totals: std::collections::HashMap<Uuid, CashTotal> =
+            std::collections::HashMap::new();
+        for row in breakdown_rows {
+            let did: Uuid = row.get("donation_id");
+            let denom: Denomination = super::from_json(&row.get::<String, _>("denomination"))?;
+            let count: u32 = row.get("count");
+            totals.entry(did).or_default().set(denom, count);
+        }
+        for donation in &mut out {
+            if let Some(total) = totals.remove(&donation.id) {
+                donation.cash_denominations = Some(total);
+            }
+        }
+        Ok(out)
+    }
+}
+
 pub(crate) async fn load_cash_breakdown(
     pool: &Pool<Sqlite>,
     donation_id: Uuid,
 ) -> RepoResult<Option<CashTotal>> {
-    let rows = sqlx::query("SELECT denomination, count FROM donation_cash_denominations WHERE donation_id = ?")
-        .bind(donation_id)
-        .fetch_all(pool)
-        .await
-        .map_err(map_db_err)?;
+    let rows = sqlx::query(
+        "SELECT denomination, count FROM donation_cash_denominations WHERE donation_id = ?",
+    )
+    .bind(donation_id)
+    .fetch_all(pool)
+    .await
+    .map_err(map_db_err)?;
     let mut total = CashTotal::new();
     for row in rows {
         let denom: Denomination = from_json(&row.get::<String, _>("denomination"))?;
@@ -77,7 +131,7 @@ pub(crate) async fn load_cash_breakdown(
 async fn persist_cash_denominations(
     conn: &mut sqlx::SqliteConnection,
     donation_id: Uuid,
-    breakdown: &Option<CashTotal>,
+    breakdown: Option<&CashTotal>,
 ) -> RepoResult<()> {
     sqlx::query("DELETE FROM donation_cash_denominations WHERE donation_id = ?")
         .bind(donation_id)
@@ -125,7 +179,8 @@ impl DonationRepository for SqliteDonationRepository {
         .execute(&mut *tx)
         .await
         .map_err(map_db_err)?;
-        persist_cash_denominations(&mut tx, donation.id, &donation.cash_denominations).await?;
+        persist_cash_denominations(&mut tx, donation.id, donation.cash_denominations.as_ref())
+            .await?;
         tx.commit().await.map_err(map_db_err)?;
         Ok(donation)
     }
@@ -149,14 +204,7 @@ impl DonationRepository for SqliteDonationRepository {
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut donation = row_to_donation(&row)?;
-            let breakdown = load_cash_breakdown(&self.pool.get(), donation.id).await?;
-            donation.cash_denominations = breakdown;
-            out.push(donation);
-        }
-        Ok(out)
+        self.attach_breakdowns(rows).await
     }
 
     async fn list_by_donor(&self, donor_id: Uuid) -> RepoResult<Vec<Donation>> {
@@ -165,14 +213,7 @@ impl DonationRepository for SqliteDonationRepository {
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let mut donation = row_to_donation(&row)?;
-            let breakdown = load_cash_breakdown(&self.pool.get(), donation.id).await?;
-            donation.cash_denominations = breakdown;
-            out.push(donation);
-        }
-        Ok(out)
+        self.attach_breakdowns(rows).await
     }
 
     async fn delete_by_offering(&self, offering_id: Uuid) -> RepoResult<()> {

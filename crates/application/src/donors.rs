@@ -1,6 +1,6 @@
 use offering_domain::address::Address;
 use offering_domain::entities::audit_event::AuditAction;
-use offering_domain::entities::donor::{Donor, DonorType};
+use offering_domain::entities::donor::{Donor, DonorType, LawfulBasis};
 use offering_domain::entities::user::User;
 use offering_domain::postcode::Postcode;
 use offering_persistence::{AuditRepository, DonorRepository};
@@ -22,9 +22,17 @@ pub struct CreateDonorInput {
     pub postcode: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
+    /// UK GDPR Article 6 basis. Required when creating a donor (plan Phase
+    /// 5.2); on update, `None` leaves the recorded basis unchanged.
+    pub lawful_basis: Option<LawfulBasis>,
+    /// Privacy-notice version given, if any. Empty strings are rejected.
+    pub privacy_notice_version: Option<String>,
 }
 
 impl CreateDonorInput {
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub fn to_address(&self) -> AppResult<Option<Address>> {
         match &self.address_line1 {
             Some(line1) if !line1.trim().is_empty() => {
@@ -62,22 +70,126 @@ impl<'a> DonorService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    #[allow(clippy::too_many_lines)]
     pub async fn search_for_duplicates(&self, input: &CreateDonorInput) -> AppResult<Vec<Donor>> {
-        let mut candidates = self.donors.search(&input.first_name, true, None, None).await?;
-        let last = self.donors.search(&input.last_name, true, None, None).await?;
+        // Candidate pool: name searches (as before) plus postcode/email when
+        // given, so "Jon" vs "John" at the same address still surfaces.
+        let mut candidates = self
+            .donors
+            .search(&input.first_name, true, None, None)
+            .await?;
+        let last = self
+            .donors
+            .search(&input.last_name, true, None, None)
+            .await?;
         for d in last {
             if !candidates.iter().any(|c| c.id == d.id) {
                 candidates.push(d);
             }
         }
-        let first_lc = input.first_name.to_lowercase();
-        let last_lc = input.last_name.to_lowercase();
-        candidates.retain(|d| {
-            d.last_name.to_lowercase() == last_lc || d.first_name.to_lowercase() == first_lc
-        });
-        Ok(candidates)
+        if let Some(pc) = input.postcode.as_deref() {
+            if !pc.trim().is_empty() {
+                for d in self.donors.search(pc, true, None, None).await? {
+                    if !candidates.iter().any(|c| c.id == d.id) {
+                        candidates.push(d);
+                    }
+                }
+            }
+        }
+        if let Some(email) = input.email.as_deref() {
+            if !email.trim().is_empty() {
+                for d in self.donors.search(email, true, None, None).await? {
+                    if !candidates.iter().any(|c| c.id == d.id) {
+                        candidates.push(d);
+                    }
+                }
+            }
+        }
+        // Scored, best-first (plan Phase 6): exact names weigh most, with
+        // postcode/email/phone corroboration and typo-lite containment.
+        // Threshold keeps the old guarantee (exact first OR last name) and
+        // adds strong corroborated near-matches.
+        let first_lc = input.first_name.trim().to_lowercase();
+        let last_lc = input.last_name.trim().to_lowercase();
+        let norm_postcode = input
+            .postcode
+            .as_deref()
+            .and_then(|p| offering_domain::postcode::Postcode::new(p).ok())
+            .map(|p| p.as_str().to_string());
+        let norm_email = input
+            .email
+            .as_deref()
+            .map(|e| e.trim().to_lowercase())
+            .filter(|e| !e.is_empty());
+        let norm_phone: String = input
+            .phone
+            .as_deref()
+            .unwrap_or_default()
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect();
+        let mut scored: Vec<(i32, Donor)> = Vec::new();
+        for d in candidates {
+            let d_first = d.first_name.trim().to_lowercase();
+            let d_last = d.last_name.trim().to_lowercase();
+            let mut score = 0;
+            if d_first == first_lc {
+                score += 2;
+            } else if !first_lc.is_empty()
+                && (d_first.contains(&*first_lc) || first_lc.contains(&*d_first))
+            {
+                score += 1;
+            }
+            if d_last == last_lc {
+                score += 2;
+            } else if !last_lc.is_empty()
+                && (d_last.contains(&*last_lc) || last_lc.contains(&*d_last))
+            {
+                score += 1;
+            }
+            if let (Some(want), Some(have)) = (
+                norm_postcode.as_deref(),
+                d.address.as_ref().map(|a| a.postcode.as_str()),
+            ) {
+                if want == have {
+                    score += 3;
+                }
+            }
+            if let (Some(want), Some(have)) = (
+                norm_email.as_deref(),
+                d.email.as_deref().map(|e| e.trim().to_lowercase()),
+            ) {
+                if !have.is_empty() && want == have {
+                    score += 2;
+                }
+            }
+            if norm_phone.len() >= 6 {
+                let d_phone: String = d
+                    .phone
+                    .as_deref()
+                    .unwrap_or_default()
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .collect();
+                if d_phone == norm_phone {
+                    score += 1;
+                }
+            }
+            let exact_name = d_first == first_lc || d_last == last_lc;
+            if exact_name || score >= 4 {
+                scored.push((score, d));
+            }
+        }
+        scored.sort_by_key(|a| std::cmp::Reverse(a.0));
+        Ok(scored.into_iter().map(|(_, d)| d).collect())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn create_donor(
         &self,
         actor: &User,
@@ -94,13 +206,25 @@ impl<'a> DonorService<'a> {
                     "possible duplicate donor: {}",
                     duplicates
                         .iter()
-                        .map(|d| d.display_name())
+                        .map(offering_domain::Donor::display_name)
                         .collect::<Vec<_>>()
                         .join(", ")
                 )));
             }
         }
         let address = input.to_address()?;
+        let basis = input.lawful_basis.ok_or_else(|| {
+            crate::error::AppError::Validation(
+                "record the UK GDPR lawful basis for holding this donor's data".into(),
+            )
+        })?;
+        if let Some(v) = &input.privacy_notice_version {
+            if v.trim().is_empty() {
+                return Err(crate::error::AppError::Validation(
+                    "privacy notice version cannot be empty".into(),
+                ));
+            }
+        }
         let mut donor = Donor::create(
             &input.first_name,
             &input.last_name,
@@ -110,6 +234,7 @@ impl<'a> DonorService<'a> {
             input.phone.as_deref(),
         )?;
         donor.donor_type = input.donor_type;
+        donor.set_lawful_basis(basis, input.privacy_notice_version.clone())?;
         let donor = self.donors.create(donor).await?;
         self.audit
             .record(
@@ -125,6 +250,9 @@ impl<'a> DonorService<'a> {
         Ok(donor)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn get_donor(&self, actor: &User, id: Uuid) -> AppResult<Option<Donor>> {
         if !can_manage_donors(actor) {
             return Err(unauthorized("view donor details"));
@@ -132,6 +260,9 @@ impl<'a> DonorService<'a> {
         Ok(self.donors.get(id).await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_donors(&self, actor: &User) -> AppResult<Vec<Donor>> {
         if !can_manage_donors(actor) {
             return Err(unauthorized("view donor details"));
@@ -139,6 +270,9 @@ impl<'a> DonorService<'a> {
         Ok(self.donors.list(None, None).await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_active_donors(&self, actor: &User) -> AppResult<Vec<Donor>> {
         if !can_manage_donors(actor) {
             return Err(unauthorized("view donor details"));
@@ -146,6 +280,9 @@ impl<'a> DonorService<'a> {
         Ok(self.donors.list_active(None, None).await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn search_donors(
         &self,
         actor: &User,
@@ -155,9 +292,15 @@ impl<'a> DonorService<'a> {
         if !can_manage_donors(actor) {
             return Err(unauthorized("view donor details"));
         }
-        Ok(self.donors.search(query, include_inactive, None, None).await?)
+        Ok(self
+            .donors
+            .search(query, include_inactive, None, None)
+            .await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn update_donor(
         &self,
         actor: &User,
@@ -183,6 +326,18 @@ impl<'a> DonorService<'a> {
             input.phone.as_deref(),
         )?;
         donor.donor_type = input.donor_type;
+        // `None` leaves the recorded basis unchanged (it can only be set,
+        // never silently cleared); an explicit notice version without a basis
+        // change is rejected as ambiguous.
+        match (input.lawful_basis, input.privacy_notice_version.clone()) {
+            (Some(basis), notice) => donor.set_lawful_basis(basis, notice)?,
+            (None, Some(_)) => {
+                return Err(crate::error::AppError::Validation(
+                    "privacy notice version requires a lawful basis in the same update".into(),
+                ));
+            }
+            (None, None) => {}
+        }
         let updated = self.donors.update(donor).await?;
         self.audit
             .record(
@@ -198,6 +353,9 @@ impl<'a> DonorService<'a> {
         Ok(updated)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn set_active(&self, actor: &User, donor_id: Uuid, active: bool) -> AppResult<Donor> {
         if !can_manage_donors(actor) {
             return Err(unauthorized("manage donors"));

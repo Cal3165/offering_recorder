@@ -1,5 +1,5 @@
-use super::{from_json, map_db_err};
 use super::donors::row_to_address;
+use super::{from_json, map_db_err};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use offering_domain::donation_type::DonationType;
@@ -21,8 +21,8 @@ fn day_range_end(end: NaiveDate) -> DateTime<Utc> {
 }
 
 use offering_persistence::{
-    BookkeepingEntry, DonorReportEntry, GdprDonation, GdprReport, GiftAidReportEntry, IifDonationRow,
-    RepoError, RepoResult, ReportRepository,
+    BookkeepingEntry, DonorReportEntry, GdprDonation, GdprReport, GiftAidReportEntry,
+    IifDonationRow, RepoError, RepoResult, ReportRepository,
 };
 use sqlx::Row;
 use uuid::Uuid;
@@ -39,6 +39,7 @@ pub struct SqliteReportRepository {
 }
 
 impl SqliteReportRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteReportRepository { pool }
     }
@@ -46,8 +47,8 @@ impl SqliteReportRepository {
 
 fn donor_name(first: &str, last: &str, preferred: Option<&str>) -> String {
     match preferred {
-        Some(p) if !p.is_empty() => format!("{} {} ({})", first, last, p),
-        _ => format!("{} {}", first, last),
+        Some(p) if !p.is_empty() => format!("{first} {last} ({p})"),
+        _ => format!("{first} {last}"),
     }
 }
 
@@ -61,12 +62,32 @@ fn tax_year_bounds(year: &TaxYear) -> (NaiveDate, NaiveDate) {
 /// covered (HMRC rules) while later ones do not. Status must not be filtered
 /// here — a Revoked declaration with `effective_until >= d.date` still covers
 /// the donation (review R1).
+///
+/// A `Single` declaration covers only its linked gift (`single_donation_id`,
+/// plan Phase 4.3): without the link check it would behave like an
+/// open-ended `MultipleDonations` declaration. `donors`/`d` are the caller
+/// query's donor/donation aliases.
+///
+/// Coverage here means *claimable* (plan Phase 4.2): the window must match
+/// AND the declaration must carry the HMRC-required details (name + address
+/// always; charity + declaration date + wording version for Multiple;
+/// linked gift for Single). Incomplete declarations are valid records but
+/// never appear on claim schedules.
 fn declaration_covers_donation_sql() -> &'static str {
     "EXISTS (
         SELECT 1 FROM gift_aid_declarations ga
         WHERE ga.donor_id = donors.id
           AND date(ga.effective_from) <= d.date
           AND (ga.effective_until IS NULL OR date(ga.effective_until) >= d.date)
+          AND ga.donor_full_name IS NOT NULL AND ga.donor_full_name != ''
+          AND ga.donor_address_line1 IS NOT NULL AND ga.donor_address_line1 != ''
+          AND (
+            (ga.declaration_type = '\"MultipleDonations\"'
+             AND ga.charity_name IS NOT NULL AND ga.charity_name != ''
+             AND ga.received_at IS NOT NULL
+             AND ga.declaration_text_version IS NOT NULL AND ga.declaration_text_version != '')
+            OR (ga.declaration_type = '\"Single\"' AND ga.single_donation_id = d.id)
+          )
     )"
 }
 
@@ -96,7 +117,10 @@ impl ReportRepository for SqliteReportRepository {
         if let Some(mid) = meeting_id {
             query = query.bind(mid);
         }
-        let rows = query.fetch_all(&self.pool.get()).await.map_err(map_db_err)?;
+        let rows = query
+            .fetch_all(&self.pool.get())
+            .await
+            .map_err(map_db_err)?;
 
         let mut entries = Vec::new();
         for row in rows {
@@ -104,13 +128,17 @@ impl ReportRepository for SqliteReportRepository {
             entries.push(BookkeepingEntry {
                 donation_type,
                 total: Money::from_pence_unchecked(row.get::<i64, _>("total")),
-                count: row.get::<i64, _>("count") as u32,
+                count: u32::try_from(row.get::<i64, _>("count")).unwrap_or(u32::MAX),
             });
         }
         Ok(entries)
     }
 
-    async fn donor_report(&self, start: NaiveDate, end: NaiveDate) -> RepoResult<Vec<DonorReportEntry>> {
+    async fn donor_report(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> RepoResult<Vec<DonorReportEntry>> {
         let start_dt = start.and_hms_opt(0, 0, 0).unwrap().and_utc();
         let end_dt = day_range_end(end);
 
@@ -144,7 +172,8 @@ impl ReportRepository for SqliteReportRepository {
                 donor_name: donor_name(&first, &last, preferred.as_deref()),
                 address: row_to_address(&row),
                 total_donations: Money::from_pence_unchecked(row.get::<i64, _>("total_pence")),
-                donation_count: row.get::<i64, _>("donation_count") as u32,
+                donation_count: u32::try_from(row.get::<i64, _>("donation_count"))
+                    .unwrap_or(u32::MAX),
                 most_recent_donation: row
                     .get::<Option<chrono::DateTime<chrono::Utc>>, _>("most_recent")
                     .map(|dt| dt.date_naive()),
@@ -203,7 +232,8 @@ impl ReportRepository for SqliteReportRepository {
         Ok(out)
     }
 
-    async fn gift_aid_report(&self, tax_year: TaxYear) -> RepoResult<Vec<GiftAidReportEntry>> {        let (start, end) = tax_year_bounds(&tax_year);
+    async fn gift_aid_report(&self, tax_year: TaxYear) -> RepoResult<Vec<GiftAidReportEntry>> {
+        let (start, end) = tax_year_bounds(&tax_year);
         let start_str = start.format("%Y-%m-%d").to_string();
         let end_str = end.format("%Y-%m-%d").to_string();
 
@@ -221,6 +251,16 @@ impl ReportRepository for SqliteReportRepository {
                 WHERE ga2.donor_id = donors.id
                   AND date(ga2.effective_from) <= d.date
                   AND (ga2.effective_until IS NULL OR date(ga2.effective_until) >= d.date)
+                  AND ga2.donor_full_name IS NOT NULL AND ga2.donor_full_name != ''
+                  AND ga2.donor_address_line1 IS NOT NULL AND ga2.donor_address_line1 != ''
+                  AND (
+                    (ga2.declaration_type = '\"MultipleDonations\"'
+                     AND ga2.charity_name IS NOT NULL AND ga2.charity_name != ''
+                     AND ga2.received_at IS NOT NULL
+                     AND ga2.declaration_text_version IS NOT NULL
+                     AND ga2.declaration_text_version != '')
+                    OR (ga2.declaration_type = '\"Single\"' AND ga2.single_donation_id = d.id)
+                  )
                 ORDER BY ga2.version DESC LIMIT 1
              )
              WHERE d.date >= ? AND d.date <= ?
@@ -239,11 +279,17 @@ impl ReportRepository for SqliteReportRepository {
         let mut entries = Vec::new();
         for row in rows {
             let snapshot_name: Option<String> = row.get("donor_full_name");
-            let last: String = row.get("last_name");
+            // Full name on the HMRC schedule (plan Phase 5.1): never fall back
+            // to surname-only when no declaration snapshot exists.
+            let donor_name = snapshot_name.unwrap_or_else(|| {
+                let first: String = row.get("first_name");
+                let last: String = row.get("last_name");
+                format!("{first} {last}")
+            });
             let donation_date: chrono::NaiveDate = row.get("donation_date");
             entries.push(GiftAidReportEntry {
                 donor_id: row.get("id"),
-                donor_name: snapshot_name.unwrap_or(last),
+                donor_name,
                 donor_address: row_to_address(&row),
                 donation_date,
                 amount: Money::from_pence_unchecked(row.get("amount_pence")),
@@ -278,10 +324,8 @@ impl ReportRepository for SqliteReportRepository {
 
         let mut donations = Vec::new();
         for row in donation_rows {
-            let offering_number =
-                OfferingNumber::new(&row.get::<String, _>("offering_number")).map_err(|e| {
-                    RepoError::InvalidData(e.to_string())
-                })?;
+            let offering_number = OfferingNumber::new(&row.get::<String, _>("offering_number"))
+                .map_err(|e| RepoError::InvalidData(e.to_string()))?;
             donations.push(GdprDonation {
                 donation: row_to_donation(&row)?,
                 offering_number,
@@ -290,28 +334,35 @@ impl ReportRepository for SqliteReportRepository {
             });
         }
 
-        let decl_rows = sqlx::query("SELECT * FROM gift_aid_declarations WHERE donor_id = ? ORDER BY effective_from")
-            .bind(donor_id)
-            .fetch_all(&self.pool.get())
-            .await
-            .map_err(map_db_err)?;
-        let gift_aid_declarations: Vec<GiftAidDeclaration> =
-            decl_rows.iter().map(row_to_declaration).collect::<Result<_, _>>()?;
+        let decl_rows = sqlx::query(
+            "SELECT * FROM gift_aid_declarations WHERE donor_id = ? ORDER BY effective_from",
+        )
+        .bind(donor_id)
+        .fetch_all(&self.pool.get())
+        .await
+        .map_err(map_db_err)?;
+        let gift_aid_declarations: Vec<GiftAidDeclaration> = decl_rows
+            .iter()
+            .map(row_to_declaration)
+            .collect::<Result<_, _>>()?;
 
         let offering_ids: Vec<Uuid> = donations.iter().map(|g| g.donation.offering_id).collect();
         let mut amendments: Vec<Amendment> = Vec::new();
         if !offering_ids.is_empty() {
             let placeholders = super::in_placeholders(offering_ids.len());
             let query = format!(
-                "SELECT * FROM amendments WHERE offering_id IN ({}) ORDER BY offering_id, created_at",
-                placeholders
+                "SELECT * FROM amendments WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
             );
             let mut q = sqlx::query(&query);
             for id in &offering_ids {
                 q = q.bind(id);
             }
             let rows = q.fetch_all(&self.pool.get()).await.map_err(map_db_err)?;
-            amendments.extend(rows.iter().map(row_to_amendment).collect::<Result<Vec<_>, _>>()?);
+            amendments.extend(
+                rows.iter()
+                    .map(row_to_amendment)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
 
         // Declaration amendments reference the donor via their declaration
@@ -328,12 +379,31 @@ impl ReportRepository for SqliteReportRepository {
             .map(super::declaration_amendments::row_to_declaration_amendment)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let audit_rows = sqlx::query("SELECT * FROM audit_events WHERE entity_id = ? ORDER BY timestamp")
-            .bind(donor_id)
+        // Subject-access audit trail (plan Phase 5.2): events are keyed by the
+        // entity they acted on (donation/declaration/amendment ids), not just
+        // the donor id, so union all ids relating to this donor. A donor-only
+        // filter returns a partial log.
+        let mut related_ids: Vec<Uuid> = vec![donor_id];
+        related_ids.extend(donations.iter().map(|g| g.donation.id));
+        related_ids.extend(gift_aid_declarations.iter().map(|d| d.id));
+        related_ids.extend(amendments.iter().map(|a| a.id));
+        related_ids.extend(declaration_amendments.iter().map(|a| a.id));
+        let placeholders = super::in_placeholders(related_ids.len());
+        let audit_sql = format!(
+            "SELECT * FROM audit_events WHERE entity_id IN ({placeholders}) ORDER BY timestamp"
+        );
+        let mut audit_query = sqlx::query(&audit_sql);
+        for id in &related_ids {
+            audit_query = audit_query.bind(id);
+        }
+        let audit_rows = audit_query
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
-        let audit_events: Vec<AuditEvent> = audit_rows.iter().map(row_to_event).collect::<Result<_, _>>()?;
+        let audit_events: Vec<AuditEvent> = audit_rows
+            .iter()
+            .map(row_to_event)
+            .collect::<Result<_, _>>()?;
 
         Ok(GdprReport {
             donor,

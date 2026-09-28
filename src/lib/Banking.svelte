@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { availableOfferingsForDeposit, createDeposit, deleteDeposit, listDeposits, recordDepositActuals } from "./api";
+  import { availableOfferingsForDeposit, createDeposit, deleteDeposit, listLockedOfferings, listDeposits, recordDepositActuals } from "./api";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import type { BankDeposit, DepositCandidate } from "./types";
   import { fmtPence, parsePenceFromInput, localDateTimeInput, depositExpectedTotals } from "./types";
 
@@ -9,8 +10,12 @@
   let depositDate = $state("");
   let reference = $state("");
   let deposits = $state<BankDeposit[]>([]);
+  let offeringNumbers = $state<Record<string, string>>({});
   let error = $state("");
   let ok = $state("");
+  let busy = $state(true);
+  let pendingDelete = $state<BankDeposit | null>(null);
+  let deleteBusy = $state(false);
 
   let actuals = $state<Record<string, { cash: string; cheques: string; other: string }>>({});
 
@@ -27,10 +32,23 @@
 
   async function load() {
     error = "";
+    busy = true;
     try {
       [candidates, deposits] = await Promise.all([availableOfferingsForDeposit(), listDeposits()]);
+      // BankDepositItem carries only offering_id (no offering_number), so
+      // resolve human-readable numbers via the offerings list.
+      try {
+        // Locked offerings only: deposits can only reference those, so the
+        // full history is never needed for the number lookup (plan Phase 3).
+        const all = await listLockedOfferings(2000);
+        offeringNumbers = Object.fromEntries(all.map((o) => [o.id, o.offering_number]));
+      } catch {
+        // Non-fatal: item rows fall back to the truncated offering id.
+      }
     } catch (e) {
       error = String(e);
+    } finally {
+      busy = false;
     }
   }
 
@@ -44,7 +62,9 @@
   const selectedCandidates = $derived(candidates.filter((c) => selected.has(c.offering_id)));
   const selectedCash = $derived(selectedCandidates.reduce((s, c) => s + c.cash_total, 0));
   const selectedCheques = $derived(selectedCandidates.reduce((s, c) => s + c.cheque_total, 0));
-  const selectedTotal = $derived(selectedCash + selectedCheques);
+  // Backend `total` covers ALL donations (incl. card/bank-transfer), so sum
+  // it directly to match what create_deposit computes server-side.
+  const selectedTotal = $derived(selectedCandidates.reduce((s, c) => s + c.total, 0));
 
   async function submitDeposit() {
     error = "";
@@ -55,6 +75,9 @@
     }
     const date = depositDate || localDateTimeInput(new Date());
     try {
+      // Contract: datetime-local wall time is interpreted in the client TZ and
+      // stored as a UTC instant. Same wall time in different TZs = different
+      // instants (accepted for single-parish use).
       await createDeposit(
         selectedCandidates.map((c) => c.offering_id),
         new Date(date).toISOString(),
@@ -118,21 +141,41 @@
     }
   }
 
-  async function removeDeposit(d: BankDeposit) {
+  function requestRemoveDeposit(d: BankDeposit) {
     error = "";
     ok = "";
-    if (!confirm("Delete this deposit? Its offerings will become available to deposit again.")) return;
+    pendingDelete = d;
+  }
+
+  async function confirmRemoveDeposit() {
+    if (!pendingDelete) return;
+    const d = pendingDelete;
+    error = "";
+    ok = "";
+    deleteBusy = true;
     try {
       await deleteDeposit(d.id);
+      pendingDelete = null;
       ok = "Deposit deleted.";
       await load();
     } catch (e) {
       error = String(e);
+    } finally {
+      deleteBusy = false;
     }
   }
 
   function setActual(id: string, key: "cash" | "cheques" | "other", value: string) {
     actuals = { ...actuals, [id]: { ...(actuals[id] ?? { cash: "", cheques: "", other: "" }), [key]: value } };
+  }
+
+  // Pounds-and-pence hint without floating-point: integer division only, so
+  // large totals can't lose a penny via (pence/100).toFixed(2).
+  function poundsHint(pence: number): string {
+    const rounded = Math.round(pence);
+    const abs = Math.abs(rounded);
+    const sign = rounded < 0 ? "-" : "";
+    return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
   }
 
   function fmtDate(iso: string): string {
@@ -148,17 +191,21 @@
 
 <div class="card">
   <h2>New deposit</h2>
-  {#if candidates.length === 0}
+  {#if busy && candidates.length === 0}
+    <p class="muted">Loading…</p>
+  {:else if candidates.length === 0}
     <p class="muted">Nothing to bank yet — once an offering is signed and locked it will appear here for deposit.</p>
   {:else}
+    <div class="table-scroll">
     <table>
+      <caption class="sr-only">Offerings available for deposit</caption>
       <thead>
-        <tr><th></th><th>Offering</th><th>Date</th><th>Meeting</th><th>Cash</th><th>Cheques</th><th>Total</th></tr>
+        <tr><th scope="col"></th><th scope="col">Offering</th><th scope="col">Date</th><th scope="col">Meeting</th><th scope="col">Cash</th><th scope="col">Cheques</th><th scope="col">Total</th></tr>
       </thead>
       <tbody>
         {#each candidates as c (c.offering_id)}
           <tr>
-            <td><input type="checkbox" checked={selected.has(c.offering_id)} onchange={() => toggle(c.offering_id)} /></td>
+            <td><input type="checkbox" checked={selected.has(c.offering_id)} onchange={() => toggle(c.offering_id)} aria-label={`Include offering ${c.offering_number}`} /></td>
             <td>{c.offering_number}</td>
             <td>{c.date.slice(0, 10)}</td>
             <td>{c.meeting_name}</td>
@@ -169,6 +216,7 @@
         {/each}
       </tbody>
     </table>
+    </div>
     <div class="row">
       <span class="total">Selected cash: {fmtPence(selectedCash)}</span>
       <span class="total">Cheques: {fmtPence(selectedCheques)}</span>
@@ -179,9 +227,9 @@
         <label for="bank-deposit-date">Deposit date/time</label>
         <input id="bank-deposit-date" type="datetime-local" bind:value={depositDate} />
       </div>
-      <div class="field" style="flex:1">
+      <div class="field grow">
         <label for="bank-reference">Reference <span class="hint" title="The bank slip or BACS reference you'll match this deposit against when reconciling your bank statement.">ⓘ</span></label>
-        <input id="bank-reference" type="text" bind:value={reference} placeholder="e.g. bank slip reference" style="width:100%" />
+        <input id="bank-reference" type="text" bind:value={reference} placeholder="e.g. bank slip reference" class="input-block" />
       </div>
       <button onclick={submitDeposit} disabled={selectedCandidates.length === 0}>Create deposit</button>
     </div>
@@ -195,18 +243,20 @@
   {:else}
     {#each deposits as d (d.id)}
       <div class="deposit">
-        <div class="row" style="justify-content: space-between;">
+        <div class="row space-between">
           <h3>Deposit {d.reference ?? d.id.slice(0, 8)} — {fmtDate(d.deposit_date)}</h3>
           <span class="badge {reconciled(d) ? '' : 'error-badge'}">
             {reconciled(d) ? "Reconciled" : hasActuals(d) ? "Discrepancy" : "Pending actuals"}
           </span>
         </div>
+        <div class="table-scroll">
         <table>
-          <thead><tr><th>Offering</th><th>Cash</th><th>Cheques</th><th>Donations</th></tr></thead>
+          <caption class="sr-only">Deposit offering items</caption>
+          <thead><tr><th scope="col">Offering</th><th scope="col">Cash</th><th scope="col">Cheques</th><th scope="col">Donations</th></tr></thead>
           <tbody>
             {#each d.items as it (it.offering_id)}
               <tr>
-                <td>{it.offering_id.slice(0, 8)}</td>
+                <td title={it.offering_id}>{offeringNumbers[it.offering_id] ?? it.offering_id.slice(0, 8)}</td>
                 <td>{fmtPence(it.cash_amount.pence)}</td>
                 <td>{fmtPence(it.cheque_amount.pence)}</td>
                 <td>{it.donation_count}</td>
@@ -214,6 +264,7 @@
             {/each}
           </tbody>
         </table>
+        </div>
         <div class="row">
           <span class="total">Expected cash: {fmtPence(expectedCash(d))}</span>
           <span class="total">Expected cheques: {fmtPence(expectedCheques(d))}</span>
@@ -221,12 +272,12 @@
           <span class="total">Expected total: {fmtPence(expectedTotal(d))}</span>
         </div>
         <div class="row">
-          <div class="field"><label for={`bank-actual-cash-${d.id}`}>Actual cash (£)</label><input id={`bank-actual-cash-${d.id}`} type="text" value={actuals[d.id]?.cash ?? ""} onchange={(e) => setActual(d.id, "cash", e.currentTarget.value)} placeholder={fmtPence(expectedCash(d))} /></div>
-          <div class="field"><label for={`bank-actual-cheques-${d.id}`}>Actual cheques (£)</label><input id={`bank-actual-cheques-${d.id}`} type="text" value={actuals[d.id]?.cheques ?? ""} onchange={(e) => setActual(d.id, "cheques", e.currentTarget.value)} placeholder={fmtPence(expectedCheques(d))} /></div>
-          <div class="field"><label for={`bank-actual-other-${d.id}`}>Actual other (£)</label><input id={`bank-actual-other-${d.id}`} type="text" value={actuals[d.id]?.other ?? ""} onchange={(e) => setActual(d.id, "other", e.currentTarget.value)} placeholder={fmtPence(expectedOther(d))} /></div>
+          <div class="field"><label for={`bank-actual-cash-${d.id}`}>Actual cash (£)</label><input id={`bank-actual-cash-${d.id}`} type="text" value={actuals[d.id]?.cash ?? ""} oninput={(e) => setActual(d.id, "cash", e.currentTarget.value)} placeholder={poundsHint(expectedCash(d))} /></div>
+          <div class="field"><label for={`bank-actual-cheques-${d.id}`}>Actual cheques (£)</label><input id={`bank-actual-cheques-${d.id}`} type="text" value={actuals[d.id]?.cheques ?? ""} oninput={(e) => setActual(d.id, "cheques", e.currentTarget.value)} placeholder={poundsHint(expectedCheques(d))} /></div>
+          <div class="field"><label for={`bank-actual-other-${d.id}`}>Actual other (£)</label><input id={`bank-actual-other-${d.id}`} type="text" value={actuals[d.id]?.other ?? ""} oninput={(e) => setActual(d.id, "other", e.currentTarget.value)} placeholder={poundsHint(expectedOther(d))} /></div>
           <button onclick={() => saveActuals(d)}>Record actuals</button>
           {#if !hasActuals(d)}
-            <button class="secondary" onclick={() => removeDeposit(d)}>Delete</button>
+            <button class="secondary" onclick={() => requestRemoveDeposit(d)}>Delete</button>
           {/if}
         </div>
         {#if hasActuals(d)}
@@ -246,3 +297,14 @@
     {/each}
   {/if}
 </div>
+
+{#if pendingDelete}
+  <ConfirmDialog
+    title="Delete deposit"
+    message="Delete this deposit? Its offerings will become available to deposit again."
+    confirmLabel="Delete deposit"
+    busy={deleteBusy}
+    onConfirm={confirmRemoveDeposit}
+    onClose={() => { if (!deleteBusy) pendingDelete = null; }}
+  />
+{/if}

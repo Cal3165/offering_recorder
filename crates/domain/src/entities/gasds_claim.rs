@@ -15,6 +15,7 @@ pub const GASDS_MATCHING_MULTIPLIER: i64 = 10;
 /// GASDS government-matching multiplier for a tax year. Always 10:1; kept as
 /// a function taking a tax year so callers can stay year-aware if legislation
 /// ever changes.
+#[must_use]
 pub fn gasds_matching_multiplier(_tax_year: &TaxYear) -> i64 {
     GASDS_MATCHING_MULTIPLIER
 }
@@ -41,10 +42,15 @@ impl std::fmt::Display for GasdsClaimStatus {
 }
 
 impl GasdsClaimStatus {
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
-        matches!(self, GasdsClaimStatus::Approved | GasdsClaimStatus::Rejected)
+        matches!(
+            self,
+            GasdsClaimStatus::Approved | GasdsClaimStatus::Rejected
+        )
     }
 
+    #[must_use]
     pub fn is_approved(&self) -> bool {
         matches!(self, GasdsClaimStatus::Approved)
     }
@@ -74,6 +80,7 @@ pub struct GasdsClaimItem {
 }
 
 impl GasdsClaimItem {
+    #[must_use]
     pub fn new(
         donation_id: Uuid,
         donation_date: DateTime<Utc>,
@@ -115,6 +122,9 @@ pub struct GasdsClaim {
 }
 
 impl GasdsClaim {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         tax_year: TaxYear,
@@ -124,7 +134,29 @@ impl GasdsClaim {
         annual_limit: Money,
         created_by: Uuid,
     ) -> DomainResult<Self> {
-        let total = Money::sum(items.iter().map(|i| i.amount.clone()))?;
+        // HMRC deadlines are enforced at creation, not just displayed: a claim
+        // prepared after the GASDS deadline (2 years after the tax-year end)
+        // is late and must be rejected (plan Phase 4.5).
+        let today = Utc::now().date_naive();
+        if today > tax_year.gasds_claim_deadline() {
+            return Err(DomainError::Validation(format!(
+                "tax year {} is past the GASDS claim deadline ({})",
+                tax_year,
+                tax_year.gasds_claim_deadline()
+            )));
+        }
+        // Every item must belong to the claim's tax year (plan Phase 4.5):
+        // mixed-year items would misstate the statutory claim.
+        for item in &items {
+            let item_year = crate::tax_year::TaxYear::from_date(item.donation_date.date_naive());
+            if item_year != tax_year {
+                return Err(DomainError::Validation(format!(
+                    "donation {} is in tax year {}, not the claim year {}",
+                    item.donation_id, item_year, tax_year
+                )));
+            }
+        }
+        let total = Money::sum(items.iter().map(|i| i.amount))?;
         let matching = matching_limit(&gift_aid_claimed, &annual_limit, &tax_year);
         let claimable = Money::from_pence_unchecked(total.pence().min(matching.pence()));
         let now = Utc::now();
@@ -153,15 +185,15 @@ impl GasdsClaim {
         })
     }
 
+    #[must_use]
     pub fn claimable(&self) -> Money {
-        Money::from_pence_unchecked(
-            self.total_amount
-                .pence()
-                .min(self.matching_limit.pence()),
-        )
+        Money::from_pence_unchecked(self.total_amount.pence().min(self.matching_limit.pence()))
     }
 
     /// Move a draft claim into "prepared", recording the preparer.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn prepare(&mut self, actor: Uuid) -> DomainResult<()> {
         if self.status != GasdsClaimStatus::Draft {
             return Err(GasdsClaim::transition_error(self.status));
@@ -174,6 +206,9 @@ impl GasdsClaim {
     }
 
     /// Submit a prepared claim for review.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn submit_for_review(&mut self) -> DomainResult<()> {
         if self.status != GasdsClaimStatus::Prepared {
             return Err(GasdsClaim::transition_error(self.status));
@@ -185,6 +220,9 @@ impl GasdsClaim {
     }
 
     /// Approve a claim that is in review.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn approve(&mut self, actor: Uuid) -> DomainResult<()> {
         if self.status != GasdsClaimStatus::InReview {
             return Err(GasdsClaim::transition_error(self.status));
@@ -197,6 +235,9 @@ impl GasdsClaim {
     }
 
     /// Reject a claim that is in review. A reason is required.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn reject(&mut self, actor: Uuid, reason: &str) -> DomainResult<()> {
         if self.status != GasdsClaimStatus::InReview {
             return Err(GasdsClaim::transition_error(self.status));
@@ -216,14 +257,14 @@ impl GasdsClaim {
 
     fn transition_error(status: GasdsClaimStatus) -> DomainError {
         DomainError::InvalidTransition(format!(
-            "invalid claim transition: current status is {}",
-            status
+            "invalid claim transition: current status is {status}"
         ))
     }
 }
 
 /// Automatic matching limit: ten times the Gift Aid claimed in the same tax
 /// year (statutory 10:1 match), capped by the annual limit (default £8,000).
+#[must_use]
 pub fn matching_limit(gift_aid_claimed: &Money, annual_limit: &Money, tax_year: &TaxYear) -> Money {
     let multiplier = gasds_matching_multiplier(tax_year);
     let raw = gift_aid_claimed
@@ -238,12 +279,20 @@ mod tests {
     use super::*;
 
     fn item(amount_pence: i64) -> GasdsClaimItem {
+        item_dated(amount_pence, ymd(2024, 6, 1))
+    }
+
+    fn item_dated(amount_pence: i64, date: chrono::NaiveDate) -> GasdsClaimItem {
         GasdsClaimItem::new(
             Uuid::new_v4(),
-            Utc::now(),
+            date.and_hms_opt(0, 0, 0).unwrap().and_utc(),
             Money::from_pence(amount_pence).unwrap(),
-            TaxYear::new(2024),
+            TaxYear::from_date(date),
         )
+    }
+
+    fn ymd(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
     }
 
     fn annual_limit() -> Money {
@@ -259,12 +308,45 @@ mod tests {
             Money::from_pence(100_000).unwrap(),
             annual_limit(),
             Uuid::new_v4(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(claim.status, GasdsClaimStatus::Draft);
         assert_eq!(claim.total_amount.pence(), 1000);
         // Matching rule is 10:1: £1000 Gift Aid -> £10,000 cap, limited by the £8,000 ceiling.
         assert_eq!(claim.matching_limit.pence(), 800_000);
         assert_eq!(claim.claimable_amount.pence(), 1000);
+    }
+
+    #[test]
+    fn expired_tax_year_rejected() {
+        // Tax year 2020 ended 5 Apr 2021; GASDS deadline 5 Apr 2023 — long past.
+        let err = GasdsClaim::create(
+            TaxYear::new(2020),
+            GasdsClaimMethod::Nationwide,
+            vec![item_dated(1000, ymd(2020, 6, 1))],
+            Money::from_pence(100_000).unwrap(),
+            annual_limit(),
+            Uuid::new_v4(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("deadline"), "err: {err}");
+    }
+
+    #[test]
+    fn mixed_tax_year_items_rejected() {
+        let err = GasdsClaim::create(
+            TaxYear::new(2024),
+            GasdsClaimMethod::Nationwide,
+            vec![
+                item_dated(1000, ymd(2024, 6, 1)),
+                item_dated(1000, ymd(2025, 6, 1)),
+            ],
+            Money::from_pence(100_000).unwrap(),
+            annual_limit(),
+            Uuid::new_v4(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not the claim year"), "err: {err}");
     }
 
     #[test]
@@ -276,7 +358,8 @@ mod tests {
             Money::from_pence(1000).unwrap(), // £10 Gift Aid -> £100 matching cap (10:1)
             annual_limit(),
             Uuid::new_v4(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(claim.matching_limit.pence(), 10_000);
         assert_eq!(claim.claimable_amount.pence(), 5_000);
     }
@@ -290,7 +373,8 @@ mod tests {
             Money::from_pence(100_000).unwrap(), // £1000 Gift Aid -> £10,000, limited by £8,000
             annual_limit(),
             Uuid::new_v4(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(claim.matching_limit.pence(), 800_000);
     }
 
@@ -313,7 +397,8 @@ mod tests {
             Money::zero(),
             annual_limit(),
             Uuid::new_v4(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(claim.matching_limit.pence(), 0);
         assert_eq!(claim.claimable_amount.pence(), 0);
     }
@@ -327,7 +412,8 @@ mod tests {
             Money::from_pence(100).unwrap(), // £1 -> £10 matching cap (10:1)
             annual_limit(),
             Uuid::new_v4(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(claim.total_amount.pence(), 3000);
         assert_eq!(claim.claimable_amount.pence(), 1000);
     }
@@ -342,7 +428,8 @@ mod tests {
             Money::from_pence(1000).unwrap(),
             annual_limit(),
             actor,
-        ).unwrap();
+        )
+        .unwrap();
         claim.prepare(actor).unwrap();
         assert_eq!(claim.status, GasdsClaimStatus::Prepared);
         assert_eq!(claim.prepared_by, Some(actor));
@@ -364,7 +451,8 @@ mod tests {
             Money::from_pence(1000).unwrap(),
             annual_limit(),
             actor,
-        ).unwrap();
+        )
+        .unwrap();
         claim.prepare(actor).unwrap();
         assert!(claim.prepare(actor).is_err());
     }
@@ -379,7 +467,8 @@ mod tests {
             Money::from_pence(1000).unwrap(),
             annual_limit(),
             actor,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(matches!(
             claim.approve(actor),
             Err(DomainError::InvalidTransition(_))
@@ -396,7 +485,8 @@ mod tests {
             Money::from_pence(1000).unwrap(),
             annual_limit(),
             actor,
-        ).unwrap();
+        )
+        .unwrap();
         claim.prepare(actor).unwrap();
         claim.submit_for_review().unwrap();
         assert!(matches!(
@@ -418,7 +508,8 @@ mod tests {
             Money::from_pence(1000).unwrap(),
             annual_limit(),
             actor,
-        ).unwrap();
+        )
+        .unwrap();
         claim.prepare(actor).unwrap();
         claim.submit_for_review().unwrap();
         claim.approve(actor).unwrap();
@@ -444,7 +535,8 @@ mod tests {
             Money::from_pence(1000).unwrap(),
             annual_limit(),
             Uuid::new_v4(),
-        ).unwrap();
+        )
+        .unwrap();
         let json = serde_json::to_string(&claim).unwrap();
         let back: GasdsClaim = serde_json::from_str(&json).unwrap();
         assert_eq!(claim, back);

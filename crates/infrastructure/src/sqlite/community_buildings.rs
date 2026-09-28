@@ -1,12 +1,12 @@
-use super::map_db_err;
 use super::donors::row_to_address;
+use super::map_db_err;
+use crate::SharedPool;
 use async_trait::async_trait;
 use offering_domain::entities::community_building::CommunityBuilding;
-use offering_persistence::{CommunityBuildingRepository, RepoError, RepoResult};
+use offering_persistence::{CommunityBuildingRepository, RepoResult};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteCommunityBuildingRepository {
@@ -14,19 +14,20 @@ pub struct SqliteCommunityBuildingRepository {
 }
 
 impl SqliteCommunityBuildingRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteCommunityBuildingRepository { pool }
     }
 }
 
-fn row_to_community_building(row: &SqliteRow) -> Result<CommunityBuilding, RepoError> {
-    Ok(CommunityBuilding {
+fn row_to_community_building(row: &SqliteRow) -> CommunityBuilding {
+    CommunityBuilding {
         id: row.get("id"),
         name: row.get("name"),
         address: row_to_address(row),
         local_authority: row.get("local_authority"),
         created_at: row.get("created_at"),
-    })
+    }
 }
 
 #[async_trait]
@@ -56,7 +57,7 @@ impl CommunityBuildingRepository for SqliteCommunityBuildingRepository {
             .fetch_optional(&self.pool.get())
             .await
             .map_err(map_db_err)?;
-        row.as_ref().map(row_to_community_building).transpose()
+        Ok(row.as_ref().map(row_to_community_building))
     }
 
     async fn list(&self) -> RepoResult<Vec<CommunityBuilding>> {
@@ -64,7 +65,7 @@ impl CommunityBuildingRepository for SqliteCommunityBuildingRepository {
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
-        rows.iter().map(row_to_community_building).collect()
+        Ok(rows.iter().map(row_to_community_building).collect())
     }
 
     async fn update(&self, building: CommunityBuilding) -> RepoResult<CommunityBuilding> {

@@ -1,0 +1,44 @@
+
+services:
+  vpn:
+    image: qmcgaw/gluetun:latest
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    env_file:
+      - .env
+    environment:
+      TZ: Europe/London
+      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER:-protonvpn}
+      VPN_TYPE: ${VPN_TYPE:-protonvpn}
+      SERVER_COUNTRIES: ${SERVER_COUNTRIES:-United Kingdom}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  rust-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: "service:vpn"
+    depends_on:
+      vpn:
+        condition: service_healthy
+    volumes:
+      - ${HOME}/.local/share/opencode:/home/vscode/.local/share/opencode
+      - /home/caleb/Projects/offering_recorder:/home/caleb/Projects/offering_recorder:cached
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+    working_dir: /home/caleb/Projects/offering_recorder
+    command: sleep infinity
+    init: true
+    restart: unless-stopped
+
+volumes:
+  cargo-registry:
+  cargo-git:

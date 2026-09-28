@@ -1,4 +1,5 @@
 use super::map_db_err;
+use crate::SharedPool;
 use async_trait::async_trait;
 use offering_domain::entities::bank_deposit::{BankDeposit, BankDepositItem};
 use offering_domain::money::Money;
@@ -6,7 +7,6 @@ use offering_persistence::{BankDepositRepository, RepoError, RepoResult};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Pool, Row, Sqlite};
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteBankDepositRepository {
@@ -14,24 +14,25 @@ pub struct SqliteBankDepositRepository {
 }
 
 impl SqliteBankDepositRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteBankDepositRepository { pool }
     }
 }
 
-fn row_to_item(row: &SqliteRow) -> Result<BankDepositItem, RepoError> {
-    Ok(BankDepositItem {
+fn row_to_item(row: &SqliteRow) -> BankDepositItem {
+    BankDepositItem {
         offering_id: row.get("offering_id"),
         cash_amount: Money::from_pence_unchecked(row.get("cash_amount_pence")),
         cheque_amount: Money::from_pence_unchecked(row.get("cheque_amount_pence")),
         other_amount: Money::from_pence_unchecked(row.get("other_amount_pence")),
         donor_count: row.get("donor_count"),
         donation_count: row.get("donation_count"),
-    })
+    }
 }
 
-fn row_to_deposit_base(row: &SqliteRow) -> Result<BankDeposit, RepoError> {
-    Ok(BankDeposit {
+fn row_to_deposit_base(row: &SqliteRow) -> BankDeposit {
+    BankDeposit {
         id: row.get("id"),
         deposit_date: row.get("deposit_date"),
         banker_id: row.get("banker_id"),
@@ -42,7 +43,7 @@ fn row_to_deposit_base(row: &SqliteRow) -> Result<BankDeposit, RepoError> {
         reference: row.get("reference"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
-    })
+    }
 }
 
 async fn load_items(pool: &Pool<Sqlite>, deposit_id: Uuid) -> RepoResult<Vec<BankDepositItem>> {
@@ -51,7 +52,7 @@ async fn load_items(pool: &Pool<Sqlite>, deposit_id: Uuid) -> RepoResult<Vec<Ban
         .fetch_all(pool)
         .await
         .map_err(map_db_err)?;
-    rows.iter().map(row_to_item).collect()
+    Ok(rows.iter().map(row_to_item).collect())
 }
 
 /// Batch load items for multiple deposits (avoids N+1).
@@ -64,18 +65,18 @@ async fn load_items_batch(
     }
     let placeholders = super::in_placeholders(deposit_ids.len());
     let query = format!(
-        "SELECT * FROM bank_deposit_items WHERE deposit_id IN ({}) ORDER BY deposit_id",
-        placeholders
+        "SELECT * FROM bank_deposit_items WHERE deposit_id IN ({placeholders}) ORDER BY deposit_id"
     );
     let mut q = sqlx::query(&query);
     for id in deposit_ids {
         q = q.bind(id);
     }
     let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
-    let mut map: std::collections::HashMap<Uuid, Vec<BankDepositItem>> = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<Uuid, Vec<BankDepositItem>> =
+        std::collections::HashMap::new();
     for row in rows {
         let did: Uuid = row.get("deposit_id");
-        map.entry(did).or_default().push(row_to_item(&row)?);
+        map.entry(did).or_default().push(row_to_item(&row));
     }
     Ok(map)
 }
@@ -130,7 +131,7 @@ impl BankDepositRepository for SqliteBankDepositRepository {
             .map_err(map_db_err)?;
         match row {
             Some(row) => {
-                let mut deposit = row_to_deposit_base(&row)?;
+                let mut deposit = row_to_deposit_base(&row);
                 deposit.items = load_items(&self.pool.get(), id).await?;
                 Ok(Some(deposit))
             }
@@ -148,17 +149,21 @@ impl BankDepositRepository for SqliteBankDepositRepository {
         let mut deposits = Vec::new();
         for row in rows {
             let id: Uuid = row.get("id");
-            let mut deposit = row_to_deposit_base(&row)?;
+            let mut deposit = row_to_deposit_base(&row);
             deposit.items = items_by_deposit.get(&id).cloned().unwrap_or_default();
             deposits.push(deposit);
         }
         Ok(deposits)
     }
 
-    async fn update(&self, deposit: BankDeposit) -> RepoResult<BankDeposit> {
+    async fn update(
+        &self,
+        deposit: BankDeposit,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<BankDeposit> {
         let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
-        sqlx::query(
-            "UPDATE bank_deposits SET deposit_date = ?, actual_cash_pence = ?, actual_cheques_pence = ?, actual_other_pence = ?, reference = ?, updated_at = ? WHERE id = ?",
+        let result = sqlx::query(
+            "UPDATE bank_deposits SET deposit_date = ?, actual_cash_pence = ?, actual_cheques_pence = ?, actual_other_pence = ?, reference = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(deposit.deposit_date)
         .bind(deposit.actual_cash.pence())
@@ -167,9 +172,15 @@ impl BankDepositRepository for SqliteBankDepositRepository {
         .bind(&deposit.reference)
         .bind(deposit.updated_at)
         .bind(deposit.id)
+        .bind(expected_updated_at)
         .execute(&mut *tx)
         .await
         .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::Conflict(
+                "deposit was modified by another operation; reload and retry".into(),
+            ));
+        }
 
         sqlx::query("DELETE FROM bank_deposit_items WHERE deposit_id = ?")
             .bind(deposit.id)
@@ -217,7 +228,7 @@ impl BankDepositRepository for SqliteBankDepositRepository {
         let mut deposits = Vec::new();
         for row in rows {
             let id: Uuid = row.get("id");
-            let mut deposit = row_to_deposit_base(&row)?;
+            let mut deposit = row_to_deposit_base(&row);
             deposit.items = load_items(&self.pool.get(), id).await?;
             deposits.push(deposit);
         }
@@ -259,13 +270,8 @@ mod tests {
         (repo, offering, banker)
     }
 
-    fn deposit_with_other(
-        offering_id: Uuid,
-        banker_id: Uuid,
-        other_pence: i64,
-    ) -> BankDeposit {
-        let mut deposit =
-            BankDeposit::create(banker_id, Utc::now(), None).unwrap();
+    fn deposit_with_other(offering_id: Uuid, banker_id: Uuid, other_pence: i64) -> BankDeposit {
+        let mut deposit = BankDeposit::create(banker_id, Utc::now(), None).unwrap();
         let item = BankDepositItem {
             offering_id,
             cash_amount: Money::from_pence(5000).unwrap(),
@@ -289,10 +295,11 @@ mod tests {
         // Simulate record_actuals: load, set actuals, update.
         let mut loaded = repo.get(created.id).await.unwrap().unwrap();
         assert_eq!(loaded.items[0].other_amount.pence(), 1500);
+        let expected = loaded.updated_at;
         loaded.actual_cash = Money::from_pence(5000).unwrap();
         loaded.actual_cheques = Money::from_pence(2000).unwrap();
         loaded.actual_other = Money::from_pence(1500).unwrap();
-        repo.update(loaded).await.unwrap();
+        repo.update(loaded, expected).await.unwrap();
 
         let reloaded = repo.get(created.id).await.unwrap().unwrap();
         assert_eq!(
@@ -301,6 +308,33 @@ mod tests {
             "update() must not zero out item other_amount (review C2)"
         );
         assert_eq!(reloaded.expected_other().pence(), 1500);
+    }
+
+    #[tokio::test]
+    async fn stale_deposit_update_conflicts() {
+        // Plan Phase 6: concurrent actuals writes fail loudly (Conflict),
+        // matching the offering/amendment guards.
+        let (repo, offering_id, banker_id) = setup().await;
+        let created = repo
+            .create(deposit_with_other(offering_id, banker_id, 1500))
+            .await
+            .unwrap();
+
+        let first = repo.get(created.id).await.unwrap().unwrap();
+        let mut second = repo.get(created.id).await.unwrap().unwrap();
+        let stale_ts = second.updated_at;
+        second.actual_cash = Money::from_pence(1).unwrap();
+        // Bump updated_at so the second write wins first.
+        second.updated_at = chrono::Utc::now() + chrono::Duration::seconds(1);
+        repo.update(second, stale_ts).await.unwrap();
+
+        let mut stale = first;
+        stale.actual_cash = Money::from_pence(2).unwrap();
+        let err = repo.update(stale, created.updated_at).await.unwrap_err();
+        assert!(
+            matches!(err, offering_persistence::RepoError::Conflict(_)),
+            "expected Conflict, got: {err:?}"
+        );
     }
 
     #[tokio::test]

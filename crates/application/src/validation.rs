@@ -1,7 +1,7 @@
 use offering_domain::entities::cash_denomination::CashTotal;
-use offering_domain::payment_method::PaymentMethod;
 use offering_domain::entities::offering::Offering;
 use offering_domain::money::Money;
+use offering_domain::payment_method::PaymentMethod;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ValidationIssue {
@@ -17,6 +17,7 @@ pub struct ValidationIssue {
 pub struct ValidationService;
 
 impl ValidationService {
+    #[must_use]
     pub fn validate(offering: &Offering) -> Vec<ValidationIssue> {
         let mut issues = Vec::new();
         issues.extend(Self::validate_attendance(offering));
@@ -39,14 +40,29 @@ impl ValidationService {
     }
 
     fn validate_cash_totals(offering: &Offering) -> Vec<ValidationIssue> {
-        let cash_donations: i64 = offering
-            .donations
-            .iter()
-            .filter(|d| d.payment_method == PaymentMethod::Cash)
-            .map(|d| d.amount.pence())
-            .sum();
+        // Checked summation (plan Phase 6): a wrapping i64 sum would hide
+        // corrupt totals; overflow becomes a blocking issue instead.
+        let cash_donations = Money::sum(
+            offering
+                .donations
+                .iter()
+                .filter(|d| d.payment_method == PaymentMethod::Cash)
+                .map(|d| d.amount),
+        );
+        let cash_donations = match cash_donations {
+            Ok(total) => total.pence(),
+            Err(_) => {
+                return vec![ValidationIssue {
+                    code: "cash_total_overflow".into(),
+                    blocking: true,
+                    message: "Cash donation totals overflow; the offering data is corrupt".into(),
+                }];
+            }
+        };
         let denominated = offering.cash_total().pence();
-        if denominated != cash_donations {
+        if denominated == cash_donations {
+            Vec::new()
+        } else {
             vec![ValidationIssue {
                 code: "cash_denomination_mismatch".into(),
                 blocking: true,
@@ -56,8 +72,6 @@ impl ValidationService {
                     Money::from_pence_unchecked(cash_donations)
                 ),
             }]
-        } else {
-            Vec::new()
         }
     }
 
@@ -65,7 +79,11 @@ impl ValidationService {
         let mut issues = Vec::new();
         let mut donation_breakdown = CashTotal::new();
         let mut missing_breakdowns = 0usize;
-        for d in offering.donations.iter().filter(|d| d.payment_method == PaymentMethod::Cash) {
+        for d in offering
+            .donations
+            .iter()
+            .filter(|d| d.payment_method == PaymentMethod::Cash)
+        {
             match &d.cash_denominations {
                 Some(bd) => {
                     for (denom, count) in bd.iter() {

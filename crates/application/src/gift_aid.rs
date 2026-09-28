@@ -32,6 +32,9 @@ pub struct NewDeclarationDetails {
     pub declaration_method: DeclarationMethod,
     pub received_at: Option<DateTime<Utc>>,
     pub declaration_text_version: Option<String>,
+    /// Required for `Single`: the identified gift covered (plan Phase 4.3).
+    /// Must be `None` for `MultipleDonations`.
+    pub single_donation_id: Option<Uuid>,
 }
 
 #[derive(Clone)]
@@ -60,6 +63,9 @@ impl<'a> GiftAidService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn create_declaration(
         &self,
         actor: &User,
@@ -81,11 +87,7 @@ impl<'a> GiftAidService<'a> {
             ));
         }
 
-        let full_name = details
-            .donor_full_name
-            .as_deref()
-            .map(|s| s.trim())
-            .unwrap_or("");
+        let full_name = details.donor_full_name.as_deref().map_or("", str::trim);
         if full_name.is_empty() {
             return Err(AppError::Conflict(
                 "donor full name must be provided on the declaration".into(),
@@ -101,11 +103,35 @@ impl<'a> GiftAidService<'a> {
             ));
         }
 
-        let existing = self.gift_aid.list_active_by_donor(donor_id, None, None).await?;
+        let existing = self
+            .gift_aid
+            .list_active_by_donor(donor_id, None, None)
+            .await?;
         if let Some(latest) = existing.iter().max_by_key(|d| d.version) {
             if latest.covers_date(Utc::now()) {
                 return Err(AppError::Conflict(
                     "donor already has an active Gift Aid declaration".into(),
+                ));
+            }
+        }
+
+        // A Single declaration must point at a real gift of this donor (plan
+        // Phase 4.3): linking prevents an open-ended window masquerading as a
+        // single-gift declaration.
+        if details.declaration_type == DeclarationType::Single {
+            let linked = details.single_donation_id.ok_or_else(|| {
+                AppError::Validation(
+                    "a single-donation declaration must identify the gift it covers".into(),
+                )
+            })?;
+            let gift = self
+                .donations
+                .get(linked)
+                .await?
+                .ok_or_else(|| AppError::NotFound("linked donation not found".into()))?;
+            if gift.donor_id != Some(donor_id) {
+                return Err(AppError::Validation(
+                    "linked donation does not belong to this donor".into(),
                 ));
             }
         }
@@ -121,6 +147,7 @@ impl<'a> GiftAidService<'a> {
             details.declaration_method,
             details.received_at,
             details.declaration_text_version,
+            details.single_donation_id,
             actor.id,
             version,
         )?;
@@ -139,6 +166,9 @@ impl<'a> GiftAidService<'a> {
         Ok(declaration)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn end_declaration(
         &self,
         actor: &User,
@@ -178,6 +208,9 @@ impl<'a> GiftAidService<'a> {
         Ok(updated)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn revoke_declaration(
         &self,
         actor: &User,
@@ -219,7 +252,10 @@ impl<'a> GiftAidService<'a> {
 
     /// A declaration is "used in a report" when it covers any recorded donation.
     /// Such declarations must never be silently changed; corrections go through
-    /// an approved DeclarationAmendment instead.
+    /// an approved `DeclarationAmendment` instead.
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn is_used_in_report(
         &self,
         actor: &User,
@@ -229,11 +265,19 @@ impl<'a> GiftAidService<'a> {
             return Err(unauthorized("manage gift aid"));
         }
         let donations = self.donations.list_by_donor(declaration.donor_id).await?;
-        Ok(donations
-            .iter()
-            .any(|d| declaration.covers_date(d.created_at)))
+        // Coverage is by donation RECEIVED date (d.date), not the record-creation
+        // timestamp, and Single declarations cover only their linked gift
+        // (plan Phases 4.3/4.6).
+        Ok(donations.iter().any(|d| {
+            d.date
+                .and_hms_opt(0, 0, 0)
+                .is_some_and(|midnight| declaration.covers_donation(midnight.and_utc(), d.id))
+        }))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn create_declaration_amendment(
         &self,
         actor: &User,
@@ -271,6 +315,9 @@ impl<'a> GiftAidService<'a> {
         Ok(amendment)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn sign_declaration_amendment_counter(
         &self,
         actor: &User,
@@ -288,7 +335,10 @@ impl<'a> GiftAidService<'a> {
         // Snapshot for optimistic-concurrency check at save time (review O27).
         let expected_updated_at = amendment.updated_at;
         amendment.counter_sign(Self::signature_for(actor, guest_name))?;
-        let amendment = self.declaration_amendments.update(amendment, expected_updated_at).await?;
+        let amendment = self
+            .declaration_amendments
+            .update(amendment, expected_updated_at)
+            .await?;
         self.audit
             .record(
                 actor,
@@ -303,6 +353,9 @@ impl<'a> GiftAidService<'a> {
         Ok(amendment)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn sign_declaration_amendment_checker(
         &self,
         actor: &User,
@@ -320,7 +373,10 @@ impl<'a> GiftAidService<'a> {
         // Snapshot for optimistic-concurrency check at save time (review O27).
         let expected_updated_at = amendment.updated_at;
         amendment.checker_sign(Self::signature_for(actor, guest_name))?;
-        let amendment = self.declaration_amendments.update(amendment, expected_updated_at).await?;
+        let amendment = self
+            .declaration_amendments
+            .update(amendment, expected_updated_at)
+            .await?;
         self.audit
             .record(
                 actor,
@@ -335,6 +391,9 @@ impl<'a> GiftAidService<'a> {
         Ok(amendment)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn approve_declaration_amendment(
         &self,
         actor: &User,
@@ -367,9 +426,12 @@ impl<'a> GiftAidService<'a> {
             }
         }
 
-        let amendment = self.declaration_amendments.update(amendment, expected_updated_at).await?;
+        let amendment = self
+            .declaration_amendments
+            .update(amendment, expected_updated_at)
+            .await?;
         let updated = self.gift_aid.update(declaration).await?;
-self.audit
+        self.audit
             .record(
                 actor,
                 AuditAction::DeclarationAmendmentApplied,
@@ -397,6 +459,9 @@ self.audit
         Ok(amendment)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn withdraw_declaration_amendment_signature(
         &self,
         actor: &User,
@@ -413,7 +478,10 @@ self.audit
         let expected_updated_at = amendment.updated_at;
         let old = crate::audit::state_json(&amendment);
         amendment.withdraw_signature()?;
-        let amendment = self.declaration_amendments.update(amendment, expected_updated_at).await?;
+        let amendment = self
+            .declaration_amendments
+            .update(amendment, expected_updated_at)
+            .await?;
         self.audit
             .record(
                 actor,
@@ -431,6 +499,9 @@ self.audit
         Ok(amendment)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn delete_declaration_amendment(
         &self,
         actor: &User,
@@ -465,6 +536,9 @@ self.audit
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_declaration_amendments(
         &self,
         actor: &User,
@@ -473,10 +547,7 @@ self.audit
         if !(can_manage_donors(actor) || can_manage_gift_aid(actor)) {
             return Err(unauthorized("view gift aid declarations"));
         }
-        Ok(self
-            .declaration_amendments
-            .list_by_donor(donor_id)
-            .await?)
+        Ok(self.declaration_amendments.list_by_donor(donor_id).await?)
     }
 
     fn signature_for(actor: &User, guest_name: Option<String>) -> Signature {
@@ -486,6 +557,9 @@ self.audit
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_declarations(
         &self,
         actor: &User,
@@ -497,6 +571,25 @@ self.audit
         Ok(self.gift_aid.list_by_donor(donor_id, None, None).await?)
     }
 
+    /// Named donations of a donor, newest-first, for linking a Single
+    /// declaration to its gift (plan Phase 4.3).
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn list_donations_by_donor(
+        &self,
+        actor: &User,
+        donor_id: Uuid,
+    ) -> AppResult<Vec<offering_domain::entities::Donation>> {
+        if !can_manage_gift_aid(actor) {
+            return Err(unauthorized("manage gift aid"));
+        }
+        Ok(self.donations.list_by_donor(donor_id).await?)
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn get_declaration(
         &self,
         actor: &User,
@@ -508,14 +601,28 @@ self.audit
         Ok(self.gift_aid.get(declaration_id).await?)
     }
 
-    pub async fn is_donor_eligible(&self, actor: &User, donor_id: Uuid, date: DateTime<Utc>) -> AppResult<bool> {
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn is_donor_eligible(
+        &self,
+        actor: &User,
+        donor_id: Uuid,
+        date: DateTime<Utc>,
+    ) -> AppResult<bool> {
         if !(can_manage_donors(actor) || can_manage_gift_aid(actor)) {
             return Err(unauthorized("view gift aid declarations"));
         }
         let declarations = self.gift_aid.list_by_donor(donor_id, None, None).await?;
-        Ok(DomainGiftAidService::is_gift_aid_eligible(&declarations, date))
+        Ok(DomainGiftAidService::is_gift_aid_eligible(
+            &declarations,
+            date,
+        ))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn donor_eligibility_summary(
         &self,
         actor: &User,

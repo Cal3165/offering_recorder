@@ -26,6 +26,9 @@ const MAX_BACKUP_SIZE: u64 = 500 * 1024 * 1024; // 500MB
 /// The salt is stored alongside the ciphertext (see [`encrypt_file`]), so a
 /// fixed/empty salt must never be used: doing so lets an attacker build a
 /// precomputed table against the known salt and crack every backup at once.
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
 pub fn derive_key(passphrase: &str, salt: &[u8]) -> InfraResult<[u8; 32]> {
     if passphrase.trim().is_empty() {
         return Err(InfraError::Message(
@@ -46,6 +49,15 @@ pub fn derive_key(passphrase: &str, salt: &[u8]) -> InfraResult<[u8; 32]> {
 
 /// Encrypt `src` into `dst` as `salt || nonce || ciphertext`, generating a
 /// fresh random salt and nonce for each call.
+/// # Errors
+///
+/// Returns [`InfraError`] if the file cannot be read, is over the size cap,
+/// or encryption fails.
+///
+/// # Panics
+///
+/// Never panics in practice: the cipher key is always exactly 32 bytes, so
+/// the key-construction `expect` is infallible.
 pub fn encrypt_file(src: &Path, dst: &Path, passphrase: &str) -> InfraResult<()> {
     let metadata = fs::metadata(src).map_err(|e| InfraError::Message(format!("stat: {e}")))?;
     if metadata.len() > MAX_BACKUP_SIZE {
@@ -56,8 +68,8 @@ pub fn encrypt_file(src: &Path, dst: &Path, passphrase: &str) -> InfraResult<()>
         )));
     }
 
-    let plain = fs::read(src)
-        .map_err(|e| InfraError::Message(format!("read plaintext backup: {e}")))?;
+    let plain =
+        fs::read(src).map_err(|e| InfraError::Message(format!("read plaintext backup: {e}")))?;
 
     let mut salt = [0u8; SALT_LEN];
     OsRng.fill_bytes(&mut salt);
@@ -82,6 +94,15 @@ pub fn encrypt_file(src: &Path, dst: &Path, passphrase: &str) -> InfraResult<()>
 /// The salt is read from the file header and combined with the passphrase to
 /// reconstruct the same key used at encryption time.
 /// A max size check prevents unbounded memory allocation (B4).
+/// # Errors
+///
+/// Returns [`InfraError`] if the file cannot be read, is over the size cap,
+/// has a bad header, or the passphrase is wrong.
+///
+/// # Panics
+///
+/// Never panics in practice: the cipher key is always exactly 32 bytes, so
+/// the key-construction `expect` is infallible.
 pub fn decrypt_file(src: &Path, passphrase: &str) -> InfraResult<Vec<u8>> {
     let metadata = fs::metadata(src).map_err(|e| InfraError::Message(format!("stat: {e}")))?;
     if metadata.len() > MAX_BACKUP_SIZE {
@@ -92,8 +113,8 @@ pub fn decrypt_file(src: &Path, passphrase: &str) -> InfraResult<Vec<u8>> {
         )));
     }
 
-    let data = fs::read(src)
-        .map_err(|e| InfraError::Message(format!("read encrypted backup: {e}")))?;
+    let data =
+        fs::read(src).map_err(|e| InfraError::Message(format!("read encrypted backup: {e}")))?;
     if data.len() <= SALT_LEN + NONCE_LEN {
         return Err(InfraError::Message("encrypted backup is truncated".into()));
     }
@@ -110,10 +131,10 @@ pub fn decrypt_file(src: &Path, passphrase: &str) -> InfraResult<Vec<u8>> {
         })
 }
 
+#[must_use]
 pub fn is_encrypted(path: &Path) -> bool {
     path.extension()
-        .map(|e| e.eq_ignore_ascii_case("enc"))
-        .unwrap_or(false)
+        .is_some_and(|e| e.eq_ignore_ascii_case("enc"))
 }
 
 #[cfg(test)]
@@ -121,7 +142,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("offrec_crypto_{tag}_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("offrec_crypto_{tag}_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

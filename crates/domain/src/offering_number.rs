@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 pub struct OfferingNumber(String);
 
 impl OfferingNumber {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn new(value: &str) -> DomainResult<Self> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -15,10 +18,12 @@ impl OfferingNumber {
         Ok(OfferingNumber(trimmed.to_string()))
     }
 
+    #[must_use]
     pub fn generated(year: i32, meeting_seq: u32, offering_seq: u32) -> Self {
-        OfferingNumber(format!("{}/{:02}/{:04}", year, meeting_seq, offering_seq))
+        OfferingNumber(format!("{year}/{meeting_seq:02}/{offering_seq:04}"))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

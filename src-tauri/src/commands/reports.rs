@@ -1,91 +1,152 @@
 use chrono::NaiveDate;
 use tauri::State;
 
-use crate::commands::AppState;
 use crate::commands::parse_uuid;
+use crate::commands::AppState;
+use offering_application::error::AppErrorDto;
 use offering_application::retention::RetentionReport;
 use offering_domain::tax_year::TaxYear;
 use offering_persistence::{
     BookkeepingEntry, DonorReportEntry, GasdsReportEntry, GdprReport, GiftAidReportEntry,
 };
 
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
 #[tauri::command]
 pub async fn bookkeeping_report(
     state: State<'_, AppState>,
     start: NaiveDate,
     end: NaiveDate,
     meeting_id: Option<String>,
-) -> Result<Vec<BookkeepingEntry>, String> {
+) -> Result<Vec<BookkeepingEntry>, AppErrorDto> {
     let actor = with_actor!(state);
-    let meeting_id = meeting_id
-        .map(|s| parse_uuid(&s))
-        .transpose()?;
+    let meeting_id = meeting_id.map(|s| parse_uuid(&s)).transpose()?;
     state
         .services
         .reports
         .bookkeeping_report(&actor, start, end, meeting_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(AppErrorDto::from)
 }
 
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
 #[tauri::command]
 pub async fn donor_report(
     state: State<'_, AppState>,
     start: NaiveDate,
     end: NaiveDate,
-) -> Result<Vec<DonorReportEntry>, String> {
+) -> Result<Vec<DonorReportEntry>, AppErrorDto> {
     let actor = with_actor!(state);
-    state.services.reports.donor_report(&actor, start, end).await.map_err(|e| e.to_string())
+    state
+        .services
+        .reports
+        .donor_report(&actor, start, end)
+        .await
+        .map_err(AppErrorDto::from)
 }
 
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
 #[tauri::command]
 pub async fn gift_aid_report(
     state: State<'_, AppState>,
     tax_year: TaxYear,
-) -> Result<Vec<GiftAidReportEntry>, String> {
+) -> Result<Vec<GiftAidReportEntry>, AppErrorDto> {
     let actor = with_actor!(state);
-    state.services.reports.gift_aid_report(&actor, tax_year).await.map_err(|e| e.to_string())
+    state
+        .services
+        .reports
+        .gift_aid_report(&actor, tax_year)
+        .await
+        .map_err(AppErrorDto::from)
 }
 
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
 #[tauri::command]
 pub async fn gasds_report(
     state: State<'_, AppState>,
     start: NaiveDate,
     end: NaiveDate,
-) -> Result<Vec<GasdsReportEntry>, String> {
+) -> Result<Vec<GasdsReportEntry>, AppErrorDto> {
     let actor = with_actor!(state);
-    state.services.reports.gasds_report(&actor, start, end).await.map_err(|e| e.to_string())
+    state
+        .services
+        .reports
+        .gasds_report(&actor, start, end)
+        .await
+        .map_err(AppErrorDto::from)
 }
 
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
 #[tauri::command]
 pub async fn gdpr_report(
     state: State<'_, AppState>,
     donor_id: String,
-) -> Result<GdprReport, String> {
+) -> Result<GdprReport, AppErrorDto> {
     let actor = with_actor!(state);
     let id = parse_uuid(&donor_id)?;
-    state.services.reports.gdpr_report(&actor, id).await.map_err(|e| e.to_string())
+    state
+        .services
+        .reports
+        .gdpr_report(&actor, id)
+        .await
+        .map_err(AppErrorDto::from)
 }
 
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
 #[tauri::command]
-pub async fn retention_report(
+pub async fn deposit_report(
     state: State<'_, AppState>,
-) -> Result<RetentionReport, String> {
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<Vec<offering_domain::entities::BankDeposit>, AppErrorDto> {
+    let actor = with_actor!(state);
+    state
+        .services
+        .reports
+        .deposit_report(&actor, start, end)
+        .await
+        .map_err(AppErrorDto::from)
+}
+
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
+#[tauri::command]
+pub async fn retention_report(state: State<'_, AppState>) -> Result<RetentionReport, AppErrorDto> {
     let actor = with_actor!(state);
     state
         .services
         .retention
         .report(&actor)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(AppErrorDto::from)
 }
 
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
 #[tauri::command]
 pub async fn export_iif(
     state: State<'_, AppState>,
     start: NaiveDate,
     end: NaiveDate,
-) -> Result<String, String> {
+) -> Result<String, AppErrorDto> {
     let actor = with_actor!(state);
-    state.services.reports.iif_export(&actor, start, end).await.map_err(|e| e.to_string())
+    state
+        .services
+        .reports
+        .iif_export(&actor, start, end)
+        .await
+        .map_err(AppErrorDto::from)
 }

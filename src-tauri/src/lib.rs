@@ -6,13 +6,39 @@ use commands::AppState;
 use offering_infrastructure::{PasswordHasherService, SqliteBackupStorage, SqliteStore};
 use tauri::Manager;
 
+/// Starts the Tauri application.
+///
+/// # Panics
+///
+/// Panics (aborting the process under the release profile) if the app-data
+/// directory, logging, database, or Tauri runtime cannot be initialized.
+/// Startup failure is fatal by design: there is no safe degraded mode without
+/// the database.
+#[allow(clippy::too_many_lines)]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data)?;
+            // Operational log (plan Phase 8): the DB audit trail records
+            // business events; this file records operational ones (database
+            // error details, auth failures, restore outcomes). The UI shows
+            // only generic messages for infrastructure failures.
+            let file_appender =
+                tracing_appender::rolling::daily(&app_data, "offering_recorder.log");
+            let (file_writer, log_guard) = tracing_appender::non_blocking(file_appender);
+            // Box::leak is intentional like the store below: the guard must
+            // live for the process lifetime or logging stops.
+            let _guard: &'static _ = Box::leak(Box::new(log_guard));
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                        "offering_recorder_lib=info,offering_application=info".into()
+                    }),
+                )
+                .with_writer(file_writer)
+                .init();
             let db_path = app_data.join("offering_recorder.sqlite");
             let db_str = db_path.to_string_lossy().to_string();
             let store = tauri::async_runtime::block_on(SqliteStore::open(&db_str))?;
@@ -66,6 +92,8 @@ pub fn run() {
             commands::create_offering,
             commands::list_offerings,
             commands::list_all_offerings,
+            commands::list_active_offerings,
+            commands::list_locked_offerings,
             commands::get_offering,
             commands::offering_report,
             commands::set_attendance,
@@ -87,6 +115,7 @@ pub fn run() {
             commands::delete_amendment,
             commands::list_donors,
             commands::list_active_donors,
+            commands::get_donor,
             commands::search_donors,
             commands::create_donor,
             commands::update_donor,
@@ -95,6 +124,7 @@ pub fn run() {
             commands::end_declaration,
             commands::revoke_declaration,
             commands::list_declarations,
+            commands::list_donations_by_donor,
             commands::donor_eligibility_summary,
             commands::declaration_used_in_report,
             commands::create_declaration_amendment,
@@ -114,6 +144,7 @@ pub fn run() {
             commands::gift_aid_report,
             commands::gasds_report,
             commands::gdpr_report,
+            commands::deposit_report,
             commands::export_iif,
             commands::retention_report,
             commands::gasds_claim_readiness,
@@ -129,6 +160,7 @@ pub fn run() {
             commands::set_meeting_event_details,
             commands::create_backup,
             commands::list_backups,
+            commands::prune_expired_backups,
             commands::restore_backup,
             commands::list_audit_events,
             commands::recent_audit_events,
@@ -141,7 +173,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     /// Contract test (review O24/C3): every command name invoked from
-    /// src/lib/api.ts must be registered in the invoke_handler list. This
+    /// src/lib/api.ts must be registered in the `invoke_handler` list. This
     /// catches renamed or removed Rust commands that the hand-written
     /// bindings still reference - the class of drift behind review C3
     /// (argument drift still requires code review or generated bindings).
@@ -163,14 +195,27 @@ mod tests {
                 }
             }
         }
-        assert!(!registered.is_empty(), "failed to parse invoke_handler list");
+        assert!(
+            !registered.is_empty(),
+            "failed to parse invoke_handler list"
+        );
 
-        // Extract quoted names following `run<...>(` invocations.
+        // Extract quoted names following `run<...>(` invocations. Skip the
+        // `run` DEFINITION itself (`function run<T>...`, whose body may
+        // contain quoted words): only match when `run` is not part of a
+        // larger identifier.
         let mut referenced = Vec::new();
         let bytes = api_ts.as_bytes();
         let mut i = 0;
         while let Some(pos) = api_ts[i..].find("run<") {
-            let after = &api_ts[i + pos..];
+            let abs = i + pos;
+            let prev = if abs == 0 { b' ' } else { bytes[abs - 1] };
+            let is_def = abs >= 9 && &api_ts[abs - 9..abs] == "function ";
+            if prev.is_ascii_alphanumeric() || prev == b'_' || is_def {
+                i = abs + 4;
+                continue;
+            }
+            let after = &api_ts[abs..];
             if let Some(open) = after.find('(') {
                 let tail = &after[open..];
                 if let Some(q1) = tail.find('"') {
@@ -197,6 +242,27 @@ mod tests {
         assert!(
             missing.is_empty(),
             "api.ts invokes unregistered commands: {missing:?}"
+        );
+
+        // Reverse direction (plan Phase 9): every registered command must be
+        // reachable from api.ts, so dead commands cannot rot behind the IPC
+        // boundary. Commands intentionally without UI bindings are allowlisted
+        // with a reason.
+        let allowlisted_without_ui: &[&str] = &[
+            // Legacy/compat alias kept for old clients; new UI uses list_active_offerings.
+            "list_all_offerings",
+            // Bulk/power-user surface exercised via list_donors + search.
+            "list_donors",
+            "list_audit_events",
+        ];
+        let dead: Vec<_> = registered
+            .iter()
+            .filter(|c| !referenced.contains(c))
+            .filter(|c| !allowlisted_without_ui.contains(&c.as_str()))
+            .collect();
+        assert!(
+            dead.is_empty(),
+            "registered commands without api.ts bindings: {dead:?}"
         );
         let _ = bytes;
     }

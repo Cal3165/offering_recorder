@@ -61,7 +61,7 @@
   {#if report}
     {#if report.warnings.length > 0}
       <ul class="warn">
-        {#each report.warnings as w (w)}<li>{w}</li>{/each}
+        {#each report.warnings as w, i (i)}<li>{w}</li>{/each}
       </ul>
     {/if}
     <div class="summary-grid">
@@ -79,9 +79,11 @@
       </div>
     </div>
 
+    <div class="table-scroll">
     <table>
+      <caption class="sr-only">Retention summary by record type</caption>
       <thead>
-        <tr><th>Records</th><th>Total</th><th>Within retention</th><th>Expiring soon</th><th>Expired</th></tr>
+        <tr><th scope="col">Records</th><th scope="col">Total</th><th scope="col">Within retention</th><th scope="col">Expiring soon</th><th scope="col">Expired</th></tr>
       </thead>
       <tbody>
         {#each summaryRows() as row (row.label)}
@@ -95,6 +97,7 @@
         {/each}
       </tbody>
     </table>
+    </div>
   {/if}
 </div>
 
@@ -102,8 +105,10 @@
   <div class="card">
     <h2>Past retention window</h2>
     <p class="muted">These records may only be disposed of after explicit review. Nothing is deleted automatically.</p>
+    <div class="table-scroll">
     <table>
-      <thead><tr><th>Type</th><th>Detail</th><th>Tax year</th><th>Deadline</th><th>Status</th></tr></thead>
+      <caption class="sr-only">Records past retention window</caption>
+      <thead><tr><th scope="col">Type</th><th scope="col">Detail</th><th scope="col">Tax year</th><th scope="col">Deadline</th><th scope="col">Status</th></tr></thead>
       <tbody>
         {#each report.expired as item (item.record_type + item.record_id)}
           <tr>
@@ -116,14 +121,17 @@
         {/each}
       </tbody>
     </table>
+    </div>
   </div>
 {/if}
 
 {#if report && report.expiring.length > 0}
   <div class="card">
     <h2>Approaching deadline</h2>
+    <div class="table-scroll">
     <table>
-      <thead><tr><th>Type</th><th>Detail</th><th>Tax year</th><th>Deadline</th><th>Days left</th><th>Status</th></tr></thead>
+      <caption class="sr-only">Records approaching retention deadline</caption>
+      <thead><tr><th scope="col">Type</th><th scope="col">Detail</th><th scope="col">Tax year</th><th scope="col">Deadline</th><th scope="col">Days left</th><th scope="col">Status</th></tr></thead>
       <tbody>
         {#each report.expiring as item (item.record_type + item.record_id)}
           <tr>
@@ -137,5 +145,12 @@
         {/each}
       </tbody>
     </table>
+    </div>
+  </div>
+{/if}
+
+{#if report && report.expired.length === 0 && report.expiring.length === 0}
+  <div class="card">
+    <p class="muted">All records within retention.</p>
   </div>
 {/if}

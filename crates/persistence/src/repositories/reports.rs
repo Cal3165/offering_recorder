@@ -1,10 +1,12 @@
 use async_trait::async_trait;
 use offering_domain::address::Address;
 use offering_domain::donation_type::DonationType;
-use offering_domain::payment_method::PaymentMethod;
-use offering_domain::entities::*;
+use offering_domain::entities::{
+    Amendment, AuditEvent, DeclarationAmendment, Donation, Donor, GiftAidDeclaration,
+};
 use offering_domain::money::Money;
 use offering_domain::offering_number::OfferingNumber;
+use offering_domain::payment_method::PaymentMethod;
 use offering_domain::tax_year::TaxYear;
 use uuid::Uuid;
 
@@ -12,6 +14,9 @@ use crate::RepoResult;
 
 #[async_trait]
 pub trait ReportRepository: Send + Sync {
+    /// # Errors
+    ///
+    /// Implementations return [`RepoError`] on storage failure.
     async fn bookkeeping_report(
         &self,
         start: chrono::NaiveDate,
@@ -19,16 +24,32 @@ pub trait ReportRepository: Send + Sync {
         meeting_id: Option<Uuid>,
     ) -> RepoResult<Vec<BookkeepingEntry>>;
 
-    async fn donor_report(&self, start: chrono::NaiveDate, end: chrono::NaiveDate) -> RepoResult<Vec<DonorReportEntry>>;
+    /// # Errors
+    ///
+    /// Implementations return [`RepoError`] on storage failure.
+    async fn donor_report(
+        &self,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+    ) -> RepoResult<Vec<DonorReportEntry>>;
 
+    /// # Errors
+    ///
+    /// Implementations return [`RepoError`] on storage failure.
     async fn iif_donation_export(
         &self,
         start: chrono::NaiveDate,
         end: chrono::NaiveDate,
     ) -> RepoResult<Vec<IifDonationRow>>;
 
+    /// # Errors
+    ///
+    /// Implementations return [`RepoError`] on storage failure.
     async fn gift_aid_report(&self, tax_year: TaxYear) -> RepoResult<Vec<GiftAidReportEntry>>;
 
+    /// # Errors
+    ///
+    /// Implementations return [`RepoError`] on storage failure.
     async fn gdpr_report(&self, donor_id: Uuid) -> RepoResult<GdprReport>;
 }
 

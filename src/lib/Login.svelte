@@ -6,13 +6,20 @@
   let { onLogin }: { onLogin: (u: User) => void } = $props();
 
   let isBootstrap = $state(false);
+  let loading = $state(true);
   let username = $state("");
   let password = $state("");
   let displayName = $state("");
   let error = $state("");
 
   onMount(async () => {
-    isBootstrap = await needsBootstrap();
+    try {
+      isBootstrap = await needsBootstrap();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      loading = false;
+    }
   });
 
   async function submit(e: Event) {
@@ -31,6 +38,7 @@
 
 <div class="card" style="max-width: 380px; margin: 6rem auto;">
   <h1>{isBootstrap ? "Set up your administrator account" : "Sign in"}</h1>
+  {#if loading}<p class="muted">Loading…</p>{/if}
   <form onsubmit={submit}>
     <div class="field">
       <label for="login-username">Username</label>

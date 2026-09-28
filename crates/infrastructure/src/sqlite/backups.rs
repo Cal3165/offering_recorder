@@ -1,11 +1,11 @@
 use super::{from_json, map_db_err, to_json};
+use crate::SharedPool;
 use async_trait::async_trait;
 use offering_domain::entities::backup::{Backup, BackupStatus};
 use offering_persistence::{BackupRepository, RepoError, RepoResult};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteBackupRepository {
@@ -13,6 +13,7 @@ pub struct SqliteBackupRepository {
 }
 
 impl SqliteBackupRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteBackupRepository { pool }
     }
@@ -43,7 +44,7 @@ impl BackupRepository for SqliteBackupRepository {
         .bind(backup.created_at)
         .bind(&backup.backup_path)
         .bind(to_json(&backup.status)?)
-        .bind(backup.size_bytes.map(|b| b as i64))
+        .bind(backup.size_bytes.map(|b| i64::try_from(b).unwrap_or(i64::MAX)))
         .bind(backup.is_automatic)
         .bind(backup.encryption_enabled)
         .bind(backup.retained_until)
@@ -75,7 +76,7 @@ impl BackupRepository for SqliteBackupRepository {
         )
         .bind(&backup.backup_path)
         .bind(to_json(&backup.status)?)
-        .bind(backup.size_bytes.map(|b| b as i64))
+        .bind(backup.size_bytes.map(|b| i64::try_from(b).unwrap_or(i64::MAX)))
         .bind(backup.retained_until)
         .bind(backup.id)
         .execute(&self.pool.get())

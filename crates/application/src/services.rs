@@ -6,8 +6,8 @@ use offering_persistence::{
 };
 
 use crate::amendments::AmendmentService;
-use crate::auth::AuthService;
 use crate::audit::AuditLog;
+use crate::auth::AuthService;
 use crate::backup::BackupService;
 use crate::banking::BankingService;
 use crate::community_buildings::CommunityBuildingService;
@@ -64,7 +64,14 @@ impl<'a> Services<'a> {
             users,
             auth: AuthService::new(users, hasher, audit),
             meetings: MeetingService::new(meetings, audit),
-            offerings: OfferingService::new(offerings, meetings, gift_aid, amendments, gasds_claims, audit),
+            offerings: OfferingService::new(
+                offerings,
+                meetings,
+                gift_aid,
+                amendments,
+                gasds_claims,
+                audit,
+            ),
             amendments: AmendmentService::new(amendments, offerings, audit),
             donors: DonorService::new(donors, audit),
             gift_aid: GiftAidService::new(
@@ -74,10 +81,22 @@ impl<'a> Services<'a> {
                 declaration_amendments,
                 audit,
             ),
-            gasds_claims: GasdsClaimService::new(gasds_claims, offerings, gift_aid, deposits, audit),
+            gasds_claims: GasdsClaimService::new(
+                gasds_claims,
+                offerings,
+                gift_aid,
+                deposits,
+                donors,
+                meetings,
+                community_buildings,
+                amendments,
+                audit,
+            ),
             community_buildings: CommunityBuildingService::new(community_buildings, audit),
             banking: BankingService::new(deposits, offerings, meetings, audit),
-            reports: ReportService::new(reports, offerings, meetings, gift_aid, deposits, audit),
+            reports: ReportService::new(
+                reports, offerings, meetings, gift_aid, deposits, amendments, audit,
+            ),
             retention: RetentionService::new(offerings, gift_aid, gasds_claims, deposits, audit),
             backups: BackupService::new(backups, backup_storage, audit),
             audit: AuditLog::new(audit),

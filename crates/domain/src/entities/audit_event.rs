@@ -49,7 +49,7 @@ pub enum AuditAction {
 
 impl std::fmt::Display for AuditAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -67,6 +67,7 @@ pub struct AuditEvent {
 }
 
 impl AuditEvent {
+    #[must_use]
     pub fn create(
         user_id: Uuid,
         action: AuditAction,

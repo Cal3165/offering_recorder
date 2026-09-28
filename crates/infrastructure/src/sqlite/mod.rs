@@ -32,6 +32,7 @@ use offering_domain::money::Money;
 use offering_persistence::RepoError;
 use serde::{de::DeserializeOwned, Serialize};
 
+#[must_use]
 pub fn map_db_err(e: sqlx::Error) -> RepoError {
     match e {
         sqlx::Error::RowNotFound => RepoError::NotFound,
@@ -39,11 +40,15 @@ pub fn map_db_err(e: sqlx::Error) -> RepoError {
             // Unique-constraint violations are business-level conflicts
             // (duplicate deposit, duplicate username, duplicate declaration
             // version), not opaque database failures (review O9).
-            if other.as_database_error().is_some_and(|db| db.is_unique_violation()) {
-                RepoError::Conflict(format!(
-                    "record conflicts with an existing entry: {}",
-                    other
-                ))
+            if other
+                .as_database_error()
+                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+            {
+                // Static message (plan Phase 8.1): the raw SQLite error names
+                // tables/constraints and must not reach the WebView; the
+                // detail goes to the application log instead.
+                tracing::error!(detail = %other, "unique constraint violation");
+                RepoError::Conflict("record conflicts with an existing entry".into())
             } else {
                 RepoError::Database(other.to_string())
             }
@@ -51,18 +56,28 @@ pub fn map_db_err(e: sqlx::Error) -> RepoError {
     }
 }
 
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
 pub fn to_json<T: Serialize>(value: &T) -> Result<String, RepoError> {
     serde_json::to_string(value).map_err(|e| RepoError::InvalidData(e.to_string()))
 }
 
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
 pub fn from_json<T: DeserializeOwned>(value: &str) -> Result<T, RepoError> {
     serde_json::from_str(value).map_err(|e| RepoError::InvalidData(e.to_string()))
 }
 
+#[must_use]
 pub fn money_from_pence(pence: i64) -> Money {
     Money::from_pence_unchecked(pence)
 }
 
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
 pub fn parse_enum<T: DeserializeOwned>(name: &str) -> Result<T, RepoError> {
     from_json(name)
 }
@@ -71,8 +86,11 @@ pub fn parse_enum<T: DeserializeOwned>(name: &str) -> Result<T, RepoError> {
 ///
 /// The values themselves are always supplied via `.bind()`, never interpolated
 /// into the SQL string, so the generated statement is injection-safe.
+#[must_use]
 pub fn in_placeholders(count: usize) -> String {
-    std::iter::repeat("?").take(count).collect::<Vec<_>>().join(",")
+    std::iter::repeat_n("?", count)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Resolve optional paging arguments into SQL `LIMIT ? OFFSET ?` binds.
@@ -81,10 +99,11 @@ pub fn in_placeholders(count: usize) -> String {
 /// bound". Callers that pass `None` (statutory reports, GASDS claims,
 /// reconciliation pickers) must see every matching row — silently capping at
 /// an arbitrary page size understated claim figures (review R3).
+#[must_use]
 pub fn page_binds(limit: Option<u32>, offset: Option<u32>) -> (i64, i64) {
     let limit = match limit {
-        Some(n) => n as i64,
+        Some(n) => i64::from(n),
         None => -1,
     };
-    (limit, offset.unwrap_or(0) as i64)
+    (limit, i64::from(offset.unwrap_or(0)))
 }

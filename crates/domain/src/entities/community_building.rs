@@ -14,10 +14,16 @@ pub struct CommunityBuilding {
 }
 
 impl CommunityBuilding {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create(name: &str, address: Option<Address>) -> DomainResult<Self> {
         Self::create_with_local_authority(name, address, None)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create_with_local_authority(
         name: &str,
         address: Option<Address>,

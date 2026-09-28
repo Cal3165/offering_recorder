@@ -93,8 +93,10 @@
 {/if}
 
 <div class="card">
+  <div class="table-scroll">
   <table>
-    <thead><tr><th>Username</th><th>Name</th><th>Roles</th><th>Status</th><th>Reset password</th><th></th></tr></thead>
+    <caption class="sr-only">Users</caption>
+    <thead><tr><th scope="col">Username</th><th scope="col">Name</th><th scope="col">Roles</th><th scope="col">Status</th><th scope="col">Reset password</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>
       {#each users as u (u.id)}
         <tr>
@@ -107,6 +109,7 @@
               <input
                 type="password"
                 placeholder="new password"
+                aria-label="New password"
                 value={newPw[u.id] ?? ""}
                 oninput={(e) => {
                   newPw = { ...newPw, [u.id]: e.currentTarget.value };
@@ -117,7 +120,10 @@
           </td>
           <td>{#if u.id !== user.id}<button class="secondary" onclick={() => toggleActive(u)}>{u.is_active ? "Deactivate" : "Activate"}</button>{/if}</td>
         </tr>
+      {:else}
+        <tr><td colspan="6" class="muted">No users found.</td></tr>
       {/each}
     </tbody>
   </table>
+  </div>
 </div>

@@ -33,18 +33,21 @@ pub struct RoleSet {
 }
 
 impl RoleSet {
+    #[must_use]
     pub fn new(roles: Vec<Role>) -> Self {
         RoleSet {
             roles: roles.into_iter().collect(),
         }
     }
 
+    #[must_use]
     pub fn empty() -> Self {
         RoleSet {
             roles: BTreeSet::new(),
         }
     }
 
+    #[must_use]
     pub fn admin() -> Self {
         Self::new(vec![
             Role::Counter,
@@ -57,14 +60,15 @@ impl RoleSet {
         ])
     }
 
+    #[must_use]
     pub fn has(&self, role: &Role) -> bool {
         self.roles.contains(role)
     }
 
+    #[must_use]
     pub fn has_any(&self, roles: &[Role]) -> bool {
         roles.iter().any(|r| self.has(r))
     }
-
 
     pub fn iter(&self) -> impl Iterator<Item = &Role> {
         self.roles.iter()
@@ -74,6 +78,7 @@ impl RoleSet {
         self.roles.insert(role);
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.roles.is_empty()
     }

@@ -131,6 +131,8 @@ export interface Offering {
   updated_at: string;
 }
 
+export type LawfulBasis = "Consent" | "Contract" | "Legal obligation" | "Legitimate interest";
+
 export interface Donor {
   id: string;
   first_name: string;
@@ -140,6 +142,8 @@ export interface Donor {
   address: Address | null;
   email: string | null;
   phone: string | null;
+  lawful_basis: LawfulBasis | null;
+  privacy_notice_version: string | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -263,6 +267,7 @@ export interface DepositCandidate {
   offering_number: string;
   date: string;
   meeting_name: string;
+  /** All *_total fields are integer PENCE (wire compat — do not rename). */
   cash_total: number;
   cheque_total: number;
   total: number;
@@ -339,6 +344,7 @@ export interface GiftAidDeclaration {
   declaration_method: "Written" | "Online" | "Verbal";
   received_at: string | null;
   declaration_text_version: string | null;
+  single_donation_id: string | null;
   cancelled_at: string | null;
   cancellation_reason: string | null;
   created_at: string;
@@ -388,6 +394,7 @@ export interface CsvImportSummary {
   duplicates: number;
   errors: number;
   rows: CsvImportRow[];
+  basis_note: string;
 }
 
 export function fmtBreakdown(breakdown: CashTotal): string {

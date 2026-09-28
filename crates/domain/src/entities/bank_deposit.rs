@@ -25,6 +25,7 @@ pub struct BankDepositItem {
 }
 
 impl BankDepositItem {
+    #[must_use]
     pub fn new(offering_id: Uuid) -> Self {
         BankDepositItem {
             offering_id,
@@ -36,6 +37,7 @@ impl BankDepositItem {
         }
     }
 
+    #[must_use]
     pub fn total(&self) -> Money {
         self.cash_amount
             .saturating_add(&self.cheque_amount)
@@ -60,6 +62,9 @@ pub struct BankDeposit {
 impl BankDeposit {
     /// Create a deposit. A deposit dated more than a day in the future is a
     /// recording mistake and is rejected (review O5).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn create(
         banker_id: Uuid,
         deposit_date: DateTime<Utc>,
@@ -87,6 +92,9 @@ impl BankDeposit {
 
     /// Add an offering to this deposit. An offering may be deposited only
     /// once — duplicates would double-count it (review O5).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn add_item(&mut self, item: BankDepositItem) -> DomainResult<()> {
         if self.items.iter().any(|i| i.offering_id == item.offering_id) {
             return Err(DomainError::Validation(format!(
@@ -99,24 +107,32 @@ impl BankDeposit {
         Ok(())
     }
 
+    #[must_use]
     pub fn expected_cash(&self) -> Money {
-        Money::sum(self.items.iter().map(|i| i.cash_amount.clone())).unwrap_or_else(|_| Money::from_pence_unchecked(i64::MAX))
+        Money::sum(self.items.iter().map(|i| i.cash_amount))
+            .unwrap_or_else(|_| Money::from_pence_unchecked(i64::MAX))
     }
 
+    #[must_use]
     pub fn expected_cheques(&self) -> Money {
-        Money::sum(self.items.iter().map(|i| i.cheque_amount.clone())).unwrap_or_else(|_| Money::from_pence_unchecked(i64::MAX))
+        Money::sum(self.items.iter().map(|i| i.cheque_amount))
+            .unwrap_or_else(|_| Money::from_pence_unchecked(i64::MAX))
     }
 
+    #[must_use]
     pub fn expected_other(&self) -> Money {
-        Money::sum(self.items.iter().map(|i| i.other_amount.clone())).unwrap_or_else(|_| Money::from_pence_unchecked(i64::MAX))
+        Money::sum(self.items.iter().map(|i| i.other_amount))
+            .unwrap_or_else(|_| Money::from_pence_unchecked(i64::MAX))
     }
 
+    #[must_use]
     pub fn expected_total(&self) -> Money {
         self.expected_cash()
             .saturating_add(&self.expected_cheques())
             .saturating_add(&self.expected_other())
     }
 
+    #[must_use]
     pub fn actual_total(&self) -> Money {
         self.actual_cash
             .clone()
@@ -127,14 +143,17 @@ impl BankDeposit {
     /// Absolute difference between actual and expected cash. Returns the
     /// magnitude of the discrepancy in either direction (a shortfall was
     /// previously reported as £0.00, hiding missing cash — R4).
+    #[must_use]
     pub fn cash_discrepancy(&self) -> Money {
         let diff = self.actual_cash.pence() - self.expected_cash().pence();
-        Money::from_pence_unchecked(diff.unsigned_abs() as i64)
+        // `saturating_abs` avoids wrapping on `i64::MIN`, unlike `unsigned_abs() as i64`.
+        Money::from_pence_unchecked(diff.saturating_abs())
     }
 
     /// Direction of the cash discrepancy: [`DiscrepancyDirection::Shortfall`]
     /// when counted cash is missing, [`DiscrepancyDirection::Overage`] when
     /// there is more cash than recorded (review O5).
+    #[must_use]
     pub fn cash_discrepancy_direction(&self) -> Option<DiscrepancyDirection> {
         match self.actual_cash.pence() - self.expected_cash().pence() {
             0 => None,
@@ -143,6 +162,7 @@ impl BankDeposit {
         }
     }
 
+    #[must_use]
     pub fn has_discrepancy(&self) -> bool {
         self.actual_cash.pence() != self.expected_cash().pence()
             || self.actual_cheques.pence() != self.expected_cheques().pence()
@@ -220,13 +240,22 @@ mod tests {
         };
         d.add_item(item).unwrap();
         // Expected £50, recorded £0 so far: a shortfall.
-        assert_eq!(d.cash_discrepancy_direction(), Some(DiscrepancyDirection::Shortfall));
+        assert_eq!(
+            d.cash_discrepancy_direction(),
+            Some(DiscrepancyDirection::Shortfall)
+        );
 
         d.actual_cash = Money::from_pence(4500).unwrap();
-        assert_eq!(d.cash_discrepancy_direction(), Some(DiscrepancyDirection::Shortfall));
+        assert_eq!(
+            d.cash_discrepancy_direction(),
+            Some(DiscrepancyDirection::Shortfall)
+        );
 
         d.actual_cash = Money::from_pence(5500).unwrap();
-        assert_eq!(d.cash_discrepancy_direction(), Some(DiscrepancyDirection::Overage));
+        assert_eq!(
+            d.cash_discrepancy_direction(),
+            Some(DiscrepancyDirection::Overage)
+        );
     }
 
     #[test]

@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 pub struct TaxYear(i32);
 
 impl TaxYear {
+    #[must_use]
     pub fn new(start_april: i32) -> Self {
         TaxYear(start_april)
     }
 
+    #[must_use]
     pub fn from_date(date: NaiveDate) -> Self {
         // The UK tax year starts on 6 April. Dates on 1-5 April belong to the
         // previous tax year.
@@ -22,56 +24,91 @@ impl TaxYear {
         TaxYear(tax_year_start)
     }
 
+    #[must_use]
     pub fn start_year(&self) -> i32 {
         self.0
     }
 
+    #[must_use]
     pub fn end_year(&self) -> i32 {
         self.0 + 1
     }
 
+    #[must_use]
     pub fn as_string(&self) -> String {
         format!("{}/{}", self.0, self.0 + 1)
     }
 
+    #[must_use]
     pub fn contains_date(&self, date: NaiveDate) -> bool {
         let start = TaxYear::from_date(date);
         start == *self
     }
 
     /// The final day of the tax year (5 April of `end_year`).
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: 5 April (6 April) is always a valid
+    /// calendar date, so the `unwrap` on the constructed date is infallible.
+    #[must_use]
     pub fn end_date(&self) -> NaiveDate {
         NaiveDate::from_ymd_opt(self.end_year(), 4, 5).unwrap()
     }
 
     /// The first day of the tax year (6 April of `start_year`).
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: 5 April (6 April) is always a valid
+    /// calendar date, so the `unwrap` on the constructed date is infallible.
+    #[must_use]
     pub fn start_date(&self) -> NaiveDate {
         NaiveDate::from_ymd_opt(self.0, 4, 6).unwrap()
     }
 
     /// HMRC Gift Aid claim window: claims may be made up to four years after
     /// the end of the tax year in which the donation was received.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: 5 April (6 April) is always a valid
+    /// calendar date, so the `unwrap` on the constructed date is infallible.
+    #[must_use]
     pub fn gift_aid_claim_deadline(&self) -> NaiveDate {
         NaiveDate::from_ymd_opt(self.end_year() + 4, 4, 5).unwrap()
     }
 
     /// GASDS claim window: claims must be made within two years of the end of
     /// the tax year in which the donation was received.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: 5 April (6 April) is always a valid
+    /// calendar date, so the `unwrap` on the constructed date is infallible.
+    #[must_use]
     pub fn gasds_claim_deadline(&self) -> NaiveDate {
         NaiveDate::from_ymd_opt(self.end_year() + 2, 4, 5).unwrap()
     }
 
     /// Retention deadline: records relating to this tax year must be kept for
     /// at least `RETENTION_YEARS` after the end of the tax year.
+    ///
+    /// # Panics
+    ///
+    /// Never panics in practice: 5 April (6 April) is always a valid
+    /// calendar date, so the `unwrap` on the constructed date is infallible.
+    #[must_use]
     pub fn retention_deadline(&self) -> NaiveDate {
-        NaiveDate::from_ymd_opt(
-            self.end_year() + crate::retention::RETENTION_YEARS as i32,
-            4,
-            5,
-        )
-        .unwrap()
+        // `RETENTION_YEARS` is the small constant 7, so it always fits in `i32`.
+        let retention_years =
+            i32::try_from(crate::retention::RETENTION_YEARS).expect("RETENTION_YEARS fits in i32");
+        NaiveDate::from_ymd_opt(self.end_year() + retention_years, 4, 5).unwrap()
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn parse(s: &str) -> DomainResult<Self> {
         let trimmed = s.trim();
         let parts: Vec<&str> = trimmed.split(['.', '/']).collect();

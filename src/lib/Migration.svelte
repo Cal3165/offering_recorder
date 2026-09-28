@@ -56,14 +56,17 @@ Jane,Doe,Jane,,,,"AB2 3EF",jane.doe@example.com,01234 567890`;
 {#if summary}
   <div class="card">
     <h2>Import summary</h2>
+    {#if summary.basis_note}<p class="warn">⚠ {summary.basis_note}</p>{/if}
     <div class="row">
       <span class="badge">Created: {summary.created}</span>
       <span class="badge error-badge">Duplicates skipped: {summary.duplicates}</span>
       <span class="badge error-badge">Errors: {summary.errors}</span>
     </div>
     {#if summary.rows.length > 0}
+      <div class="table-scroll">
       <table>
-        <thead><tr><th>Row</th><th>Name</th><th>Status</th><th>Detail</th></tr></thead>
+        <caption class="sr-only">CSV import row results</caption>
+        <thead><tr><th scope="col">Row</th><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>
         <tbody>
           {#each summary.rows as r (r.row)}
             <tr>
@@ -75,6 +78,7 @@ Jane,Doe,Jane,,,,"AB2 3EF",jane.doe@example.com,01234 567890`;
           {/each}
         </tbody>
       </table>
+      </div>
     {/if}
   </div>
 {/if}

@@ -1,4 +1,5 @@
 use super::{from_json, map_db_err, to_json};
+use crate::SharedPool;
 use async_trait::async_trait;
 use offering_domain::address::Address;
 use offering_domain::entities::gift_aid::{
@@ -10,7 +11,6 @@ use offering_persistence::{GiftAidRepository, RepoError, RepoResult};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteGiftAidRepository {
@@ -18,6 +18,7 @@ pub struct SqliteGiftAidRepository {
 }
 
 impl SqliteGiftAidRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteGiftAidRepository { pool }
     }
@@ -30,9 +31,9 @@ fn row_to_declaration_address(row: &SqliteRow) -> Option<Address> {
         return None;
     }
     let postcode: Option<String> = row.get("donor_address_postcode");
-    let postcode = match postcode {
-        Some(pc) => Postcode::new(&pc).ok()?,
-        None => return None,
+    let postcode = {
+        let pc = postcode?;
+        Postcode::new(&pc).ok()?
     };
     Address::new(
         line1,
@@ -43,10 +44,12 @@ fn row_to_declaration_address(row: &SqliteRow) -> Option<Address> {
     .ok()
 }
 
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
 pub fn row_to_declaration(row: &SqliteRow) -> Result<GiftAidDeclaration, RepoError> {
     let status: DeclarationStatus = from_json(&row.get::<String, _>("status"))?;
-    let declaration_type: DeclarationType =
-        from_json(&row.get::<String, _>("declaration_type"))?;
+    let declaration_type: DeclarationType = from_json(&row.get::<String, _>("declaration_type"))?;
     let declaration_method: DeclarationMethod =
         from_json(&row.get::<String, _>("declaration_method"))?;
     Ok(GiftAidDeclaration {
@@ -62,6 +65,7 @@ pub fn row_to_declaration(row: &SqliteRow) -> Result<GiftAidDeclaration, RepoErr
         declaration_method,
         received_at: row.get("received_at"),
         declaration_text_version: row.get("declaration_text_version"),
+        single_donation_id: row.get("single_donation_id"),
         cancelled_at: row.get("cancelled_at"),
         cancellation_reason: row.get("cancellation_reason"),
         created_at: row.get("created_at"),
@@ -74,8 +78,8 @@ pub fn row_to_declaration(row: &SqliteRow) -> Result<GiftAidDeclaration, RepoErr
 impl GiftAidRepository for SqliteGiftAidRepository {
     async fn create(&self, declaration: GiftAidDeclaration) -> RepoResult<GiftAidDeclaration> {
         sqlx::query(
-            "INSERT INTO gift_aid_declarations (id, donor_id, effective_from, effective_until, status, declaration_type, charity_name, donor_full_name, donor_address_line1, donor_address_line2, donor_address_line3, donor_address_postcode, declaration_method, received_at, declaration_text_version, cancelled_at, cancellation_reason, created_by, created_at, version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO gift_aid_declarations (id, donor_id, effective_from, effective_until, status, declaration_type, charity_name, donor_full_name, donor_address_line1, donor_address_line2, donor_address_line3, donor_address_postcode, declaration_method, received_at, declaration_text_version, single_donation_id, cancelled_at, cancellation_reason, created_by, created_at, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(declaration.id)
         .bind(declaration.donor_id)
@@ -92,6 +96,7 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         .bind(to_json(&declaration.declaration_method)?)
         .bind(declaration.received_at)
         .bind(&declaration.declaration_text_version)
+        .bind(declaration.single_donation_id)
         .bind(declaration.cancelled_at)
         .bind(&declaration.cancellation_reason)
         .bind(declaration.created_by)
@@ -112,7 +117,12 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         row.as_ref().map(row_to_declaration).transpose()
     }
 
-    async fn list_by_donor(&self, donor_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<GiftAidDeclaration>> {
+    async fn list_by_donor(
+        &self,
+        donor_id: Uuid,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> RepoResult<Vec<GiftAidDeclaration>> {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
             "SELECT * FROM gift_aid_declarations WHERE donor_id = ? ORDER BY effective_from, version LIMIT ? OFFSET ?",
@@ -126,7 +136,12 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         rows.iter().map(row_to_declaration).collect()
     }
 
-    async fn list_active_by_donor(&self, donor_id: Uuid, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<GiftAidDeclaration>> {
+    async fn list_active_by_donor(
+        &self,
+        donor_id: Uuid,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> RepoResult<Vec<GiftAidDeclaration>> {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
             "SELECT * FROM gift_aid_declarations WHERE donor_id = ? AND status = ? ORDER BY effective_from, version LIMIT ? OFFSET ?",
@@ -141,20 +156,26 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         rows.iter().map(row_to_declaration).collect()
     }
 
-    async fn list(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<GiftAidDeclaration>> {
+    async fn list(
+        &self,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> RepoResult<Vec<GiftAidDeclaration>> {
         let (limit, offset) = super::page_binds(limit, offset);
-        let rows = sqlx::query("SELECT * FROM gift_aid_declarations ORDER BY effective_from, version LIMIT ? OFFSET ?")
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool.get())
-            .await
-            .map_err(map_db_err)?;
+        let rows = sqlx::query(
+            "SELECT * FROM gift_aid_declarations ORDER BY effective_from, version LIMIT ? OFFSET ?",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool.get())
+        .await
+        .map_err(map_db_err)?;
         rows.iter().map(row_to_declaration).collect()
     }
 
     async fn update(&self, declaration: GiftAidDeclaration) -> RepoResult<GiftAidDeclaration> {
         sqlx::query(
-            "UPDATE gift_aid_declarations SET effective_from = ?, effective_until = ?, status = ?, declaration_type = ?, charity_name = ?, donor_full_name = ?, donor_address_line1 = ?, donor_address_line2 = ?, donor_address_line3 = ?, donor_address_postcode = ?, declaration_method = ?, received_at = ?, declaration_text_version = ?, cancelled_at = ?, cancellation_reason = ? WHERE id = ?",
+            "UPDATE gift_aid_declarations SET effective_from = ?, effective_until = ?, status = ?, declaration_type = ?, charity_name = ?, donor_full_name = ?, donor_address_line1 = ?, donor_address_line2 = ?, donor_address_line3 = ?, donor_address_postcode = ?, declaration_method = ?, received_at = ?, declaration_text_version = ?, single_donation_id = ?, cancelled_at = ?, cancellation_reason = ? WHERE id = ?",
         )
         .bind(declaration.effective_from)
         .bind(declaration.effective_until)
@@ -169,6 +190,7 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         .bind(to_json(&declaration.declaration_method)?)
         .bind(declaration.received_at)
         .bind(&declaration.declaration_text_version)
+        .bind(declaration.single_donation_id)
         .bind(declaration.cancelled_at)
         .bind(&declaration.cancellation_reason)
         .bind(declaration.id)
@@ -195,10 +217,23 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         Ok(())
     }
 
-    async fn list_by_tax_year(&self, tax_year: TaxYear, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<GiftAidDeclaration>> {
+    async fn list_by_tax_year(
+        &self,
+        tax_year: TaxYear,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> RepoResult<Vec<GiftAidDeclaration>> {
         let (limit, offset) = super::page_binds(limit, offset);
-        let start = tax_year.start_date().and_hms_opt(0, 0, 0).unwrap().and_utc();
-        let end = tax_year.end_date().and_hms_opt(23, 59, 59).unwrap().and_utc();
+        let start = tax_year
+            .start_date()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        let end = tax_year
+            .end_date()
+            .and_hms_opt(23, 59, 59)
+            .unwrap()
+            .and_utc();
         let rows = sqlx::query(
             "SELECT * FROM gift_aid_declarations WHERE effective_from >= ? AND effective_from <= ? ORDER BY effective_from, version LIMIT ? OFFSET ?",
         )

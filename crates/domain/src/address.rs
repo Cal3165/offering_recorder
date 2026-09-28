@@ -11,6 +11,9 @@ pub struct Address {
 }
 
 impl Address {
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn new(
         line1: String,
         line2: Option<String>,
@@ -39,7 +42,7 @@ mod tests {
     fn reject_empty_line1() {
         let pc = Postcode::new("SW1A1AA").unwrap();
         assert!(matches!(
-            Address::new("".to_string(), None, None, pc),
+            Address::new(String::new(), None, None, pc),
             Err(DomainError::Validation(_))
         ));
     }

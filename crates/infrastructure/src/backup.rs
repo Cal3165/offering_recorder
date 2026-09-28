@@ -17,6 +17,7 @@ pub struct SqliteBackupStorage {
 }
 
 impl SqliteBackupStorage {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteBackupStorage { pool }
     }
@@ -100,7 +101,7 @@ struct TempFileGuard {
 impl TempFileGuard {
     fn new(dir: &Path, name: &str) -> InfraResult<Self> {
         let path = dir.join(format!("{name}_{}", uuid::Uuid::new_v4()));
-        fs::write(&path, &[])?;
+        fs::write(&path, [])?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -131,6 +132,9 @@ impl Drop for TempFileGuard {
 }
 
 impl BackupManager {
+    /// # Errors
+    ///
+    /// Returns [`RepoError`] if the database operation fails or stored data is invalid.
     pub async fn create_backup(
         pool: &SqlitePool,
         backup_dir: &Path,
@@ -153,15 +157,21 @@ impl BackupManager {
         // panic, or crash between write and encrypt never leaves the plaintext
         // on disk; on success it is promoted by rename or encrypted and the
         // guard removes the plaintext (review R10).
-        let mut staging = TempFileGuard::new(backup_dir, "backup_staging")?;
+        let staging = TempFileGuard::new(backup_dir, "backup_staging")?;
         let staging_str = staging.path().to_string_lossy().to_string();
 
-        sqlx::query(&format!("VACUUM INTO '{}'", staging_str.replace('\'', "''")))
-            .execute(pool)
-            .await
-            .map_err(InfraError::Database)?;
+        sqlx::query(&format!(
+            "VACUUM INTO '{}'",
+            staging_str.replace('\'', "''")
+        ))
+        .execute(pool)
+        .await
+        .map_err(InfraError::Database)?;
 
-        if !passphrase.trim().is_empty() {
+        if passphrase.trim().is_empty() {
+            fs::rename(staging.path(), &plain_path)?;
+            staging.keep(); // promoted into place; do not delete on drop
+        } else {
             // Argon2 key derivation is CPU-bound; keep it off the async
             // workers (review O12).
             let src = staging.path().to_path_buf();
@@ -170,15 +180,15 @@ impl BackupManager {
             tokio::task::spawn_blocking(move || crypto::encrypt_file(&src, &dst, &pw))
                 .await
                 .map_err(|e| InfraError::Message(e.to_string()))??;
-        } else {
-            fs::rename(staging.path(), &plain_path)?;
-            staging.keep(); // promoted into place; do not delete on drop
         }
 
         let size = fs::metadata(&final_path)?.len();
         Ok((final_path.to_string_lossy().to_string(), size))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`RepoError`] if the database operation fails or stored data is invalid.
     pub async fn validate_backup(path: &Path, passphrase: &str) -> InfraResult<()> {
         // Decrypt into a private, owner-only temp file that is guaranteed to be
         // removed on drop (even on panic / early return), so the plaintext DB —
@@ -196,7 +206,7 @@ impl BackupManager {
         } else {
             None
         };
-        let check_path = guard.as_ref().map(|g| g.path()).unwrap_or(path);
+        let check_path = guard.as_ref().map_or(path, TempFileGuard::path);
 
         let options = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(check_path)
@@ -209,11 +219,7 @@ impl BackupManager {
             .fetch_one(&mut conn)
             .await
             .map_err(InfraError::Database)?;
-        let result = if !integrity.eq_ignore_ascii_case("ok") {
-            Err(InfraError::Message(format!(
-                "backup failed integrity check: {integrity}"
-            )))
-        } else {
+        let result = if integrity.eq_ignore_ascii_case("ok") {
             let table: Option<String> = sqlx::query_scalar(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'offerings'",
             )
@@ -227,6 +233,10 @@ impl BackupManager {
             } else {
                 Ok(())
             }
+        } else {
+            Err(InfraError::Message(format!(
+                "backup failed integrity check: {integrity}"
+            )))
         };
 
         // Close the connection before the guard removes the file (Windows keeps
@@ -235,6 +245,9 @@ impl BackupManager {
         result
     }
 
+    /// # Errors
+    ///
+    /// Returns [`RepoError`] if the database operation fails or stored data is invalid.
     pub fn restore_backup_files(
         db_path: &Path,
         backup_path: &Path,
@@ -250,12 +263,15 @@ impl BackupManager {
 
         fs::create_dir_all(safety_dir)?;
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-        let safety_path = safety_dir.join(format!("pre_restore_{timestamp}.sqlite"));
+        // uuid suffix like backup filenames (plan Phase 7.2): two restores in
+        // one second must not overwrite the first safety copy.
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..6];
+        let safety_path = safety_dir.join(format!("pre_restore_{timestamp}_{suffix}.sqlite"));
         fs::copy(db_path, &safety_path)?;
 
-        let db_dir = db_path.parent().ok_or_else(|| {
-            InfraError::Message("active database has no parent directory".into())
-        })?;
+        let db_dir = db_path
+            .parent()
+            .ok_or_else(|| InfraError::Message("active database has no parent directory".into()))?;
 
         // Decrypted plaintext lives only in a private, owner-only temp file that
         // is removed on drop. Promote it to the live DB by rename.
@@ -269,8 +285,7 @@ impl BackupManager {
         };
         let source_path = decrypted
             .as_ref()
-            .map(|g| g.path().to_path_buf())
-            .unwrap_or_else(|| backup_path.to_path_buf());
+            .map_or_else(|| backup_path.to_path_buf(), |g| g.path().to_path_buf());
 
         let restoring = TempFileGuard::new(db_dir, ".restoring")?;
         fs::copy(&source_path, restoring.path())?;
@@ -320,7 +335,9 @@ mod tests {
 
         let (path, size) = BackupManager::create_backup(&pool, &dir, "").await.unwrap();
         assert!(size > 0);
-        BackupManager::validate_backup(std::path::Path::new(&path), "").await.unwrap();
+        BackupManager::validate_backup(std::path::Path::new(&path), "")
+            .await
+            .unwrap();
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -331,14 +348,24 @@ mod tests {
         let db_path = dir.join("app.sqlite");
         let pool = connect(db_path.to_str().unwrap()).await.unwrap();
 
-        let (path, size) = BackupManager::create_backup(&pool, &dir, "hunter2backup").await.unwrap();
+        let (path, size) = BackupManager::create_backup(&pool, &dir, "hunter2backup")
+            .await
+            .unwrap();
         assert!(size > 0);
         assert!(crate::crypto::is_encrypted(std::path::Path::new(&path)));
         BackupManager::validate_backup(std::path::Path::new(&path), "hunter2backup")
             .await
             .unwrap();
-        assert!(BackupManager::validate_backup(std::path::Path::new(&path), "wrong").await.is_err());
-        assert!(BackupManager::validate_backup(std::path::Path::new(&path), "").await.is_err());
+        assert!(
+            BackupManager::validate_backup(std::path::Path::new(&path), "wrong")
+                .await
+                .is_err()
+        );
+        assert!(
+            BackupManager::validate_backup(std::path::Path::new(&path), "")
+                .await
+                .is_err()
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -352,16 +379,20 @@ mod tests {
         let db_path = dir.join("app.sqlite");
         let pool = connect(db_path.to_str().unwrap()).await.unwrap();
 
-        let (path, _) = BackupManager::create_backup(&pool, &dir, "hunter2backup").await.unwrap();
+        let (path, _) = BackupManager::create_backup(&pool, &dir, "hunter2backup")
+            .await
+            .unwrap();
         assert!(crate::crypto::is_encrypted(std::path::Path::new(&path)));
 
         let leftovers: Vec<String> = fs::read_dir(&dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|name| {
                 (name.starts_with("backup_staging") || name.starts_with("backup_2"))
-                    && !name.ends_with(".enc")
+                    && !std::path::Path::new(name)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("enc"))
             })
             .collect();
         assert!(
@@ -379,7 +410,8 @@ mod tests {
         let store = SqliteStore::open(db_path.to_str().unwrap()).await.unwrap();
         let storage = SqliteBackupStorage::new(store.pool.clone());
 
-        let mk_user = |name: &str| User::create(name, "U", None, RoleSet::new(vec![Role::Admin])).unwrap();
+        let mk_user =
+            |name: &str| User::create(name, "U", None, RoleSet::new(vec![Role::Admin])).unwrap();
         store
             .users
             .create(mk_user("alice"))
@@ -416,7 +448,8 @@ mod tests {
 
     #[tokio::test]
     async fn validate_rejects_invalid_file() {
-        let dir = std::env::temp_dir().join(format!("offrec_test_invalid_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("offrec_test_invalid_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bad.sqlite");
         fs::write(&path, b"not a database").unwrap();

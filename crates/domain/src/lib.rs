@@ -40,9 +40,7 @@ pub mod entities {
     };
     pub use donation::{Donation, DonationClassification};
     pub use donor::{Donor, DonorType};
-    pub use gasds_claim::{
-        GasdsClaim, GasdsClaimItem, GasdsClaimMethod, GasdsClaimStatus,
-    };
+    pub use gasds_claim::{GasdsClaim, GasdsClaimItem, GasdsClaimMethod, GasdsClaimStatus};
     pub use gift_aid::{DeclarationMethod, DeclarationStatus, DeclarationType, GiftAidDeclaration};
     pub use meeting::{Meeting, MeetingEventType};
     pub use offering::{Offering, OfferingStatus};

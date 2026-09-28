@@ -22,6 +22,7 @@ import type {
   Donor,
   DonorEligibilitySummary,
   DonorReportEntry,
+  LawfulBasis,
   GasdsClaim,
   GasdsClaimMethod,
   GasdsReportEntry,
@@ -51,10 +52,49 @@ export interface CreateDonorInput {
   postcode: string | null;
   email: string | null;
   phone: string | null;
+  /** Required (non-null) on create; on update null leaves the basis unchanged. */
+  lawful_basis: LawfulBasis | null;
+  /** Only accepted alongside a lawful basis (create, or update with a basis). */
+  privacy_notice_version: string | null;
 }
 
-function run<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  return invoke<T>(cmd, args);
+/** IPC error shape from Rust commands (`AppErrorDto`: plan Phase 8.1). */
+export interface IpcError {
+  code: string;
+  message: string;
+}
+
+/** Machine-readable error code of an invoke failure, or null when unknown. */
+export function errorCode(e: unknown): string | null {
+  if (e instanceof Error) {
+    const code: unknown = (e as unknown as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+    return null;
+  }
+  if (e !== null && typeof e === "object") {
+    const code: unknown = (e as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return null;
+}
+
+async function run<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (e) {
+    // Tauri rejects with the serialized AppErrorDto { code, message }.
+    // Rethrow as an Error carrying `code` so existing String(e) displays
+    // keep working while new code can branch on errorCode(e).
+    if (e !== null && typeof e === "object" && "message" in e) {
+      const raw = e as { code?: unknown; message: unknown };
+      const err = new Error(String(raw.message));
+      if (typeof raw.code === "string") {
+        (err as unknown as { code: string }).code = raw.code;
+      }
+      throw err;
+    }
+    throw e;
+  }
 }
 
 // auth
@@ -119,6 +159,10 @@ export const createOffering = (meeting_id: string, description: string | null) =
 export const listOfferings = (meeting_id: string) =>
   run<Offering[]>("list_offerings", { meetingId: meeting_id });
 export const listAllOfferings = () => run<Offering[]>("list_all_offerings");
+export const listActiveOfferings = (limit?: number) =>
+  run<Offering[]>("list_active_offerings", { limit: limit ?? null });
+export const listLockedOfferings = (limit?: number) =>
+  run<Offering[]>("list_locked_offerings", { limit: limit ?? null });
 export const getOffering = (offering_id: string) =>
   run<Offering | null>("get_offering", { offeringId: offering_id });
 export const offeringReport = (offering_id: string) =>
@@ -174,6 +218,8 @@ export const updateDonor = (donor_id: string, input: CreateDonorInput) =>
   run<Donor>("update_donor", { donorId: donor_id, input });
 export const setDonorActive = (donor_id: string, active: boolean) =>
   run<Donor>("set_donor_active", { donorId: donor_id, active });
+export const getDonor = (donor_id: string) =>
+  run<Donor | null>("get_donor", { donorId: donor_id });
 
 // gift aid
 export const createGiftAidDeclaration = (
@@ -186,6 +232,7 @@ export const createGiftAidDeclaration = (
   declaration_method: "Written" | "Online" | "Verbal",
   received_at: string | null,
   declaration_text_version: string | null,
+  single_donation_id: string | null,
 ) =>
   run<GiftAidDeclaration>("create_gift_aid_declaration", {
     donorId: donor_id,
@@ -197,6 +244,7 @@ export const createGiftAidDeclaration = (
     declarationMethod: declaration_method,
     receivedAt: received_at,
     declarationTextVersion: declaration_text_version,
+    singleDonationId: single_donation_id,
   });
 export const endDeclaration = (declaration_id: string, at: string, reason: string | null) =>
   run<GiftAidDeclaration>("end_declaration", { declarationId: declaration_id, at, reason });
@@ -204,6 +252,8 @@ export const revokeDeclaration = (declaration_id: string, at: string, reason: st
   run<GiftAidDeclaration>("revoke_declaration", { declarationId: declaration_id, at, reason });
 export const listDeclarations = (donor_id: string) =>
   run<GiftAidDeclaration[]>("list_declarations", { donorId: donor_id });
+export const listDonationsByDonor = (donor_id: string) =>
+  run<Donation[]>("list_donations_by_donor", { donorId: donor_id });
 export const donorEligibilitySummary = (donor_id: string) =>
   run<DonorEligibilitySummary>("donor_eligibility_summary", { donorId: donor_id });
 export const declarationUsedInReport = (declaration_id: string) =>
@@ -255,6 +305,8 @@ export const giftAidReport = (tax_year: number) =>
   run<GiftAidReportEntry[]>("gift_aid_report", { taxYear: tax_year });
 export const gasdsReport = (start: string, end: string) =>
   run<GasdsReportEntry[]>("gasds_report", { start, end });
+export const depositReport = (start: string, end: string) =>
+  run<BankDeposit[]>("deposit_report", { start, end });
 export const gdprReport = (donor_id: string) => run<GdprReport>("gdpr_report", { donorId: donor_id });
 export const exportIif = (start: string, end: string) =>
   run<string>("export_iif", { start, end });
@@ -287,13 +339,15 @@ export const updateCommunityBuilding = (id: string, input: CommunityBuildingInpu
 export const createBackup = (passphrase: string) =>
   run<Backup>("create_backup", { passphrase });
 export const listBackups = () => run<Backup[]>("list_backups");
+export const pruneExpiredBackups = () =>
+  run<number>("prune_expired_backups");
 export const restoreBackup = (backup_path: string, passphrase: string) =>
   run<void>("restore_backup", { backupPath: backup_path, passphrase });
 
 // audit
 export const listAuditEvents = () => run<AuditEvent[]>("list_audit_events");
-export const recentAuditEvents = (limit: number) =>
-  run<AuditEvent[]>("recent_audit_events", { limit });
+export const recentAuditEvents = (limit: number, offset?: number) =>
+  run<AuditEvent[]>("recent_audit_events", { limit, offset: offset ?? 0 });
 
 // migration
 export const importDonorsCsv = (csv: string) =>

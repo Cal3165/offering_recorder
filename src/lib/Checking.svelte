@@ -1,22 +1,32 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listAllOfferings, listMeetings } from "./api";
+  import { listActiveOfferings, listLockedOfferings, listMeetings } from "./api";
   import type { Meeting, Offering, User } from "./types";
   import { DENOMINATIONS, fmtPence } from "./types";
 
   let { user, onNavigate }: { user: User; onNavigate: (view: string, offeringId?: string) => void } = $props();
 
   let meetings = $state<Meeting[]>([]);
-  let offerings = $state<Offering[]>([]);
+  let activeOfferings = $state<Offering[]>([]);
+  let lockedOfferings = $state<Offering[]>([]);
   let error = $state("");
+  let loaded = $state(false);
 
   onMount(async () => {
     try {
-      meetings = await listMeetings();
-      // Single query instead of one invoke per meeting (review O14).
-      offerings = (await listAllOfferings()).sort((a, b) => b.created_at.localeCompare(a.created_at));
+      const [m, active, locked] = await Promise.all([
+        listMeetings(),
+        listActiveOfferings(1000),
+        listLockedOfferings(10),
+      ]);
+      meetings = m;
+      // Single query per status instead of one invoke per meeting (review O14).
+      activeOfferings = active.sort((a, b) => b.created_at.localeCompare(a.created_at));
+      lockedOfferings = locked;
     } catch (e) {
       error = String(e);
+    } finally {
+      loaded = true;
     }
   });
 
@@ -52,8 +62,8 @@
     return DENOMINATIONS.every((d) => (o.cash_denominations.counts[d.name] ?? 0) === (bd[d.name] ?? 0));
   }
 
-  const awaitingChecker = $derived(offerings.filter((o) => o.status === "CounterSigned"));
-  const checked = $derived(offerings.filter((o) => o.status === "CheckerSigned" || o.status === "Locked"));
+  const awaitingChecker = $derived(activeOfferings.filter((o) => o.status === "CounterSigned"));
+  const checked = $derived(lockedOfferings.filter((o) => o.status === "CheckerSigned" || o.status === "Locked"));
 </script>
 
 <div class="card">
@@ -67,13 +77,15 @@
 
 <div class="card">
   <h2>Awaiting your check <span class="hint" title="Offerings signed by a counter but not yet checked by you.">ⓘ</span></h2>
-  {#if awaitingChecker.length === 0}
+  {#if !loaded}
+    <p class="muted">Loading…</p>
+  {:else if awaitingChecker.length === 0}
     <p class="muted">Nothing awaiting your check right now.</p>
   {:else}
     <ul class="plain">
       {#each awaitingChecker as o (o.id)}
         <li>
-          <div class="row" style="justify-content: space-between; align-items: flex-start;">
+          <div class="row space-between" style="align-items: flex-start;">
             <span>
               <strong>{o.offering_number}</strong> — {fmtPence(totalDonations(o))} recorded
               {#if meetingName(o.meeting_id)}<span class="muted"> • {meetingName(o.meeting_id)}</span>{/if}
@@ -94,13 +106,15 @@
 
 <div class="card">
   <h2>Recently checked</h2>
-  {#if checked.length === 0}
+  {#if !loaded}
+    <p class="muted">Loading…</p>
+  {:else if checked.length === 0}
     <p class="muted">No checked offerings yet.</p>
   {:else}
     <ul class="plain">
       {#each checked.slice(0, 10) as o (o.id)}
         <li>
-          <div class="row" style="justify-content: space-between;">
+          <div class="row space-between">
             <span>
               {o.offering_number} — {fmtPence(totalDonations(o))}
               <span class="muted"> • {o.created_at.slice(0, 10)} • {o.status === "Locked" ? "locked" : "signed, not yet locked"}</span>

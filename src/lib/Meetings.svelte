@@ -52,7 +52,14 @@
   async function load() {
     error = "";
     try {
-      [meetings, buildings] = await Promise.all([listMeetings(), listCommunityBuildings()]);
+      const [m, b] = await Promise.all([listMeetings(), listCommunityBuildings()]);
+      meetings = m;
+      buildings = b;
+      const mIds = new Set(m.map((x) => x.id));
+      const bIds = new Set(b.map((x) => x.id));
+      editing = Object.fromEntries(Object.entries(editing).filter(([k]) => mIds.has(k))) as typeof editing;
+      details = Object.fromEntries(Object.entries(details).filter(([k]) => mIds.has(k))) as typeof details;
+      buildingEdit = Object.fromEntries(Object.entries(buildingEdit).filter(([k]) => bIds.has(k))) as typeof buildingEdit;
     } catch (e) {
       error = String(e);
     }
@@ -211,9 +218,9 @@
   </div>
   {#if createOpen}
     <div class="row">
-      <div class="field" style="flex:1">
+      <div class="field grow">
         <label for="meeting-name">Meeting name</label>
-        <input id="meeting-name" bind:value={mName} placeholder="e.g. Sunday service" style="width:100%" />
+        <input id="meeting-name" bind:value={mName} placeholder="e.g. Sunday service" class="input-block" />
       </div>
       <div class="field">
         <label for="meeting-day">Day of week</label>
@@ -240,22 +247,24 @@
   {#if meetings.length === 0}
     <p class="muted">No meetings yet.</p>
   {:else}
+    <div class="table-scroll">
     <table>
-      <thead><tr><th>Name</th><th>Day</th><th>Time</th><th>Status</th><th></th></tr></thead>
+      <caption class="sr-only">Meetings</caption>
+      <thead><tr><th scope="col">Name</th><th scope="col">Day</th><th scope="col">Time</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>
         {#each meetings as m (m.id)}
           {@const e = editing[m.id]}
           {#if e}
             <tr>
-              <td><input bind:value={e.name} /></td>
+              <td><input bind:value={e.name} aria-label="Meeting name" /></td>
               <td>
-                <select bind:value={e.day}>
+                <select bind:value={e.day} aria-label="Meeting day">
                   {#each DAYS as day, i (day)}
                     <option value={i}>{day}</option>
                   {/each}
                 </select>
               </td>
-              <td><input bind:value={e.time} style="width: 100px" /></td>
+              <td><input bind:value={e.time} style="width: 100px" aria-label="Meeting time" /></td>
               <td><span class="badge">{m.is_active ? "Active" : "Inactive"}</span></td>
               <td>
                 <button onclick={() => saveEdit(m)}>Save</button>
@@ -277,6 +286,7 @@
         {/each}
       </tbody>
     </table>
+    </div>
   {/if}
 </div>
 
@@ -288,8 +298,10 @@
   {#if meetings.length === 0}
     <p class="muted">No meetings yet.</p>
   {:else}
+    <div class="table-scroll">
     <table>
-      <thead><tr><th>Meeting</th><th>Community building</th><th>Event type</th><th>Est. attendance</th><th></th></tr></thead>
+      <caption class="sr-only">Meeting GASDS event details</caption>
+      <thead><tr><th scope="col">Meeting</th><th scope="col">Community building</th><th scope="col">Event type</th><th scope="col">Est. attendance</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>
         {#each meetings as m (m.id)}
           {@const row = details[m.id]}
@@ -297,7 +309,7 @@
             <td>{m.name}</td>
             {#if row}
               <td>
-                <select bind:value={row.community_building_id}>
+                <select bind:value={row.community_building_id} aria-label="Community building">
                   <option value={null}>None</option>
                   {#each buildings as b (b.id)}
                     <option value={b.id}>{b.name}</option>
@@ -305,13 +317,13 @@
                 </select>
               </td>
               <td>
-                <select bind:value={row.event_type}>
+                <select bind:value={row.event_type} aria-label="Event type">
                   {#each EVENT_TYPES as et (et.value)}
                     <option value={et.value}>{et.label}</option>
                   {/each}
                 </select>
               </td>
-              <td><input bind:value={row.estimated_attendance} type="number" min="0" style="width: 90px" placeholder="unknown" /></td>
+              <td><input bind:value={row.estimated_attendance} type="number" min="0" style="width: 90px" placeholder="unknown" aria-label="Estimated attendance" /></td>
               <td>
                 <button onclick={() => saveDetails(m)}>Save</button>
                 <button class="secondary" onclick={() => (details = { ...details, [m.id]: undefined })}>Cancel</button>
@@ -326,6 +338,7 @@
         {/each}
       </tbody>
     </table>
+    </div>
   {/if}
 </div>
 
@@ -336,9 +349,9 @@
   </div>
   {#if buildingOpen}
     <div class="row">
-      <div class="field" style="flex:1">
+      <div class="field grow">
         <label for="b-name">Name</label>
-        <input id="b-name" bind:value={bName} placeholder="e.g. Village Hall" style="width:100%" />
+        <input id="b-name" bind:value={bName} placeholder="e.g. Village Hall" class="input-block" />
       </div>
       <div class="field">
         <label for="b-a1">Address line 1</label>
@@ -366,23 +379,25 @@
   {#if buildings.length === 0}
     <p class="muted">No community buildings yet.</p>
   {:else}
+    <div class="table-scroll">
     <table>
-      <thead><tr><th>Name</th><th>Address</th><th>Local authority</th><th></th></tr></thead>
+      <caption class="sr-only">Community buildings</caption>
+      <thead><tr><th scope="col">Name</th><th scope="col">Address</th><th scope="col">Local authority</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>
         {#each buildings as b (b.id)}
           {@const be = buildingEdit[b.id]}
           <tr>
             {#if be}
-              <td><input bind:value={be.name} /></td>
+              <td><input bind:value={be.name} aria-label="Building name" /></td>
               <td>
                 <div class="row">
-                  <input bind:value={be.address_line1} placeholder="Line 1" style="width: 140px" />
-                  <input bind:value={be.address_line2} placeholder="Line 2" style="width: 120px" />
-                  <input bind:value={be.address_line3} placeholder="Line 3" style="width: 120px" />
-                  <input bind:value={be.postcode} placeholder="Postcode" style="width: 100px" />
+                  <input bind:value={be.address_line1} placeholder="Line 1" style="width: 140px" aria-label="Address line 1" />
+                  <input bind:value={be.address_line2} placeholder="Line 2" style="width: 120px" aria-label="Address line 2" />
+                  <input bind:value={be.address_line3} placeholder="Line 3" style="width: 120px" aria-label="Address line 3" />
+                  <input bind:value={be.postcode} placeholder="Postcode" style="width: 100px" aria-label="Postcode" />
                 </div>
               </td>
-              <td><input bind:value={be.local_authority} placeholder="Local authority" style="width: 160px" /></td>
+              <td><input bind:value={be.local_authority} placeholder="Local authority" style="width: 160px" aria-label="Local authority" /></td>
               <td>
                 <button onclick={() => saveBuilding(b)}>Save</button>
                 <button class="secondary" onclick={() => (buildingEdit = { ...buildingEdit, [b.id]: undefined })}>Cancel</button>
@@ -401,5 +416,6 @@
         {/each}
       </tbody>
     </table>
+    </div>
   {/if}
 </div>

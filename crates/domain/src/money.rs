@@ -8,10 +8,14 @@ pub struct Money {
 }
 
 impl Money {
+    #[must_use]
     pub const fn zero() -> Self {
         Money { pence: 0 }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn from_pence(pence: i64) -> DomainResult<Self> {
         if pence < 0 {
             return Err(DomainError::NegativeValue);
@@ -23,13 +27,17 @@ impl Money {
     /// pence columns that the schema CHECKs constrain to be non-negative).
     /// Application/domain logic must use [`Money::from_pence`], which
     /// rejects negatives (review O7).
+    #[must_use]
     pub fn from_pence_unchecked(pence: i64) -> Self {
         debug_assert!(pence >= 0, "from_pence_unchecked with negative value");
         Money { pence }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn from_decimal(pounds: i64, pence: i64) -> DomainResult<Self> {
-        if pence >= 100 || pence < 0 {
+        if !(0..100).contains(&pence) {
             return Err(DomainError::Validation(
                 "pence component must be between 0 and 99".into(),
             ));
@@ -44,42 +52,53 @@ impl Money {
         Ok(Money { pence: total })
     }
 
+    #[must_use]
     pub fn pence(&self) -> i64 {
         self.pence
     }
 
+    #[must_use]
     pub fn pounds(&self) -> i64 {
         self.pence / 100
     }
 
+    #[must_use]
     pub fn pence_part(&self) -> i64 {
         self.pence.abs() % 100
     }
 
+    #[must_use]
     pub fn is_zero(&self) -> bool {
         self.pence == 0
     }
 
+    #[must_use]
     pub fn is_positive(&self) -> bool {
         self.pence > 0
     }
 
+    #[must_use]
     pub fn abs(&self) -> Self {
         Money {
             pence: self.pence.checked_abs().unwrap_or(i64::MAX),
         }
     }
 
+    #[must_use]
     pub fn display(&self) -> String {
         self.to_string()
     }
 
+    #[must_use]
     pub fn saturating_add(&self, other: &Money) -> Self {
         Money {
             pence: self.pence.saturating_add(other.pence),
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn add(&self, other: &Money) -> DomainResult<Self> {
         let result = self
             .pence
@@ -88,6 +107,9 @@ impl Money {
         Ok(Money { pence: result })
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn subtract(&self, other: &Money) -> DomainResult<Self> {
         if other.pence > self.pence {
             return Err(DomainError::NegativeValue);
@@ -97,6 +119,9 @@ impl Money {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn checked_subtract(&self, other: &Money) -> DomainResult<Self> {
         let result = self
             .pence
@@ -108,17 +133,23 @@ impl Money {
         Ok(Money { pence: result })
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn multiply(&self, factor: i32) -> DomainResult<Self> {
         if factor < 0 {
             return Err(DomainError::NegativeValue);
         }
         let result = self
             .pence
-            .checked_mul(factor as i64)
+            .checked_mul(i64::from(factor))
             .ok_or(DomainError::ArithmeticOverflow)?;
         Ok(Money { pence: result })
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn sum<I>(iter: I) -> DomainResult<Money>
     where
         I: IntoIterator<Item = Money>,
@@ -177,7 +208,12 @@ impl Default for Money {
 impl std::fmt::Display for Money {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.pence < 0 {
-            write!(f, "-£{}.{:02}", self.pence.abs() / 100, self.pence.abs() % 100)
+            write!(
+                f,
+                "-£{}.{:02}",
+                self.pence.abs() / 100,
+                self.pence.abs() % 100
+            )
         } else {
             write!(f, "£{}.{:02}", self.pence / 100, self.pence % 100)
         }
@@ -246,7 +282,7 @@ mod tests {
     fn addition_works() {
         let a = Money::from_pence(1050).unwrap();
         let b = Money::from_pence(500).unwrap();
-        let result = &a + &b;
+        let result = a + b;
         assert_eq!(result.pence(), 1550);
     }
 
@@ -288,14 +324,14 @@ mod tests {
         let c = Money::from_pence(100).unwrap();
         assert!(a < b);
         assert!(b > a);
-        assert!(a == c);
+        assert_eq!(a, c);
     }
 
     #[test]
     fn display_format() {
         let m = Money::from_pence(1234).unwrap();
         assert_eq!(m.display(), "£12.34");
-        assert_eq!(format!("{}", m), "£12.34");
+        assert_eq!(format!("{m}"), "£12.34");
     }
 
     #[test]

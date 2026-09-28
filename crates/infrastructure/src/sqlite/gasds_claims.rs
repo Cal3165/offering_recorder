@@ -1,4 +1,5 @@
 use super::{from_json, map_db_err, to_json};
+use crate::SharedPool;
 use async_trait::async_trait;
 use offering_domain::entities::gasds_claim::{GasdsClaim, GasdsClaimItem};
 use offering_domain::tax_year::TaxYear;
@@ -6,7 +7,6 @@ use offering_persistence::{GasdsClaimRepository, RepoError, RepoResult};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteGasdsClaimRepository {
@@ -14,11 +14,15 @@ pub struct SqliteGasdsClaimRepository {
 }
 
 impl SqliteGasdsClaimRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteGasdsClaimRepository { pool }
     }
 }
 
+/// # Errors
+///
+/// Returns [`RepoError`] if the database operation fails or stored data is invalid.
 pub fn row_to_gasds_claim(row: &SqliteRow) -> Result<GasdsClaim, RepoError> {
     let items: Vec<GasdsClaimItem> = from_json(&row.get::<String, _>("items"))?;
     Ok(GasdsClaim {
@@ -90,13 +94,11 @@ impl GasdsClaimRepository for SqliteGasdsClaimRepository {
     }
 
     async fn list_by_tax_year(&self, tax_year: TaxYear) -> RepoResult<Vec<GasdsClaim>> {
-        let rows = sqlx::query(
-            "SELECT * FROM gasds_claims WHERE tax_year = ? ORDER BY created_at",
-        )
-        .bind(to_json(&tax_year)?)
-        .fetch_all(&self.pool.get())
-        .await
-        .map_err(map_db_err)?;
+        let rows = sqlx::query("SELECT * FROM gasds_claims WHERE tax_year = ? ORDER BY created_at")
+            .bind(to_json(&tax_year)?)
+            .fetch_all(&self.pool.get())
+            .await
+            .map_err(map_db_err)?;
         rows.iter().map(row_to_gasds_claim).collect()
     }
 

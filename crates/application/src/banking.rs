@@ -3,7 +3,9 @@ use offering_domain::entities::bank_deposit::{BankDeposit, BankDepositItem};
 use offering_domain::entities::user::User;
 use offering_domain::money::Money;
 use offering_domain::payment_method::PaymentMethod;
-use offering_persistence::{AuditRepository, BankDepositRepository, MeetingRepository, OfferingRepository};
+use offering_persistence::{
+    AuditRepository, BankDepositRepository, MeetingRepository, OfferingRepository,
+};
 use uuid::Uuid;
 
 use crate::audit::AuditLog;
@@ -33,6 +35,9 @@ impl<'a> BankingService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn create_deposit(
         &self,
         actor: &User,
@@ -70,38 +75,49 @@ impl<'a> BankingService<'a> {
                     "only locked offerings can be banked".into(),
                 ));
             }
-            let cash_donations: i64 = offering
-                .donations
-                .iter()
-                .filter(|d| d.payment_method == PaymentMethod::Cash)
-                .map(|d| d.amount.pence())
-                .sum();
-            let cheque_donations: i64 = offering
-                .donations
-                .iter()
-                .filter(|d| d.payment_method == PaymentMethod::Cheque)
-                .map(|d| d.amount.pence())
-                .sum();
-            let other_donations: i64 = offering
-                .donations
-                .iter()
-                .filter(|d| {
-                    d.payment_method != PaymentMethod::Cash && d.payment_method != PaymentMethod::Cheque
-                })
-                .map(|d| d.amount.pence())
-                .sum();
-            let donor_count = offering
-                .donations
-                .iter()
-                .filter_map(|d| d.donor_id)
-                .collect::<std::collections::HashSet<_>>()
-                .len() as u32;
-            let donation_count = offering.donations.len() as u32;
+            // Checked summation (plan Phase 6): wrapping i64 sums would hide
+            // corrupt totals; overflow now fails the deposit loudly.
+            let cash_donations = offering_domain::money::Money::sum(
+                offering
+                    .donations
+                    .iter()
+                    .filter(|d| d.payment_method == PaymentMethod::Cash)
+                    .map(|d| d.amount),
+            )?;
+            let cheque_donations = offering_domain::money::Money::sum(
+                offering
+                    .donations
+                    .iter()
+                    .filter(|d| d.payment_method == PaymentMethod::Cheque)
+                    .map(|d| d.amount),
+            )?;
+            let other_donations = offering_domain::money::Money::sum(
+                offering
+                    .donations
+                    .iter()
+                    .filter(|d| {
+                        d.payment_method != PaymentMethod::Cash
+                            && d.payment_method != PaymentMethod::Cheque
+                    })
+                    .map(|d| d.amount),
+            )?;
+            // Counts are small in practice; saturate rather than truncate on
+            // absurdly large inputs.
+            let donor_count = u32::try_from(
+                offering
+                    .donations
+                    .iter()
+                    .filter_map(|d| d.donor_id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+            )
+            .unwrap_or(u32::MAX);
+            let donation_count = u32::try_from(offering.donations.len()).unwrap_or(u32::MAX);
             items.push(BankDepositItem {
                 offering_id: offering.id,
-                cash_amount: Money::from_pence_unchecked(cash_donations),
-                cheque_amount: Money::from_pence_unchecked(cheque_donations),
-                other_amount: Money::from_pence_unchecked(other_donations),
+                cash_amount: cash_donations,
+                cheque_amount: cheque_donations,
+                other_amount: other_donations,
                 donor_count,
                 donation_count,
             });
@@ -114,7 +130,9 @@ impl<'a> BankingService<'a> {
         // losing the race surfaces as the precise AlreadyDeposited error
         // instead of a raw constraint message (review O9).
         let deposit = self.deposits.create(deposit).await.map_err(|e| match e {
-            offering_persistence::RepoError::Conflict(_) => crate::error::AppError::AlreadyDeposited,
+            offering_persistence::RepoError::Conflict(_) => {
+                crate::error::AppError::AlreadyDeposited
+            }
             other => other.into(),
         })?;
         self.audit
@@ -131,6 +149,9 @@ impl<'a> BankingService<'a> {
         Ok(deposit)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn record_actuals(
         &self,
         actor: &User,
@@ -147,11 +168,12 @@ impl<'a> BankingService<'a> {
             .get(deposit_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("deposit not found".into()))?;
+        let expected_updated_at = deposit.updated_at;
         let old = crate::audit::state_json(&deposit);
         deposit.actual_cash = Money::from_pence(actual_cash_pence)?;
         deposit.actual_cheques = Money::from_pence(actual_cheques_pence)?;
         deposit.actual_other = Money::from_pence(actual_other_pence)?;
-        let updated = self.deposits.update(deposit).await?;
+        let updated = self.deposits.update(deposit, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -168,6 +190,9 @@ impl<'a> BankingService<'a> {
 
     /// Delete a deposit that has not yet been reconciled. A deposit with
     /// recorded actuals is banking evidence and cannot be removed.
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn delete_deposit(&self, actor: &User, deposit_id: Uuid) -> AppResult<()> {
         if !can_manage_banking(actor) {
             return Err(unauthorized("manage banking"));
@@ -201,16 +226,29 @@ impl<'a> BankingService<'a> {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_deposits(&self, actor: &User) -> AppResult<Vec<BankDeposit>> {
         crate::auth_guard::ViewPermission::ReadBanking.check(actor)?;
         Ok(self.deposits.list().await?)
     }
 
-    pub async fn get_deposit(&self, actor: &User, deposit_id: Uuid) -> AppResult<Option<BankDeposit>> {
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn get_deposit(
+        &self,
+        actor: &User,
+        deposit_id: Uuid,
+    ) -> AppResult<Option<BankDeposit>> {
         crate::auth_guard::ViewPermission::ReadBanking.check(actor)?;
         Ok(self.deposits.get(deposit_id).await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn available_offerings_for_deposit(
         &self,
         actor: &User,

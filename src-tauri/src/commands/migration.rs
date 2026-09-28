@@ -1,18 +1,22 @@
 use tauri::State;
 
 use crate::commands::AppState;
+use offering_application::error::AppErrorDto;
 use offering_application::migration::CsvImportSummary;
 
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
 #[tauri::command]
 pub async fn import_donors_csv(
     state: State<'_, AppState>,
     csv: String,
-) -> Result<CsvImportSummary, String> {
+) -> Result<CsvImportSummary, AppErrorDto> {
     let actor = with_actor!(state);
     state
         .services
         .migration
         .import_donors_csv(&actor, &csv)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(AppErrorDto::from)
 }

@@ -1,12 +1,12 @@
 use super::{from_json, map_db_err, to_json};
-use async_trait::async_trait;
-use offering_domain::entities::user::User;
-use offering_domain::entities::role::RoleSet;
-use offering_persistence::{RepoError, RepoResult, UserRepository};
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
-use uuid::Uuid;
 use crate::SharedPool;
+use async_trait::async_trait;
+use offering_domain::entities::role::RoleSet;
+use offering_domain::entities::user::User;
+use offering_persistence::{RepoError, RepoResult, UserRepository};
+use sqlx::sqlite::SqliteRow;
+use sqlx::Row;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct SqliteUserRepository {
@@ -14,6 +14,7 @@ pub struct SqliteUserRepository {
 }
 
 impl SqliteUserRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteUserRepository { pool }
     }

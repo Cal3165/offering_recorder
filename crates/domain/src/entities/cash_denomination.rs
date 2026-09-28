@@ -19,6 +19,7 @@ pub enum Denomination {
 }
 
 impl Denomination {
+    #[must_use]
     pub fn pence(&self) -> i64 {
         match self {
             Denomination::Coin1p => 1,
@@ -36,6 +37,7 @@ impl Denomination {
         }
     }
 
+    #[must_use]
     pub fn display(&self) -> String {
         match self {
             Denomination::Coin1p => "1p".to_string(),
@@ -61,6 +63,7 @@ pub struct CashCount {
 }
 
 impl CashCount {
+    #[must_use]
     pub fn new(denomination: Denomination, count: u32) -> Self {
         CashCount {
             denomination,
@@ -68,8 +71,12 @@ impl CashCount {
         }
     }
 
+    #[must_use]
     pub fn total(&self) -> Money {
-        let pence = self.denomination.pence() * self.count as i64;
+        let pence = self
+            .denomination
+            .pence()
+            .saturating_mul(i64::from(self.count));
         Money::from_pence_unchecked(pence)
     }
 }
@@ -80,6 +87,7 @@ pub struct CashTotal {
 }
 
 impl CashTotal {
+    #[must_use]
     pub fn new() -> Self {
         CashTotal {
             counts: BTreeMap::new(),
@@ -90,8 +98,13 @@ impl CashTotal {
         if count == 0 {
             return;
         }
+        // Saturating (not panicking): counts come from UI inputs and must
+        // never abort the process; monetary totals use checked arithmetic
+        // where overflow is a real error (see Money::sum). Billions of notes
+        // of one denomination would saturate here and fail validation
+        // downstream on totals mismatch instead.
         let entry = self.counts.entry(denomination).or_insert(0);
-        *entry = entry.checked_add(count).expect("CashTotal count overflow");
+        *entry = entry.saturating_add(count);
     }
 
     pub fn set(&mut self, denomination: Denomination, count: u32) {
@@ -102,16 +115,21 @@ impl CashTotal {
         }
     }
 
+    #[must_use]
     pub fn get(&self, denomination: &Denomination) -> u32 {
         self.counts.get(denomination).copied().unwrap_or(0)
     }
 
+    #[must_use]
     pub fn total(&self) -> Money {
+        // Saturating for the same reason as add() above: denomination note
+        // values are small constants, so saturation is unreachable in
+        // practice but guarantees no arithmetic panic on hostile input.
         let pence: i64 = self
             .counts
             .iter()
-            .map(|(denom, count)| denom.pence() * *count as i64)
-            .sum();
+            .map(|(denom, count)| denom.pence().saturating_mul(i64::from(*count)))
+            .fold(0i64, i64::saturating_add);
         Money::from_pence_unchecked(pence)
     }
 
@@ -119,6 +137,7 @@ impl CashTotal {
         self.counts.iter()
     }
 
+    #[must_use]
     pub fn to_counts(&self) -> Vec<CashCount> {
         self.counts
             .iter()

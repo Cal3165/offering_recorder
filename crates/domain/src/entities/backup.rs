@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 fn retention_until() -> DateTime<Utc> {
+    // `RETENTION_YEARS` is the small constant 7, so it always fits in `u32`.
+    let years = u32::try_from(RETENTION_YEARS).expect("RETENTION_YEARS fits in u32");
     Utc::now()
-        .checked_add_months(Months::new((RETENTION_YEARS as u32) * 12))
+        .checked_add_months(Months::new(years * 12))
         .expect("retention deadline in range")
 }
 
@@ -43,6 +45,7 @@ pub struct Backup {
 }
 
 impl Backup {
+    #[must_use]
     pub fn create_manual(path: String, encryption_enabled: bool) -> Self {
         let now = Utc::now();
         Backup {
@@ -57,6 +60,7 @@ impl Backup {
         }
     }
 
+    #[must_use]
     pub fn create_automatic(path: String) -> Self {
         let now = Utc::now();
         Backup {

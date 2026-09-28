@@ -2,7 +2,7 @@
   import OfferingReportModal from "./offering-entry/OfferingReportModal.svelte";
   import ReviewModal from "./offering-entry/ReviewModal.svelte";
   import AmendmentPanel from "./offering-entry/AmendmentPanel.svelte";
-  import DonorPicker from "./offering-entry/DonorPicker.svelte";
+  import DonationForm from "./offering-entry/DonationForm.svelte";
   import GasdsExplainer from "./offering-entry/GasdsExplainer.svelte";
 
   import { onDestroy, onMount } from "svelte";
@@ -30,28 +30,24 @@
   import type {
     Amendment,
     AmendmentChange,
-    CashTotal,
-    DonationClassification,
-    DonationType,
     Donor,
-    DonorEligibilitySummary,
     Meeting,
     Offering,
     OfferingReport,
     OfferingStatus,
-    PaymentMethod,
     User,
     ValidationIssue,
     GasdsResult,
+    AddDonationInput,
   } from "./types";
-  import type { CreateDonorInput } from "./api";
-  import { DENOMINATIONS, fmtPence, fmtBreakdown, parsePenceFromInput } from "./types";
+  import { DENOMINATIONS, fmtPence, fmtBreakdown, localYmd } from "./types";
   import DenominationGrid from "./DenominationGrid.svelte";
 
   let { user, focusId = null, focusMeetingId = null }: { user: User; focusId?: string | null; focusMeetingId?: string | null } = $props();
 
   let meetings = $state<Meeting[]>([]);
   let meetingId = $state<string | null>(null);
+  let loading = $state(true);
   let offerings = $state<Offering[]>([]);
   let offeringId = $state<string | null>(null);
   let offering = $state<Offering | null>(null);
@@ -70,13 +66,6 @@
   let counts = $state<Partial<Record<string, number>>>({});
 
   let addDonationOpen = $state(false);
-  let dClass = $state<DonationClassification>("Named");
-  let dDonor = $state<string>("");
-  let dAmount = $state("10.00");
-  let dType = $state<DonationType>("Offering");
-  let dMethod = $state<PaymentMethod>("Cash");
-  let dRef = $state("");
-  let dCounts = $state<Record<string, number>>({});
 
   let amendRemoveId = $state<string | null>(null);
   let removeReason = $state("");
@@ -116,26 +105,38 @@
   }
 
   async function load() {
-    meetings = await listMeetings();
-    if (meetings.length > 0) {
-      meetingId = meetings[0].id;
-      await loadOfferings();
-    }
-    if (focusMeetingId && meetings.some((m) => m.id === focusMeetingId)) {
-      meetingId = focusMeetingId;
-      await loadOfferings();
-    }
-    if (focusId) {
-      const o = await getOffering(focusId);
-      if (o) {
-        meetingId = o.meeting_id;
+    loading = true;
+    error = "";
+    try {
+      meetings = await listMeetings();
+      if (meetings.length > 0) {
+        meetingId = meetings[0].id;
         await loadOfferings();
-        offeringId = o.id;
-        await selectOffering();
       }
+      if (focusMeetingId && meetings.some((m) => m.id === focusMeetingId)) {
+        meetingId = focusMeetingId;
+        await loadOfferings();
+      }
+      if (focusId) {
+        const o = await getOffering(focusId);
+        if (o) {
+          meetingId = o.meeting_id;
+          await loadOfferings();
+          offeringId = o.id;
+          await selectOffering();
+        }
+      }
+    } catch (e) {
+      error = String(e);
+    } finally {
+      loading = false;
     }
   }
 
+  // Single cached preload for picker favourites/recents/type-ahead, refreshed
+  // via onDonorsChanged on local creates (plan Phase 3: accepted at parish
+  // scale — hundreds of rows, one fetch per mount; server search is used for
+  // global search and the Donors page instead).
   let donorsLoaded = $state(false);
   async function ensureDonorsLoaded() {
     if (donorsLoaded) return;
@@ -151,7 +152,6 @@
    *  discarded when superseded by a newer selection (review R13). */
   let meetingsSeq = 0;
   let offeringSeq = 0;
-  let eligSeq = 0;
 
   async function loadOfferings() {
     const req = ++meetingsSeq;
@@ -197,8 +197,16 @@
     // Reset per-offering entry state so nothing recorded for the previous
     // offering leaks into this one (review O26).
     addDonationOpen = false;
-    dCounts = {};
-    dRef = "";
+    denomPaste = "";
+    denomPasteOpen = false;
+    startOpen = false;
+    startAttendance = 0;
+    meetingOpen = false;
+    mName = "";
+    mDay = 0;
+    mTime = "10:30";
+    report = null;
+    reportOpen = false;
     amendRemoveId = null;
     removeReason = "";
     error = "";
@@ -210,17 +218,20 @@
     if (offering) {
       attendance = offering.attendance ?? 0;
       counts = { ...offering.cash_denominations.counts };
-      await refresh(req);
+      await refresh(req, loaded);
     }
   }
 
-  async function refresh(seq?: number) {
+  async function refresh(seq?: number, initial?: Offering | null) {
     if (!offeringId) return;
     // Callers that already own a generation pass it through; fresh callers
     // start a new one, invalidating any in-flight refresh.
     const req = seq ?? ++offeringSeq;
+    // When the caller already holds the offering (selectOffering's `loaded`),
+    // reuse it instead of re-fetching the same row.
+    const offeringPromise = initial !== undefined ? Promise.resolve(initial) : getOffering(offeringId);
     const [o, a, i, g] = await Promise.all([
-      getOffering(offeringId),
+      offeringPromise,
       listAmendments(offeringId),
       validateOffering(offeringId),
       gasdsForOffering(offeringId),
@@ -253,8 +264,13 @@
 
   async function saveAttendance() {
     if (!offering || offering.status !== "Draft" || !canRecord) return;
+    const n = Number(attendance);
+    if (attendance === null || attendance === undefined || (typeof attendance === "string" && (attendance as string).trim() === "") || !Number.isFinite(n) || n < 0) {
+      error = "Enter a valid attendance.";
+      return;
+    }
     try {
-      await setAttendance(offeringId!, attendance);
+      await setAttendance(offeringId!, n);
       await refresh();
     } catch (e) {
       error = String(e);
@@ -272,54 +288,17 @@
     await dispatchCashSave();
   }
 
-  async function submitDonation() {
+  async function handleDonationSubmit(input: AddDonationInput): Promise<boolean> {
     error = "";
     ok = "";
-    // Loose cash must always be recorded as a cash donation.
-    if (dClass === "LooseCash") dMethod = "Cash";
     try {
-      let pence: number;
-      let breakdown: CashTotal | null = null;
-      if (dMethod === "Cash") {
-        const counts: Record<string, number> = {};
-        for (const d of DENOMINATIONS) {
-          const c = dCounts[d.name] ?? 0;
-          if (c > 0) counts[d.name] = c;
-        }
-        const totalPence = DENOMINATIONS.reduce((s, d) => s + d.pence * (dCounts[d.name] ?? 0), 0);
-        if (totalPence <= 0) {
-          error = "Enter at least one denomination for the cash donation";
-          return;
-        }
-        pence = totalPence;
-        breakdown = { counts };
-      } else {
-        const parsed = parsePenceFromInput(dAmount);
-        if (parsed === null || parsed <= 0) {
-          error = "Enter a valid amount";
-          return;
-        }
-        pence = parsed;
-      }
-      await addDonation(offeringId!, {
-        donor_id: dClass === "Named" ? (dDonor || null) : null,
-        amount_pence: pence,
-        donation_type: dType,
-        payment_method: dMethod,
-        classification: dClass,
-        reference: dRef || null,
-        cash_denominations: breakdown,
-      });
-      ok = `Added ${fmtPence(pence)}${dClass === "Named" && dDonor ? ` — ${donorName(dDonor)}` : ""}`;
-      if (dClass === "LooseCash" || dClass === "Anonymous") {
-        suggestRemaining();
-      }
-      dRef = "";
-      dCounts = {};
+      await addDonation(offeringId!, input);
+      ok = `Added ${fmtPence(input.amount_pence)}${input.classification === "Named" && input.donor_id ? ` — ${donorName(input.donor_id)}` : ""}`;
       await refresh();
-      focusAmount();
+      return true;
     } catch (e) {
       error = String(e);
+      return false;
     }
   }
 
@@ -371,11 +350,18 @@
     error = "";
     ok = "";
     if (!meetingId) return;
+    const n = Number(startAttendance);
+    if (startAttendance === null || startAttendance === undefined || (typeof startAttendance === "string" && (startAttendance as string).trim() === "") || !Number.isFinite(n) || n < 0) {
+      error = "Enter a valid attendance.";
+      return;
+    }
     try {
-      const desc = `${new Date().toLocaleDateString(undefined, { weekday: "long" })} collection`;
+      // Persisted description: locale-independent (toLocaleDateString output
+      // would freeze one client's locale into stored data).
+      const desc = `${localYmd(new Date())} collection`;
       const o = await createOffering(meetingId, desc);
       offeringId = o.id;
-      if (startAttendance > 0) await setAttendance(o.id, startAttendance);
+      if (n > 0) await setAttendance(o.id, n);
       startOpen = false;
       await loadOfferings();
       ok = `Offering ${o.offering_number} started.`;
@@ -480,9 +466,6 @@
       await dispatchCashSave();
     }
   }
-  function focusAmount() {
-    document.getElementById("donation-amount")?.focus();
-  }
   function applyDenomPaste() {
     if (!offering || offering.status !== "Draft" || !canRecord) return;
     const text = denomPaste.trim();
@@ -491,28 +474,32 @@
     const tokens = text.split(/[\n,;]+/).map((t) => t.trim()).filter(Boolean);
     let used = 0;
     for (const t of tokens) {
-      const countFirst = t.match(/^(\d+(?:\.\d+)?)\s*[x×*]\s*(£?\d+p?)$/i);
-      const labelFirst = t.match(/^(£?\d+p?)\s*[x×*:]\s*(\d+(?:\.\d+)?)$/i);
+      const countFirst = t.match(/^(\d+)\s*[x×*]\s*(£?\d+p?)$/i);
+      const labelFirst = t.match(/^(£?\d+p?)\s*[x×*:]\s*(\d+)$/i);
+      // Whole non-negative integers only (matches DenominationGrid): a
+      // fractional or malformed token is skipped, never rounded.
+      if (/[.eE]/.test(t)) continue;
       let count: number;
       let label: string;
       if (countFirst) {
-        count = parseFloat(countFirst[1]);
+        count = parseInt(countFirst[1], 10);
         label = countFirst[2].toLowerCase();
       } else if (labelFirst) {
         label = labelFirst[1].toLowerCase();
-        count = parseFloat(labelFirst[2]);
+        count = parseInt(labelFirst[2], 10);
       } else {
         continue;
       }
       const d = DENOMINATIONS.find((x) => x.label.toLowerCase() === label);
-      if (!d || !Number.isFinite(count) || count < 0) continue;
-      next[d.name] = Math.round(count);
+      if (!d || !Number.isSafeInteger(count) || count < 0) continue;
+      next[d.name] = count;
       used++;
     }
     if (used === 0) {
-      const nums = text.split(/\s+/).map(Number);
-      if (nums.length === DENOMINATIONS.length && nums.every((n) => Number.isFinite(n) && n >= 0)) {
-        DENOMINATIONS.forEach((d, i) => (next[d.name] = Math.round(nums[i])));
+      const parts = text.split(/\s+/);
+      const nums = parts.map((p) => (/^\d+$/.test(p) ? parseInt(p, 10) : NaN));
+      if (nums.length === DENOMINATIONS.length && nums.every((n) => Number.isSafeInteger(n) && n >= 0)) {
+        DENOMINATIONS.forEach((d, i) => (next[d.name] = nums[i]));
         used = nums.length;
       }
     }
@@ -523,56 +510,20 @@
       markDenomsDirty();
       error = "";
     } else {
-      error = "Couldn't read that. Try lines like '50p × 5' or '£1: 3', or 12 numbers in denomination order (1p, 2p, 5p, 10p, 20p, 50p, £1, £2, £5, £10, £20, £50).";
-    }
-  }
-  function suggestRemaining() {
-    if (dMethod !== "Cash") {
-      dAmount = (remainingCash / 100).toFixed(2);
-      return;
-    }
-    const next: Record<string, number> = {};
-    for (const d of DENOMINATIONS) {
-      const remaining = Math.max(0, (counts[d.name] ?? 0) - (donationBreakdown[d.name] ?? 0));
-      if (remaining > 0) next[d.name] = remaining;
-    }
-    dCounts = next;
-  }
-  function setClass(c: DonationClassification) {
-    dClass = c;
-    if (c === "Named") {
-      // Lazy-load the donor cache for the picker (review R18 extraction).
-      ensureDonorsLoaded();
-    } else if (c === "LooseCash") {
-      dMethod = "Cash";
-      suggestRemaining();
-    } else if (c === "Anonymous") {
-      suggestRemaining();
+      error = "Couldn't read that. Use whole numbers only — try lines like '50p × 5' or '£1: 3', or 12 numbers in denomination order (1p, 2p, 5p, 10p, 20p, 50p, £1, £2, £5, £10, £20, £50).";
     }
   }
   function openDonation() {
     addDonationOpen = true;
-    dClass = "Named";
     ensureDonorsLoaded();
     error = "";
     ok = "";
-    setTimeout(() => {
-      if (dClass === "Named") document.getElementById("donor-search")?.focus();
-      else document.getElementById("donation-amount")?.focus();
-    }, 30);
   }
 
   function donorName(id: string | null): string {
     if (!id) return "";
     const d = donors.find((x) => x.id === id);
     return d ? `${d.first_name} ${d.last_name}` : "";
-  }
-  function donorSummary(id: string | null): string {
-    if (!id) return "";
-    const d = donors.find((x) => x.id === id);
-    if (!d) return "";
-    const bits = [d.preferred_name, d.address?.line1, d.address?.postcode].filter(Boolean);
-    return bits.length ? ` — ${bits.join(", ")}` : "";
   }
   function statusLabel(s: OfferingStatus): string {
     switch (s) {
@@ -685,6 +636,11 @@
         </button>
       {/if}
     </div>
+    {#if loading && meetings.length === 0}
+      <p class="muted">Loading…</p>
+    {:else if !loading && meetings.length === 0 && !meetingId}
+      <p class="muted">No meetings yet — create one to begin.</p>
+    {/if}
     {#if startOpen}
       <div class="card start-card">
         <h3>Start a new collection</h3>
@@ -698,7 +654,7 @@
         <div class="row">
           <div class="field">
             <label for="start-attendance">Attendance</label>
-            <input id="start-attendance" type="number" bind:value={startAttendance} min="0" placeholder="e.g. 120" />
+            <input id="start-attendance" type="number" value={startAttendance} oninput={(e) => (startAttendance = e.currentTarget.value === "" ? NaN : Number(e.currentTarget.value))} min="0" placeholder="e.g. 120" />
           </div>
           <button onclick={startCollection}>Start collection</button>
           <button class="secondary" onclick={() => (startOpen = false)}>Cancel</button>
@@ -707,9 +663,9 @@
     {/if}
     {#if meetingOpen}
       <div class="row">
-        <div class="field" style="flex:1">
+        <div class="field grow">
           <label for="meeting-name">Meeting name</label>
-          <input id="meeting-name" bind:value={mName} placeholder="e.g. Sunday service" style="width:100%" />
+          <input id="meeting-name" bind:value={mName} placeholder="e.g. Sunday service" class="input-block" />
         </div>
         <div class="field">
           <label for="meeting-day">Day of week</label>
@@ -733,7 +689,7 @@
 
   {#if offering}
     <div class="card">
-      <div class="row" style="justify-content: space-between;">
+      <div class="row space-between">
         <h2>Offering {offering.offering_number}
           {#if offering.description}<span class="muted"> — {offering.description}</span>{/if}
         </h2>
@@ -780,7 +736,8 @@
           <input
             id="offering-attendance"
             type="number"
-            bind:value={attendance}
+            value={attendance}
+            oninput={(e) => (attendance = e.currentTarget.value === "" ? NaN : Number(e.currentTarget.value))}
             min="0"
             onchange={() => saveAttendance()}
           />
@@ -790,7 +747,7 @@
         </div>
       </div>
 
-      <div class="row" style="justify-content: space-between;">
+      <div class="row space-between">
         <h3>Cash denominations <span class="hint" title="Count what's in the cash box. Cash donations you record should add up to this total.">ⓘ</span></h3>
         {#if canRecord && offering.status === 'Draft'}
           <span class="row">
@@ -802,7 +759,7 @@
       {#if denomPasteOpen}
         <div class="card">
           <label for="denom-paste" class="muted">Paste a count sheet</label>
-          <input id="denom-paste" type="text" bind:value={denomPaste} placeholder="e.g. 50p × 5, £1 × 3, £5: 2 — or 12 numbers in order" style="width:100%" />
+          <input id="denom-paste" type="text" bind:value={denomPaste} placeholder="e.g. 50p × 5, £1 × 3, £5: 2 — or 12 numbers in order" class="input-block" />
           <div class="row" style="margin-top:0.4rem;">
             <button onclick={applyDenomPaste}>Apply</button>
             <button class="secondary" onclick={() => { denomPasteOpen = false; denomPaste = ""; }}>Cancel</button>
@@ -822,7 +779,7 @@
     </div>
 
     <div class="card">
-      <div class="row" style="justify-content: space-between;">
+      <div class="row space-between">
         <h3>Donations</h3>
         {#if canRecord && offering.status === 'Draft' && !addDonationOpen}
           <button onclick={openDonation}>Add donation</button>
@@ -830,86 +787,28 @@
       </div>
 
       {#if addDonationOpen}
-        <div class="card">
-          <fieldset class="field">
-            <legend>What was given?</legend>
-            <div class="row">
-              <button class={dClass === 'Named' ? '' : 'secondary'} onclick={() => setClass("Named")}>Named donor</button>
-              <button class={dClass === 'Anonymous' ? '' : 'secondary'} onclick={() => setClass("Anonymous")}>Anonymous</button>
-              <button class={dClass === 'LooseCash' ? '' : 'secondary'} onclick={() => setClass("LooseCash")}>Loose cash</button>
-            </div>
-            <div class="hint-block">Named donors can be Gift Aid eligible. Anonymous donations and loose cash are never Gift Aid eligible but may count towards the GASDS.</div>
-          </fieldset>
-          {#if dClass === "Named"}
-            <DonorPicker
-              {donors}
-              {offering}
-              bind:value={dDonor}
-              onError={(m) => (error = m)}
-              onOk={(m) => (ok = m)}
-            />
-          {/if}
-          <div class="row">
-            {#if dMethod === "Cash"}
-            <div class="field" style="flex:1 1 100%;">
-              <span style="display:block; font-size:0.85rem; color:#555; margin-bottom:0.25rem;">
-                Denominations <span class="hint" title="Record how the cash was given, note by note. The total is added up for you, and each denomination is reconciled against the loose cash count.">ⓘ</span>
-                {#if dClass === "LooseCash"}<span class="muted"> · cash only</span>{/if}
-              </span>
-              <DenominationGrid bind:counts={dCounts} onKeydown={(e) => { if (e.key === "Enter") submitDonation(); }} />
-              <div class="row" style="margin-top:0.3rem;">
-                <span class="total">Total: {fmtPence(DENOMINATIONS.reduce((s, d) => s + d.pence * (dCounts[d.name] ?? 0), 0))}</span>
-                {#if (dClass === "LooseCash" || dClass === "Anonymous") && remainingCash > 0}
-                  <button class="secondary" onclick={suggestRemaining} style="font-size:0.8rem; padding:0.15rem 0.5rem;">
-                    Use remaining unallocated cash
-                  </button>
-                {/if}
-              </div>
-            </div>
-          {:else}
-            <div class="field">
-              <label for="donation-amount">Amount (£)</label>
-              <input
-                id="donation-amount"
-                type="text"
-                bind:value={dAmount}
-                onkeydown={(e) => { if (e.key === "Enter") submitDonation(); }}
-              />
-            </div>
-          {/if}
-            <div class="field">
-              <label for="donation-category">Category</label>
-              <select id="donation-category" bind:value={dType}>
-                <option value="Offering">Offering</option>
-                <option value="Tithe">Tithe</option>
-                <option value="General">General</option>
-                <option value="Special">Special</option>
-                <option value="Other">Other</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="donation-method">Method</label>
-              <select id="donation-method" bind:value={dMethod}>
-                <option value="Cash">Cash</option>
-                <option value="Cheque">Cheque</option>
-                <option value="BankTransfer">Bank transfer</option>
-                <option value="Contactless">Contactless</option>
-                <option value="ChipAndPin">Chip & PIN</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="donation-reference">Reference</label>
-              <input id="donation-reference" type="text" bind:value={dRef} onkeydown={(e) => { if (e.key === "Enter") submitDonation(); }} />
-            </div>
-            <button onclick={submitDonation}>Add donation</button>
-            <button class="secondary" onclick={() => (addDonationOpen = false)}>Close</button>
-          </div>
-        </div>
+        {#key offering?.id}
+          <DonationForm
+            {donors}
+            {offering}
+            cashCounts={counts}
+            {donationBreakdown}
+            {remainingCash}
+            onSubmit={handleDonationSubmit}
+            onError={(m) => (error = m)}
+            onOk={(m) => (ok = m)}
+            onDonorsChanged={(ds) => (donors = ds)}
+            onEnsureDonors={ensureDonorsLoaded}
+            onClose={() => (addDonationOpen = false)}
+          />
+        {/key}
       {/if}
 
+      <div class="table-scroll">
       <table>
+        <caption class="sr-only">Donations in this offering</caption>
         <thead>
-          <tr><th>Donor</th><th>Category</th><th>Method</th><th>Amount</th><th>Reference</th><th>GASDS</th><th></th></tr>
+          <tr><th scope="col">Donor</th><th scope="col">Category</th><th scope="col">Method</th><th scope="col">Amount</th><th scope="col">Reference</th><th scope="col">GASDS</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
         </thead>
         <tbody>
           {#each offering.donations ?? [] as d (d.id)}
@@ -957,6 +856,7 @@
           {/each}
         </tbody>
       </table>
+      </div>
       <div class="row">
         <span class="total">Cash: {fmtPence(cashDonationTotal)}</span>
         <span class="total">Cheques: {fmtPence(chequeDonationTotal)}</span>
@@ -972,9 +872,9 @@
             before it's applied.
           </p>
           <div class="row">
-            <div class="field" style="flex:1">
+            <div class="field grow">
               <label for="remove-reason">Reason</label>
-              <input id="remove-reason" type="text" bind:value={removeReason} placeholder="Why was this recorded in error?" style="width:100%" />
+              <input id="remove-reason" type="text" bind:value={removeReason} placeholder="Why was this recorded in error?" class="input-block" />
             </div>
             <button class="danger" onclick={submitRemoveDonation}>Submit removal</button>
             <button class="secondary" onclick={() => { amendRemoveId = null; removeReason = ""; }}>Cancel</button>
@@ -987,7 +887,7 @@
       <h3>Review & signing <span class="hint" title="Both a Counter and a Checker must sign before an offering is locked. Locking makes it permanent and moves it to banking.">ⓘ</span></h3>
       {#if issues.length > 0}
         <ul class="plain">
-          {#each issues as issue (issue.code)}
+          {#each issues as issue, i (issue.code + "-" + i)}
             <li><span class="badge error-badge">{issue.code}</span> {issueText(issue)}</li>
           {/each}
         </ul>
@@ -1020,7 +920,7 @@
     </div>
 
     {#if !collectionMode && offering.status === 'Locked' && offeringId}
-      {#key offeringId}
+      {#key offering?.id}
         <AmendmentPanel
           {offeringId}
           {offering}

@@ -21,6 +21,31 @@ use crate::error::{unauthorized, AppResult};
 use crate::permissions::{can_record_offering, can_sign_offering};
 use crate::validation::ValidationService;
 
+/// Apply approved amendments to stored offering rows, returning current state.
+/// Shared by claim and report paths so they never operate on pre-amendment
+/// figures (plan Phase 4.6).
+/// # Errors
+///
+/// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+pub async fn apply_approved_amendments(
+    amendments: &dyn AmendmentRepository,
+    stored: Vec<Offering>,
+) -> AppResult<Vec<Offering>> {
+    let mut out = Vec::with_capacity(stored.len());
+    for offering in stored {
+        let approved = amendments
+            .approved_amendments_for_offering(offering.id)
+            .await?;
+        if approved.is_empty() {
+            out.push(offering);
+        } else {
+            let reconstruction = OfferingReconstruction::from_amendments(offering, approved)?;
+            out.push(reconstruction.current().clone());
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AddDonationInput {
     pub donor_id: Option<Uuid>,
@@ -75,6 +100,9 @@ impl<'a> OfferingService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn create_offering(
         &self,
         actor: &User,
@@ -113,11 +141,13 @@ impl<'a> OfferingService<'a> {
         Ok(offering)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn get_offering(&self, actor: &User, id: Uuid) -> AppResult<Option<Offering>> {
         ViewPermission::ReadOfferings.check(actor)?;
-        let offering = match self.offerings.get(id).await? {
-            Some(o) => o,
-            None => return Ok(None),
+        let Some(offering) = self.offerings.get(id).await? else {
+            return Ok(None);
         };
         let approved = self.amendments.approved_amendments_for_offering(id).await?;
         if approved.is_empty() {
@@ -128,11 +158,17 @@ impl<'a> OfferingService<'a> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn get_stored_offering(&self, actor: &User, id: Uuid) -> AppResult<Option<Offering>> {
         ViewPermission::ReadOfferings.check(actor)?;
         Ok(self.offerings.get(id).await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_offerings(&self, actor: &User, meeting_id: Uuid) -> AppResult<Vec<Offering>> {
         ViewPermission::ReadOfferings.check(actor)?;
         Ok(self
@@ -141,11 +177,71 @@ impl<'a> OfferingService<'a> {
             .await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list_all_offerings(&self, actor: &User) -> AppResult<Vec<Offering>> {
         ViewPermission::ReadOfferings.check(actor)?;
         Ok(self.offerings.list(None, None).await?)
     }
 
+    /// Stored offering rows with approved amendments applied (plan Phase 4.6).
+    /// Claim and report paths must see post-amendment state: an amendment that
+    /// changes donations after banking changes what is claimable.
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn list_current_offerings(&self, actor: &User) -> AppResult<Vec<Offering>> {
+        ViewPermission::ReadOfferings.check(actor)?;
+        let stored = self.offerings.list(None, None).await?;
+        apply_approved_amendments(self.amendments, stored).await
+    }
+
+    /// Offerings still in play (Draft/CounterSigned/CheckerSigned), newest-first.
+    /// Dashboard and Checking views use this instead of the full history so the
+    /// locked archive does not cross IPC on every mount (plan Phase 3).
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn list_active_offerings(
+        &self,
+        actor: &User,
+        limit: Option<u32>,
+    ) -> AppResult<Vec<Offering>> {
+        ViewPermission::ReadOfferings.check(actor)?;
+        Ok(self
+            .offerings
+            .list_by_statuses(
+                vec![
+                    OfferingStatus::Draft,
+                    OfferingStatus::CounterSigned,
+                    OfferingStatus::CheckerSigned,
+                ],
+                limit,
+            )
+            .await?)
+    }
+
+    /// Locked offerings, newest-first, capped. Used for "recently checked" lists
+    /// and (minus deposited ones) banking readiness (plan Phase 3).
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn list_locked_offerings(
+        &self,
+        actor: &User,
+        limit: Option<u32>,
+    ) -> AppResult<Vec<Offering>> {
+        ViewPermission::ReadOfferings.check(actor)?;
+        Ok(self
+            .offerings
+            .list_by_statuses(vec![OfferingStatus::Locked], limit)
+            .await?)
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn search_offerings(
         &self,
         actor: &User,
@@ -159,6 +255,9 @@ impl<'a> OfferingService<'a> {
             .await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn set_attendance(
         &self,
         actor: &User,
@@ -187,6 +286,9 @@ impl<'a> OfferingService<'a> {
         Ok(updated)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn set_cash_denominations(
         &self,
         actor: &User,
@@ -215,6 +317,9 @@ impl<'a> OfferingService<'a> {
         Ok(updated)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn add_donation(
         &self,
         actor: &User,
@@ -276,7 +381,8 @@ impl<'a> OfferingService<'a> {
                         "loose cash requires a denomination breakdown".into(),
                     )
                 })?;
-                Donation::loose_cash(offering_id, bd).map_err(|e| crate::error::AppError::Validation(e.to_string()))?
+                Donation::loose_cash(offering_id, bd)
+                    .map_err(|e| crate::error::AppError::Validation(e.to_string()))?
             }
         };
         let donation = donation.with_date(
@@ -300,6 +406,9 @@ impl<'a> OfferingService<'a> {
         Ok(updated)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn remove_donation(
         &self,
         actor: &User,
@@ -346,6 +455,33 @@ impl<'a> OfferingService<'a> {
         }
     }
 
+    /// Dual-control recheck (plan Phase 6.2, see
+    /// `SAME_OPERATOR_DUAL_GUEST_FORBIDDEN`): both halves as guests of the
+    /// same operator id is a single-operator double-guest lock — rejected
+    /// unless an Admin performs an explicit override. Different operator ids
+    /// (including two different operators signing as guests) pass.
+    fn reject_same_operator_dual_guest(
+        actor: &User,
+        counter: &offering_domain::signature::Signature,
+        checker: &offering_domain::signature::Signature,
+    ) -> AppResult<()> {
+        if offering_domain::signature::SAME_OPERATOR_DUAL_GUEST_FORBIDDEN
+            && counter.is_guest
+            && checker.is_guest
+            && !counter.user_id.is_nil()
+            && counter.user_id == checker.user_id
+            && !actor.is_admin()
+        {
+            return Err(crate::error::AppError::Conflict(
+                "counter and checker are guests of the same operator; a second person must countersign (Admin override only)".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn counter_sign(
         &self,
         actor: &User,
@@ -388,6 +524,9 @@ impl<'a> OfferingService<'a> {
         Ok(updated)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn checker_sign(
         &self,
         actor: &User,
@@ -414,7 +553,11 @@ impl<'a> OfferingService<'a> {
                     .join("; ")
             )));
         }
-        offering.checker_sign(Self::signature_for(actor, guest_name))?;
+        let checker_sig = Self::signature_for(actor, guest_name);
+        if let Some(counter_sig) = offering.counter_signature.as_ref() {
+            Self::reject_same_operator_dual_guest(actor, counter_sig, &checker_sig)?;
+        }
+        offering.checker_sign(checker_sig)?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
@@ -432,11 +575,31 @@ impl<'a> OfferingService<'a> {
 
     /// Withdraw the most recent signature, returning a signed-but-not-locked
     /// offering to the previous state so its data can be corrected.
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn withdraw_signature(&self, actor: &User, offering_id: Uuid) -> AppResult<Offering> {
         if !can_sign_offering(actor) {
             return Err(unauthorized("sign offering"));
         }
         let mut offering = self.require_stored(offering_id).await?;
+        // Withdraw-by-signer rule (plan Phase 6.2): only the original signer
+        // may withdraw their signature, or an Admin via second-person
+        // override. A stranger with signing rights withdrawing someone else's
+        // signature would break the audit trail. Guest signatures carry the
+        // operator id (`guest_for`), so the id comparison covers them too.
+        let current = match offering.status {
+            OfferingStatus::CheckerSigned => offering.checker_signature.as_ref(),
+            OfferingStatus::CounterSigned => offering.counter_signature.as_ref(),
+            _ => None,
+        };
+        if let Some(sig) = current {
+            if actor.id != sig.user_id && !actor.is_admin() {
+                return Err(crate::error::AppError::Conflict(
+                    "only the original signer or an Admin may withdraw this signature".into(),
+                ));
+            }
+        }
         // Snapshot for optimistic-concurrency check at save time (review R4).
         let expected_updated_at = offering.updated_at;
         let old = crate::audit::state_json(&offering);
@@ -459,6 +622,9 @@ impl<'a> OfferingService<'a> {
         Ok(updated)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn lock_offering(&self, actor: &User, offering_id: Uuid) -> AppResult<Offering> {
         if !can_sign_offering(actor) {
             return Err(unauthorized("sign offering"));
@@ -479,6 +645,14 @@ impl<'a> OfferingService<'a> {
                     .join("; ")
             )));
         }
+        // Lock-time recheck: catches a same-operator double-guest pair that
+        // predates (or bypassed) the checker-sign guard.
+        if let (Some(counter_sig), Some(checker_sig)) = (
+            offering.counter_signature.as_ref(),
+            offering.checker_signature.as_ref(),
+        ) {
+            Self::reject_same_operator_dual_guest(actor, counter_sig, checker_sig)?;
+        }
         offering.lock()?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
@@ -495,15 +669,17 @@ impl<'a> OfferingService<'a> {
         Ok(updated)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn reconstruction(
         &self,
         actor: &User,
         offering_id: Uuid,
     ) -> AppResult<Option<OfferingReconstruction>> {
         ViewPermission::ReadOfferings.check(actor)?;
-        let offering = match self.offerings.get(offering_id).await? {
-            Some(o) => o,
-            None => return Ok(None),
+        let Some(offering) = self.offerings.get(offering_id).await? else {
+            return Ok(None);
         };
         let approved = self
             .amendments
@@ -514,6 +690,9 @@ impl<'a> OfferingService<'a> {
         )?))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn gasds_for_offering(
         &self,
         actor: &User,
@@ -533,7 +712,7 @@ impl<'a> OfferingService<'a> {
             .filter(|c| {
                 c.status != offering_domain::entities::gasds_claim::GasdsClaimStatus::Rejected
             })
-            .map(|c| c.gift_aid_claimed.clone())
+            .map(|c| c.gift_aid_claimed)
             .try_fold(Money::zero(), |acc, ga| acc.add(&ga))?;
         let mut config_with_claimed = config.clone();
         config_with_claimed.gift_aid_claimed = claimed_ga;
@@ -545,11 +724,17 @@ impl<'a> OfferingService<'a> {
         ))
     }
 
-    pub async fn offering_report(&self, actor: &User, offering_id: Uuid) -> AppResult<Option<OfferingReport>> {
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn offering_report(
+        &self,
+        actor: &User,
+        offering_id: Uuid,
+    ) -> AppResult<Option<OfferingReport>> {
         ViewPermission::ReadOfferings.check(actor)?;
-        let stored = match self.offerings.get(offering_id).await? {
-            Some(o) => o,
-            None => return Ok(None),
+        let Some(stored) = self.offerings.get(offering_id).await? else {
+            return Ok(None);
         };
         let approved = self
             .amendments
@@ -563,7 +748,7 @@ impl<'a> OfferingService<'a> {
                 .clone()
         };
         let meeting = self.meetings.get(current.meeting_id).await?;
-        let meeting_name = meeting.map(|m| m.name).unwrap_or_else(|| "Unknown".into());
+        let meeting_name = meeting.map_or_else(|| "Unknown".into(), |m| m.name);
         let meeting_date = current.created_at.format("%Y-%m-%d").to_string();
         Ok(Some(OfferingReport {
             offering: current,

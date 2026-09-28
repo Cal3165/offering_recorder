@@ -1,11 +1,11 @@
 use super::{from_json, map_db_err, to_json};
+use crate::SharedPool;
 use async_trait::async_trait;
 use offering_domain::entities::meeting::{Meeting, MeetingEventType};
 use offering_persistence::{MeetingRepository, RepoError, RepoResult};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 use uuid::Uuid;
-use crate::SharedPool;
 
 #[derive(Debug, Clone)]
 pub struct SqliteMeetingRepository {
@@ -13,6 +13,7 @@ pub struct SqliteMeetingRepository {
 }
 
 impl SqliteMeetingRepository {
+    #[must_use]
     pub fn new(pool: SharedPool) -> Self {
         SqliteMeetingRepository { pool }
     }

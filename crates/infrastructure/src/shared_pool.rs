@@ -12,12 +12,19 @@ pub struct SharedPool {
 }
 
 impl SharedPool {
+    #[must_use]
     pub fn new(pool: SqlitePool) -> Self {
         SharedPool {
             inner: Arc::new(RwLock::new(pool)),
         }
     }
 
+    /// # Panics
+    ///
+    /// Panics if the pool lock is poisoned (a prior holder panicked while
+    /// holding it). Poisoning is fatal by design under the `panic = "abort"`
+    /// release profile; the process cannot safely continue with a suspect pool.
+    #[must_use]
     pub fn get(&self) -> SqlitePool {
         self.inner.read().expect("pool lock poisoned").clone()
     }
@@ -30,6 +37,10 @@ impl SharedPool {
     /// swap drains in-flight connections so queries either complete on the
     /// old file before it is replaced or run against the restored one
     /// (review R10).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pool lock is poisoned; see [`SharedPool::get`].
     pub async fn replace_draining(&self, pool: SqlitePool) {
         let old = {
             let mut guard = self.inner.write().expect("pool lock poisoned");
@@ -38,10 +49,10 @@ impl SharedPool {
         old.close().await;
     }
 
+    /// # Panics
+    ///
+    /// Panics if the pool lock is poisoned; see [`SharedPool::get`].
     pub fn replace(&self, pool: SqlitePool) {
-        *self
-            .inner
-            .write()
-            .expect("pool lock poisoned") = pool;
+        *self.inner.write().expect("pool lock poisoned") = pool;
     }
 }

@@ -12,7 +12,7 @@ pub use donors::{DeclarationAmendmentRepository, DonorRepository, GiftAidReposit
 pub use meetings::MeetingRepository;
 pub use offerings::{AmendmentRepository, DonationRepository, OfferingRepository};
 pub use reports::{
-    BookkeepingEntry, DonorReportEntry, GasdsReportEntry, GdprDonation, GdprReport, GiftAidReportEntry,
-    IifDonationRow, ReportRepository,
+    BookkeepingEntry, DonorReportEntry, GasdsReportEntry, GdprDonation, GdprReport,
+    GiftAidReportEntry, IifDonationRow, ReportRepository,
 };
 pub use users::{AuditRepository, UserRepository};

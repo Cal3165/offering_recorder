@@ -20,6 +20,7 @@ pub enum RetentionStatus {
 }
 
 impl RetentionStatus {
+    #[must_use]
     pub fn classify(today: NaiveDate, deadline: NaiveDate) -> Self {
         let days_remaining = (deadline - today).num_days();
         if days_remaining < 0 {
@@ -35,16 +36,19 @@ impl RetentionStatus {
 /// The date on which a record dated `record_date` reaches the end of its
 /// retention window. Retention runs to the end of the tax year containing the
 /// record, plus `RETENTION_YEARS`.
+#[must_use]
 pub fn retention_deadline(record_date: NaiveDate) -> NaiveDate {
     TaxYear::from_date(record_date).retention_deadline()
 }
 
 /// Classify a record against today's date.
+#[must_use]
 pub fn status(record_date: NaiveDate, today: NaiveDate) -> RetentionStatus {
     RetentionStatus::classify(today, retention_deadline(record_date))
 }
 
 /// Days from `today` until the record's retention deadline (negative when expired).
+#[must_use]
 pub fn days_until_deadline(record_date: NaiveDate, today: NaiveDate) -> i64 {
     (retention_deadline(record_date) - today).num_days()
 }
@@ -65,19 +69,23 @@ mod tests {
     #[test]
     fn deadline_runs_to_end_of_tax_year_plus_seven() {
         // A record dated June 2020 falls in tax year 2020/21 (ends 5 Apr 2021).
-        assert_eq!(
-            retention_deadline(date(2020, 6, 15)),
-            date(2028, 4, 5)
-        );
+        assert_eq!(retention_deadline(date(2020, 6, 15)), date(2028, 4, 5));
     }
 
     #[test]
     fn record_from_previous_tax_year_uses_that_window() {
         // A record dated 31 Mar 2024 falls in tax year 2023/24 (ends 5 Apr 2024).
-        assert_eq!(
-            retention_deadline(date(2024, 3, 31)),
-            date(2031, 4, 5)
-        );
+        assert_eq!(retention_deadline(date(2024, 3, 31)), date(2031, 4, 5));
+    }
+
+    #[test]
+    fn backdated_donation_across_april5_uses_received_date() {
+        // A donation received 4 Apr 2024 belongs to tax year 2023/24 even if
+        // recorded later; one received 6 Apr 2024 belongs to 2024/25.
+        // Retention record dates must therefore use the donation (received)
+        // date, never the recording timestamp.
+        assert_eq!(retention_deadline(date(2024, 4, 4)), date(2031, 4, 5));
+        assert_eq!(retention_deadline(date(2024, 4, 6)), date(2032, 4, 5));
     }
 
     #[test]
@@ -107,7 +115,10 @@ mod tests {
     #[test]
     fn boundary_deadline_day_still_expiring_not_expired() {
         let record = date(2018, 6, 1);
-        assert_eq!(status(record, date(2026, 4, 5)), RetentionStatus::ExpiringSoon);
+        assert_eq!(
+            status(record, date(2026, 4, 5)),
+            RetentionStatus::ExpiringSoon
+        );
     }
 
     #[test]
