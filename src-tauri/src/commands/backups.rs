@@ -100,23 +100,12 @@ pub async fn restore_backup(
     check_byte_len(&passphrase, MAX_PASSPHRASE_BYTES, "passphrase").map_err(AppErrorDto::from)?;
     // Authenticate directly. We cannot use `with_actor!` here because it rejects
     // every request once the `restoring` flag is raised, and this command is the
-    // one that raises it.
-    let actor = {
-        let id = state
-            .session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|u| u.id)
-            .ok_or_else(|| "not logged in".to_string())?;
-        state
-            .services
-            .users
-            .get(id)
-            .await
-            .map_err(AppErrorDto::from)?
-            .ok_or_else(|| "session user no longer exists".to_string())?
-    };
+    // one that raises it. The shared helper still re-fetches the session user
+    // and enforces `is_active`, reporting auth failures as `unauthorized`
+    // (plan Phase 1.2 — never plain strings, which miscarry as `validation`).
+    let actor = crate::commands::actor_unchecked_restore_flag(&state)
+        .await
+        .map_err(AppErrorDto::from)?;
 
     let app_data = app
         .path()

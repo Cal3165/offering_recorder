@@ -455,25 +455,30 @@ impl<'a> OfferingService<'a> {
         }
     }
 
-    /// Dual-control recheck (plan Phase 6.2, see
-    /// `SAME_OPERATOR_DUAL_GUEST_FORBIDDEN`): both halves as guests of the
-    /// same operator id is a single-operator double-guest lock — rejected
-    /// unless an Admin performs an explicit override. Different operator ids
-    /// (including two different operators signing as guests) pass.
-    fn reject_same_operator_dual_guest(
+    /// Segregation-of-duties guard (plan Phases 1.3 + 6.2): the checker half
+    /// must come from a different operator id than the counter half. This
+    /// subsumes the dual-guest rule — both halves as guests of the same
+    /// operator id is a single-operator double-guest lock — and extends it to
+    /// mixed and non-guest pairs, where the domain also rejects the same
+    /// person (this application check fires first, as `Conflict`).
+    ///
+    /// Different operator ids (including two different operators signing as
+    /// guests) pass. A nil operator id (legacy guest rows predating
+    /// operator-attributed signatures) cannot be attributed, so it passes;
+    /// current signatures always carry an id via `guest_for`. An Admin may
+    /// explicitly override; the override is audited with the lock.
+    fn reject_same_user_double_sign(
         actor: &User,
         counter: &offering_domain::signature::Signature,
         checker: &offering_domain::signature::Signature,
     ) -> AppResult<()> {
         if offering_domain::signature::SAME_OPERATOR_DUAL_GUEST_FORBIDDEN
-            && counter.is_guest
-            && checker.is_guest
             && !counter.user_id.is_nil()
             && counter.user_id == checker.user_id
             && !actor.is_admin()
         {
             return Err(crate::error::AppError::Conflict(
-                "counter and checker are guests of the same operator; a second person must countersign (Admin override only)".into(),
+                "counter and checker must be different people; a second person must countersign (Admin override only)".into(),
             ));
         }
         Ok(())
@@ -555,7 +560,7 @@ impl<'a> OfferingService<'a> {
         }
         let checker_sig = Self::signature_for(actor, guest_name);
         if let Some(counter_sig) = offering.counter_signature.as_ref() {
-            Self::reject_same_operator_dual_guest(actor, counter_sig, &checker_sig)?;
+            Self::reject_same_user_double_sign(actor, counter_sig, &checker_sig)?;
         }
         offering.checker_sign(checker_sig)?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
@@ -645,13 +650,14 @@ impl<'a> OfferingService<'a> {
                     .join("; ")
             )));
         }
-        // Lock-time recheck: catches a same-operator double-guest pair that
-        // predates (or bypassed) the checker-sign guard.
+        // Lock-time recheck: catches a same-operator pair that predates (or
+        // bypassed) the checker-sign guard, including same-user non-guest
+        // double-signs (plan Phase 1.3).
         if let (Some(counter_sig), Some(checker_sig)) = (
             offering.counter_signature.as_ref(),
             offering.checker_signature.as_ref(),
         ) {
-            Self::reject_same_operator_dual_guest(actor, counter_sig, checker_sig)?;
+            Self::reject_same_user_double_sign(actor, counter_sig, checker_sig)?;
         }
         offering.lock()?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;

@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use crate::audit::AuditLog;
 use crate::error::{unauthorized, AppResult};
-use crate::permissions::can_run_claim_reports;
+use crate::permissions::{
+    can_run_bookkeeping_report, can_run_claim_reports, can_run_deposit_report,
+};
 
 #[derive(Clone)]
 pub struct ReportService<'a> {
@@ -44,13 +46,35 @@ impl<'a> ReportService<'a> {
         }
     }
 
-    fn require_reports_permission(actor: &User) -> AppResult<()> {
+    fn require_claim_reports_permission(actor: &User) -> AppResult<()> {
         if can_run_claim_reports(actor) {
             Ok(())
         } else {
             Err(unauthorized("run claim reports"))
         }
     }
+
+    /// Operational finance reports (no Gift Aid declaration data): Banker,
+    /// Bookkeeper and Trustee are included alongside Admin (plan Phase 1.6).
+    fn require_bookkeeping_permission(actor: &User) -> AppResult<()> {
+        if can_run_bookkeeping_report(actor) {
+            Ok(())
+        } else {
+            Err(unauthorized("run bookkeeping report"))
+        }
+    }
+
+    fn require_deposit_permission(actor: &User) -> AppResult<()> {
+        if can_run_deposit_report(actor) {
+            Ok(())
+        } else {
+            Err(unauthorized("run deposit report"))
+        }
+    }
+
+    // Gift Aid-flavoured reports stay behind the narrow claim-reports gate
+    // (plan Phase 1.6): donor, IIF, GDPR, Gift Aid and GASDS reports all
+    // expose donor/declaration data.
 
     /// # Errors
     ///
@@ -62,7 +86,7 @@ impl<'a> ReportService<'a> {
         end: chrono::NaiveDate,
         meeting_id: Option<Uuid>,
     ) -> AppResult<Vec<BookkeepingEntry>> {
-        Self::require_reports_permission(actor)?;
+        Self::require_bookkeeping_permission(actor)?;
         let entries = self
             .reports
             .bookkeeping_report(start, end, meeting_id)
@@ -90,7 +114,7 @@ impl<'a> ReportService<'a> {
         start: chrono::NaiveDate,
         end: chrono::NaiveDate,
     ) -> AppResult<Vec<DonorReportEntry>> {
-        Self::require_reports_permission(actor)?;
+        Self::require_claim_reports_permission(actor)?;
         let entries = self.reports.donor_report(start, end).await?;
         self.audit
             .record(
@@ -115,7 +139,7 @@ impl<'a> ReportService<'a> {
         start: chrono::NaiveDate,
         end: chrono::NaiveDate,
     ) -> AppResult<String> {
-        Self::require_reports_permission(actor)?;
+        Self::require_claim_reports_permission(actor)?;
         let rows = self.reports.iif_donation_export(start, end).await?;
         let iif = build_iif(&rows);
         self.audit
@@ -136,7 +160,7 @@ impl<'a> ReportService<'a> {
     ///
     /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn gdpr_report(&self, actor: &User, donor_id: Uuid) -> AppResult<GdprReport> {
-        Self::require_reports_permission(actor)?;
+        Self::require_claim_reports_permission(actor)?;
         let report = self.reports.gdpr_report(donor_id).await?;
         self.audit
             .record(
@@ -160,7 +184,7 @@ impl<'a> ReportService<'a> {
         actor: &User,
         tax_year: offering_domain::tax_year::TaxYear,
     ) -> AppResult<Vec<GiftAidReportEntry>> {
-        Self::require_reports_permission(actor)?;
+        Self::require_claim_reports_permission(actor)?;
         let label = format!("gift aid report generated for {tax_year}");
         let entries = self.reports.gift_aid_report(tax_year).await?;
         self.audit
@@ -186,7 +210,7 @@ impl<'a> ReportService<'a> {
         start: chrono::NaiveDate,
         end: chrono::NaiveDate,
     ) -> AppResult<Vec<GasdsReportEntry>> {
-        Self::require_reports_permission(actor)?;
+        Self::require_claim_reports_permission(actor)?;
         let stored = self
             .offerings
             .list_by_date_range(start, end, None, None)
@@ -274,7 +298,7 @@ impl<'a> ReportService<'a> {
         start: chrono::NaiveDate,
         end: chrono::NaiveDate,
     ) -> AppResult<Vec<offering_domain::entities::BankDeposit>> {
-        Self::require_reports_permission(actor)?;
+        Self::require_deposit_permission(actor)?;
         let mut deposits = self.deposits.list().await?;
         deposits.retain(|d| {
             let date = d.deposit_date.date_naive();

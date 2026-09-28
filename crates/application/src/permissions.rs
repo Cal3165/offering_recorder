@@ -11,30 +11,41 @@ use offering_domain::entities::user::User;
 // - Bookkeeper is report-only by design: the treasurer role that needs
 //   banking writes is Banker. If a future treasurer needs both, grant both
 //   roles rather than widening Bookkeeper.
+//
+// Every gate below also requires `user.is_active` (plan Phase 1.1): a
+// deactivated user keeps their role rows but loses every permission, so a
+// stale session snapshot cannot authorize mutations. The Tauri layer
+// re-fetches the user per call; service tests must use a re-fetched copy.
 
 #[must_use]
 pub fn can_record_offering(user: &User) -> bool {
-    user.roles.has(&Role::Admin) || user.roles.has(&Role::Counter)
+    user.is_active && (user.roles.has(&Role::Admin) || user.roles.has(&Role::Counter))
 }
 
 #[must_use]
 pub fn can_sign_offering(user: &User) -> bool {
-    user.roles.has(&Role::Admin) || user.roles.has(&Role::Counter) || user.roles.has(&Role::Checker)
+    user.is_active
+        && (user.roles.has(&Role::Admin)
+            || user.roles.has(&Role::Counter)
+            || user.roles.has(&Role::Checker))
 }
 
 #[must_use]
 pub fn can_manage_donors(user: &User) -> bool {
-    user.roles.has(&Role::Admin) || user.roles.has(&Role::Counter) || user.roles.has(&Role::Trustee)
+    user.is_active
+        && (user.roles.has(&Role::Admin)
+            || user.roles.has(&Role::Counter)
+            || user.roles.has(&Role::Trustee))
 }
 
 #[must_use]
 pub fn can_manage_migration(user: &User) -> bool {
-    user.roles.has(&Role::Admin)
+    user.is_active && user.roles.has(&Role::Admin)
 }
 
 #[must_use]
 pub fn can_manage_gift_aid(user: &User) -> bool {
-    user.roles.has(&Role::Admin) || user.roles.has(&Role::GiftAid)
+    user.is_active && (user.roles.has(&Role::Admin) || user.roles.has(&Role::GiftAid))
 }
 
 /// Read-only GASDS claim access: Trustees may review readiness and claim
@@ -42,40 +53,66 @@ pub fn can_manage_gift_aid(user: &User) -> bool {
 /// behind [`can_manage_gift_aid`].
 #[must_use]
 pub fn can_view_claims(user: &User) -> bool {
-    user.roles.has(&Role::Admin) || user.roles.has(&Role::GiftAid) || user.roles.has(&Role::Trustee)
+    user.is_active
+        && (user.roles.has(&Role::Admin)
+            || user.roles.has(&Role::GiftAid)
+            || user.roles.has(&Role::Trustee))
 }
 
 #[must_use]
 pub fn can_manage_banking(user: &User) -> bool {
-    user.roles.has(&Role::Admin) || user.roles.has(&Role::Banker)
+    user.is_active && (user.roles.has(&Role::Admin) || user.roles.has(&Role::Banker))
 }
 
 #[must_use]
 pub fn can_run_claim_reports(user: &User) -> bool {
-    user.roles.has(&Role::Admin)
-        || user.roles.has(&Role::GiftAid)
-        || user.roles.has(&Role::Bookkeeper)
-        || user.roles.has(&Role::Trustee)
+    user.is_active
+        && (user.roles.has(&Role::Admin)
+            || user.roles.has(&Role::GiftAid)
+            || user.roles.has(&Role::Bookkeeper)
+            || user.roles.has(&Role::Trustee))
+}
+
+/// Bookkeeping and deposit reports carry no Gift Aid donor-declaration data,
+/// so the operational finance roles need them too (plan Phase 1.6): Banker
+/// prepares deposits, Bookkeeper posts the ledgers, Trustee examines. Gift
+/// Aid stays narrow behind [`can_run_claim_reports`].
+#[must_use]
+pub fn can_run_bookkeeping_report(user: &User) -> bool {
+    user.is_active
+        && (user.roles.has(&Role::Admin)
+            || user.roles.has(&Role::Bookkeeper)
+            || user.roles.has(&Role::Banker)
+            || user.roles.has(&Role::Trustee))
+}
+
+#[must_use]
+pub fn can_run_deposit_report(user: &User) -> bool {
+    user.is_active
+        && (user.roles.has(&Role::Admin)
+            || user.roles.has(&Role::Bookkeeper)
+            || user.roles.has(&Role::Banker)
+            || user.roles.has(&Role::Trustee))
 }
 
 #[must_use]
 pub fn can_manage_users(user: &User) -> bool {
-    user.roles.has(&Role::Admin)
+    user.is_active && user.roles.has(&Role::Admin)
 }
 
 #[must_use]
 pub fn can_backup(user: &User) -> bool {
-    user.roles.has(&Role::Admin) || user.roles.has(&Role::Trustee)
+    user.is_active && (user.roles.has(&Role::Admin) || user.roles.has(&Role::Trustee))
 }
 
 #[must_use]
 pub fn can_restore(user: &User) -> bool {
-    user.roles.has(&Role::Admin)
+    user.is_active && user.roles.has(&Role::Admin)
 }
 
 #[must_use]
 pub fn can_view_audit(user: &User) -> bool {
-    user.roles.has(&Role::Admin) || user.roles.has(&Role::Trustee)
+    user.is_active && (user.roles.has(&Role::Admin) || user.roles.has(&Role::Trustee))
 }
 
 #[must_use]
@@ -100,11 +137,79 @@ mod tests {
         assert!(can_manage_donors(&admin));
         assert!(can_manage_migration(&admin));
         assert!(can_manage_gift_aid(&admin));
+        assert!(can_view_claims(&admin));
         assert!(can_manage_banking(&admin));
         assert!(can_run_claim_reports(&admin));
+        assert!(can_run_bookkeeping_report(&admin));
+        assert!(can_run_deposit_report(&admin));
         assert!(can_manage_users(&admin));
         assert!(can_backup(&admin));
         assert!(can_restore(&admin));
+        assert!(can_view_audit(&admin));
+    }
+
+    fn all_gates(user: &User) -> Vec<(&'static str, bool)> {
+        vec![
+            ("record", can_record_offering(user)),
+            ("sign", can_sign_offering(user)),
+            ("donors", can_manage_donors(user)),
+            ("migration", can_manage_migration(user)),
+            ("gift_aid", can_manage_gift_aid(user)),
+            ("view_claims", can_view_claims(user)),
+            ("banking", can_manage_banking(user)),
+            ("claim_reports", can_run_claim_reports(user)),
+            ("bookkeeping", can_run_bookkeeping_report(user)),
+            ("deposit", can_run_deposit_report(user)),
+            ("users", can_manage_users(user)),
+            ("backup", can_backup(user)),
+            ("restore", can_restore(user)),
+            ("audit", can_view_audit(user)),
+        ]
+    }
+
+    #[test]
+    fn deactivated_user_loses_every_permission() {
+        // Regression (plan Phase 1.1): deactivation must deny every gate, so
+        // a stale session snapshot cannot authorize a mutation.
+        let mut admin = user_with(RoleSet::admin());
+        admin.deactivate();
+        for (name, granted) in all_gates(&admin) {
+            assert!(!granted, "deactivated admin must not pass {name}");
+        }
+        let mut counter = user_with(RoleSet::new(vec![Role::Counter]));
+        counter.deactivate();
+        for (name, granted) in all_gates(&counter) {
+            assert!(!granted, "deactivated counter must not pass {name}");
+        }
+    }
+
+    #[test]
+    fn bookkeeping_and_deposit_reports_cover_finance_roles() {
+        // Plan Phase 1.6: Banker/Bookkeeper/Trustee see operational reports;
+        // Counter and GiftAid stay out; Gift Aid reports stay narrow.
+        let banker = user_with(RoleSet::new(vec![Role::Banker]));
+        assert!(can_run_bookkeeping_report(&banker));
+        assert!(can_run_deposit_report(&banker));
+        assert!(!can_run_claim_reports(&banker));
+
+        let bookkeeper = user_with(RoleSet::new(vec![Role::Bookkeeper]));
+        assert!(can_run_bookkeeping_report(&bookkeeper));
+        assert!(can_run_deposit_report(&bookkeeper));
+        assert!(can_run_claim_reports(&bookkeeper));
+
+        let trustee = user_with(RoleSet::new(vec![Role::Trustee]));
+        assert!(can_run_bookkeeping_report(&trustee));
+        assert!(can_run_deposit_report(&trustee));
+
+        let counter = user_with(RoleSet::new(vec![Role::Counter]));
+        assert!(!can_run_bookkeeping_report(&counter));
+        assert!(!can_run_deposit_report(&counter));
+        assert!(!can_run_claim_reports(&counter));
+
+        let gift_aid = user_with(RoleSet::new(vec![Role::GiftAid]));
+        assert!(!can_run_bookkeeping_report(&gift_aid));
+        assert!(!can_run_deposit_report(&gift_aid));
+        assert!(can_run_claim_reports(&gift_aid));
     }
 
     #[test]

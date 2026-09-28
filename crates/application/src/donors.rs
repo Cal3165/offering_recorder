@@ -74,7 +74,18 @@ impl<'a> DonorService<'a> {
     ///
     /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     #[allow(clippy::too_many_lines)]
-    pub async fn search_for_duplicates(&self, input: &CreateDonorInput) -> AppResult<Vec<Donor>> {
+    pub async fn search_for_duplicates(
+        &self,
+        actor: &User,
+        input: &CreateDonorInput,
+    ) -> AppResult<Vec<Donor>> {
+        // Plan Phase 1.5 (C9): donor search fans out across name/postcode/email
+        // indexes, so it needs the same donor-management gate as every other
+        // donor read — an unprivileged caller must not be able to probe the
+        // donor roll for matches.
+        if !can_manage_donors(actor) {
+            return Err(unauthorized("manage donors"));
+        }
         // Candidate pool: name searches (as before) plus postcode/email when
         // given, so "Jon" vs "John" at the same address still surfaces.
         let mut candidates = self
@@ -200,7 +211,7 @@ impl<'a> DonorService<'a> {
             return Err(unauthorized("manage donors"));
         }
         if !confirm_no_duplicate {
-            let duplicates = self.search_for_duplicates(&input).await?;
+            let duplicates = self.search_for_duplicates(actor, &input).await?;
             if !duplicates.is_empty() {
                 return Err(crate::error::AppError::Conflict(format!(
                     "possible duplicate donor: {}",

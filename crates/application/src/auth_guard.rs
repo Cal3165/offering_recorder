@@ -109,4 +109,15 @@ mod tests {
         assert!(ViewPermission::ReadBanking.check(&trustee).is_ok());
         assert!(ViewPermission::ReadBanking.check(&counter).is_err());
     }
+
+    #[test]
+    fn inactive_users_fail_every_guard() {
+        // Plan Phase 1.1: deactivation denies role checks and view checks alike.
+        let mut admin = user_with(RoleSet::admin());
+        admin.deactivate();
+        assert!(require_role(&admin, &[Role::Admin]).is_err());
+        assert!(require_all_roles(&admin, &[Role::Admin]).is_err());
+        assert!(ViewPermission::ReadOfferings.check(&admin).is_err());
+        assert!(ViewPermission::ReadAudit.check(&admin).is_err());
+    }
 }

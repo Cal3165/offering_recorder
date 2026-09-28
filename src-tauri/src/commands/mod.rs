@@ -23,16 +23,16 @@ pub struct AppState {
 ///
 /// This is a local single-user desktop app, so the in-app session has no idle
 /// timeout by design; the trust boundary is the OS user, not the session.
-async fn actor(state: &AppState) -> AppResult<User> {
-    if *state
-        .restoring
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-    {
-        return Err(AppError::Unauthorized(
-            "a backup restore is in progress; please retry shortly".into(),
-        ));
-    }
+/// Resolve the currently authenticated user WITHOUT consulting the
+/// `restoring` flag (plan Phase 1.2).
+///
+/// `restore_backup` is the command that raises the flag, so it cannot go
+/// through [`actor`]/`with_actor!` (which reject everything while a restore
+/// is in flight). This shared helper still performs the full
+/// session→re-fetch→`is_active` check and reports failures as
+/// [`AppError::Unauthorized`] — never as plain strings, which would miscarry
+/// as `validation` at the IPC boundary.
+pub(crate) async fn actor_unchecked_restore_flag(state: &AppState) -> AppResult<User> {
     let id = state
         .session
         .lock()
@@ -50,6 +50,19 @@ async fn actor(state: &AppState) -> AppResult<User> {
         return Err(AppError::Unauthorized("user is inactive".into()));
     }
     Ok(user)
+}
+
+async fn actor(state: &AppState) -> AppResult<User> {
+    if *state
+        .restoring
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        return Err(AppError::Unauthorized(
+            "a backup restore is in progress; please retry shortly".into(),
+        ));
+    }
+    actor_unchecked_restore_flag(state).await
 }
 
 /// Grab the authenticated actor, mapping auth errors to the IPC error shape.

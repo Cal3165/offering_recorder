@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::audit::AuditLog;
 use crate::error::{unauthorized, AppResult};
-use crate::permissions::can_manage_donors;
+use crate::permissions::{can_manage_donors, can_manage_gift_aid};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommunityBuildingInput {
@@ -92,8 +92,12 @@ impl<'a> CommunityBuildingService<'a> {
     ///
     /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn list(&self, actor: &User) -> AppResult<Vec<CommunityBuilding>> {
-        if !can_manage_donors(actor) {
-            return Err(unauthorized("manage community buildings"));
+        // Plan Phase 1.6: Gift Aid preparers need the community-building roll
+        // (GASDS community-building test) but must not edit it — listing is
+        // open to donor managers and gift-aid managers, writes stay with
+        // donor managers.
+        if !(can_manage_donors(actor) || can_manage_gift_aid(actor)) {
+            return Err(unauthorized("view community buildings"));
         }
         Ok(self.buildings.list().await?)
     }

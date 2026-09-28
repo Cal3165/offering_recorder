@@ -50,6 +50,29 @@ impl<'a> AmendmentService<'a> {
             .ok_or_else(|| crate::error::AppError::NotFound("offering not found".into()))
     }
 
+    /// Segregation-of-duties guard (plan Phase 1.4, mirroring the offering
+    /// dual-control rule): the checker half of an amendment must come from a
+    /// different operator id than the counter half — guest entries included.
+    /// Different operator ids pass; an Admin may explicitly override (audited).
+    /// Enforced where both halves exist, i.e. at checker-sign time; at
+    /// counter-sign time there is no second signature to compare against.
+    fn reject_same_user_double_sign(
+        actor: &User,
+        counter: &offering_domain::signature::Signature,
+        checker: &offering_domain::signature::Signature,
+    ) -> AppResult<()> {
+        if offering_domain::signature::SAME_OPERATOR_DUAL_GUEST_FORBIDDEN
+            && !counter.user_id.is_nil()
+            && counter.user_id == checker.user_id
+            && !actor.is_admin()
+        {
+            return Err(crate::error::AppError::Conflict(
+                "amendment counter and checker must be different people; a second person must countersign (Admin override only)".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// # Errors
     ///
     /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
@@ -171,7 +194,11 @@ impl<'a> AmendmentService<'a> {
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
         // Snapshot for optimistic-concurrency check at save time (review O27).
         let expected_updated_at = amendment.updated_at;
-        amendment.checker_sign(Self::signature_for(actor, guest_name))?;
+        let checker_sig = Self::signature_for(actor, guest_name);
+        if let Some(counter_sig) = amendment.counter_signature.as_ref() {
+            Self::reject_same_user_double_sign(actor, counter_sig, &checker_sig)?;
+        }
+        amendment.checker_sign(checker_sig)?;
         let amendment = self
             .amendments
             .update(amendment, expected_updated_at)
@@ -206,6 +233,16 @@ impl<'a> AmendmentService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
+        // Maker-approver separation (plan Phase 1.4): the user who created the
+        // amendment must not approve it — approval is the second pair of eyes.
+        // An Admin may explicitly override (single-administrator parishes have
+        // no second approver); the override is audited with the approval.
+        if actor.id == amendment.created_by && !actor.is_admin() {
+            return Err(crate::error::AppError::Conflict(
+                "amendment approver must be different from the creator (Admin override only)"
+                    .into(),
+            ));
+        }
         // Snapshot for optimistic-concurrency check at save time (review O27).
         let expected_updated_at = amendment.updated_at;
         amendment.approve()?;
