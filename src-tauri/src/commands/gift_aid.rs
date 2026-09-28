@@ -3,6 +3,7 @@ use tauri::State;
 
 use crate::commands::parse_uuid;
 use crate::commands::AppState;
+use crate::commands::{check_char_len, MAX_REASON_CHARS};
 use offering_application::error::AppErrorDto;
 use offering_application::gift_aid::{DonorEligibilitySummary, NewDeclarationDetails};
 use offering_domain::address::Address;
@@ -60,6 +61,9 @@ pub async fn end_declaration(
     reason: Option<String>,
 ) -> Result<GiftAidDeclaration, AppErrorDto> {
     let actor = with_actor!(state);
+    if let Some(reason) = &reason {
+        check_char_len(reason, MAX_REASON_CHARS, "reason").map_err(AppErrorDto::from)?;
+    }
     let id = parse_uuid(&declaration_id)?;
     state
         .services
@@ -80,6 +84,9 @@ pub async fn revoke_declaration(
     reason: Option<String>,
 ) -> Result<GiftAidDeclaration, AppErrorDto> {
     let actor = with_actor!(state);
+    if let Some(reason) = &reason {
+        check_char_len(reason, MAX_REASON_CHARS, "reason").map_err(AppErrorDto::from)?;
+    }
     let id = parse_uuid(&declaration_id)?;
     state
         .services
@@ -154,6 +161,7 @@ pub async fn create_declaration_amendment(
     change: DeclarationChange,
 ) -> Result<DeclarationAmendment, AppErrorDto> {
     let actor = with_actor!(state);
+    check_char_len(&reason, MAX_REASON_CHARS, "reason").map_err(AppErrorDto::from)?;
     let id = parse_uuid(&declaration_id)?;
     state
         .services

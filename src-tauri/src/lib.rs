@@ -172,6 +172,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+
     /// Contract test (review O24/C3): every command name invoked from
     /// src/lib/api.ts must be registered in the `invoke_handler` list. This
     /// catches renamed or removed Rust commands that the hand-written
@@ -265,5 +267,662 @@ mod tests {
             "registered commands without api.ts bindings: {dead:?}"
         );
         let _ = bytes;
+    }
+
+    /// Split a comma-separated list at depth zero, ignoring commas inside
+    /// nested `{}`, `[]`, `()`, `<>` and inside string literals. Both the
+    /// `api.ts` arg objects and the Rust signatures are parsed with this.
+    ///
+    /// `single_quote_is_string` is false for Rust sources: a `'` there is a
+    /// lifetime (`State<'_, AppState>`) or lives inside a word
+    /// (`offering's`), never a string delimiter for our purposes. It is true
+    /// for TypeScript, which has no lifetimes.
+    fn split_top_level(s: &str, single_quote_is_string: bool) -> Vec<String> {
+        let mut parts = Vec::new();
+        let mut depth_curly = 0i32;
+        let mut depth_square = 0i32;
+        let mut depth_paren = 0i32;
+        let mut depth_angle = 0i32;
+        let mut in_str: Option<char> = None;
+        let mut escaped = false;
+        let mut start = 0;
+        let bytes: Vec<char> = s.chars().collect();
+        let mut i = 0;
+        let mut prev: Option<char> = None;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if let Some(q) = in_str {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    in_str = None;
+                }
+            } else {
+                match c {
+                    '\'' if single_quote_is_string
+                        && !prev.is_some_and(|p| p.is_alphanumeric() || p == '_' || p == '$') =>
+                    {
+                        in_str = Some(c);
+                    }
+                    // A `'` that does not open a string (Rust lifetime,
+                    // word-internal apostrophe) falls through to `_`.
+                    '"' | '`' => in_str = Some(c),
+                    '{' => depth_curly += 1,
+                    '}' => depth_curly -= 1,
+                    '[' => depth_square += 1,
+                    ']' => depth_square -= 1,
+                    '(' => depth_paren += 1,
+                    ')' => depth_paren -= 1,
+                    '<' => depth_angle += 1,
+                    '>' => depth_angle -= 1,
+                    ',' if depth_curly == 0
+                        && depth_square == 0
+                        && depth_paren == 0
+                        && depth_angle == 0 =>
+                    {
+                        parts.push(s[start..byte_index(s, i)].trim().to_string());
+                        start = byte_index(s, i + 1);
+                    }
+                    _ => {}
+                }
+            }
+            prev = Some(c);
+            i += 1;
+        }
+        let tail = s[start..].trim().to_string();
+        if !tail.is_empty() {
+            parts.push(tail);
+        }
+        parts
+    }
+
+    /// Byte offset of the `i`-th char in `s`.
+    fn byte_index(s: &str, i: usize) -> usize {
+        s.char_indices().map(|(b, _)| b).nth(i).unwrap_or(s.len())
+    }
+
+    /// The `{...}` second argument of a `run("cmd", {...})` call, if the text
+    /// after the command string is exactly `, {...}` (modulo whitespace).
+    fn second_arg_object(after_cmd: &str) -> Option<&str> {
+        let mut it = after_cmd.char_indices();
+        for (_, c) in it.by_ref() {
+            if c.is_whitespace() {
+                continue;
+            }
+            if c == ',' {
+                break;
+            }
+            return None;
+        }
+        for (b, c) in it {
+            if c.is_whitespace() {
+                continue;
+            }
+            if c == '{' {
+                return Some(&after_cmd[b..]);
+            }
+            return None;
+        }
+        None
+    }
+
+    /// Extract `(command, arg-key)` pairs from `api.ts` `run("cmd", {...})`
+    /// calls. Handles shorthand (`{ limit }`) and renamed (`{ day_of_week }`
+    /// or `{ key: value }`) properties; nested values are ignored.
+    fn extract_api_calls(api_ts: &str) -> Vec<(String, Vec<String>)> {
+        let mut calls = Vec::new();
+        let bytes = api_ts.as_bytes();
+        let mut i = 0;
+        while let Some(pos) = api_ts[i..].find("run<") {
+            let abs = i + pos;
+            let prev = if abs == 0 { b' ' } else { bytes[abs - 1] };
+            let is_def = abs >= 9 && &api_ts[abs - 9..abs] == "function ";
+            if prev.is_ascii_alphanumeric() || prev == b'_' || is_def {
+                i = abs + 4;
+                continue;
+            }
+            let after = &api_ts[abs..];
+            let open = after.find('(').unwrap_or(usize::MAX);
+            let tail = &after[open..];
+            let q1 = tail.find('"');
+            let (cmd, keys) = match q1 {
+                Some(q1) => {
+                    let rest = &tail[q1 + 1..];
+                    match rest.find('"') {
+                        Some(q2) => {
+                            let cmd = rest[..q2].to_string();
+                            let after_cmd = &rest[q2 + 1..];
+                            // The args object must be the second call
+                            // argument: `, {...}` with only whitespace
+                            // around the comma. Otherwise the command takes
+                            // no args and the next `{` in the file belongs to
+                            // a different call.
+                            let keys = match second_arg_object(after_cmd) {
+                                Some(obj) => {
+                                    match balanced_end(obj, '{', '}', true) {
+                                        Some(e) => {
+                                            let body = &obj[1..e];
+                                            split_top_level(body, true)
+                                                .iter()
+                                                .filter_map(|part| {
+                                                    let part = part.trim();
+                                                    if part.is_empty() {
+                                                        return None;
+                                                    }
+                                                    // `key: value` or shorthand `key`.
+                                                    let key = match part.find(':') {
+                                                        Some(c) => part[..c].trim(),
+                                                        None => part
+                                                            .split_whitespace()
+                                                            .last()
+                                                            .unwrap_or(part),
+                                                    };
+                                                    let key = key
+                                                        .trim_matches(|c| c == '"' || c == '\'')
+                                                        .to_string();
+                                                    if key.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(key)
+                                                    }
+                                                })
+                                                .collect()
+                                        }
+                                        None => Vec::new(),
+                                    }
+                                }
+                                None => Vec::new(),
+                            };
+                            (cmd, keys)
+                        }
+                        None => (String::new(), Vec::new()),
+                    }
+                }
+                None => (String::new(), Vec::new()),
+            };
+            if !cmd.is_empty() && cmd.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                calls.push((cmd, keys));
+            }
+            i = abs + 4;
+        }
+        calls
+    }
+
+    /// Byte index just past the balanced close delimiter, or `None`.
+    /// Same `'` rule as [`split_top_level`]: Rust lifetimes and apostrophes
+    /// must not open string literals. For TypeScript a `'` only opens a
+    /// string when it does not continue a word (`offering's` in a comment
+    /// must not swallow the rest of the file).
+    fn balanced_end(
+        s: &str,
+        open: char,
+        close: char,
+        single_quote_is_string: bool,
+    ) -> Option<usize> {
+        let mut depth = 0i32;
+        let mut in_str: Option<char> = None;
+        let mut escaped = false;
+        let mut prev: Option<char> = None;
+        for (b, c) in s.char_indices() {
+            if let Some(q) = in_str {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    in_str = None;
+                }
+                prev = Some(c);
+                continue;
+            }
+            if c == '"'
+                || c == '`'
+                || (c == '\''
+                    && single_quote_is_string
+                    && !prev.is_some_and(|p| p.is_alphanumeric() || p == '_' || p == '$'))
+            {
+                in_str = Some(c);
+            } else if c == open {
+                depth += 1;
+            } else if c == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(b);
+                }
+            }
+            prev = Some(c);
+        }
+        None
+    }
+
+    /// Extract `command -> param names` from `src-tauri/src/commands/*.rs`.
+    /// Skips the injected `state: State<..>` / `app: AppHandle` parameters;
+    /// every other parameter must arrive under its exact Rust identifier
+    /// (Tauri matches invoke args by exact key, with no case conversion).
+    fn extract_rust_commands(commands_dir: &std::path::Path) -> HashMap<String, Vec<String>> {
+        let mut map = HashMap::new();
+        let entries = std::fs::read_dir(commands_dir).expect("commands dir should exist");
+        let mut files: Vec<_> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+            .collect();
+        files.sort();
+        for path in files {
+            if path.file_stem().is_some_and(|s| s == "mod") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("should read {}", path.display()));
+            let mut i = 0;
+            while i < src.len() {
+                let rest = &src[i..];
+                let Some((pos, prefix_len)) = ["pub async fn ", "pub fn "]
+                    .iter()
+                    .filter_map(|kw| rest.find(kw).map(|p| (p, kw.len())))
+                    .min_by_key(|(p, _)| *p)
+                else {
+                    break;
+                };
+                let abs = i + pos + prefix_len;
+                let after = &src[abs..];
+                let paren = after.find('(').expect("fn must have params");
+                let sig = &after[paren..];
+                let end = balanced_end(sig, '(', ')', false).expect("balanced fn signature");
+                let body = &sig[1..end];
+                let name_end = after[..paren].trim_end().len();
+                let name = after[..name_end]
+                    .split_whitespace()
+                    .last()
+                    .unwrap_or("")
+                    .to_string();
+                let mut params = Vec::new();
+                for part in split_top_level(body, false) {
+                    let part = part.trim().to_string();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let pname = part.split(':').next().unwrap_or("").trim().to_string();
+                    if pname == "state" || pname == "app" || pname.is_empty() {
+                        continue;
+                    }
+                    params.push(pname);
+                }
+                if !name.is_empty() {
+                    map.insert(name, params);
+                }
+                i = abs + paren + end + 1;
+            }
+        }
+        map
+    }
+
+    /// Phase 0.3: every invoke arg key sent from `api.ts` must exactly match
+    /// the corresponding `#[tauri::command]` parameter name. Tauri
+    /// deserializes the args object by exact key (no `rename_all` exists on
+    /// any command or input struct), so a camelCase key for a `snake_case`
+    /// parameter fails at runtime with a missing-key error. This test parses
+    /// both sides so the drift behind review C11 cannot regress.
+    #[test]
+    fn api_arg_keys_match_rust_params() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let api_ts = std::fs::read_to_string(format!("{manifest}/../src/lib/api.ts"))
+            .expect("src/lib/api.ts should exist");
+        let commands_dir = std::path::PathBuf::from(format!("{manifest}/src/commands"));
+
+        let calls = extract_api_calls(&api_ts);
+        assert!(!calls.is_empty(), "failed to extract api.ts invoke calls");
+        let rust = extract_rust_commands(&commands_dir);
+        assert!(!rust.is_empty(), "failed to extract Rust commands");
+
+        let mut mismatches = Vec::new();
+        for (cmd, keys) in &calls {
+            match rust.get(cmd) {
+                Some(params) => {
+                    let want: HashSet<_> = params.iter().collect();
+                    let got: HashSet<_> = keys.iter().collect();
+                    if want != got {
+                        mismatches.push(format!(
+                            "{cmd}: api.ts sends {keys:?}, Rust expects {params:?}"
+                        ));
+                    }
+                }
+                None => mismatches.push(format!("{cmd}: no Rust command found")),
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "IPC arg-key drift (api.ts vs commands/*.rs):\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    /// Field names of a flat Rust `pub struct NAME { ... }` in `src`.
+    fn rust_struct_fields(src: &str, name: &str) -> Vec<String> {
+        let marker = format!("pub struct {name} ");
+        let start = src
+            .find(&marker)
+            .unwrap_or_else(|| panic!("struct {name} should exist"));
+        let obj = &src[start + marker.len()..];
+        let brace = obj.find('{').expect("struct body");
+        let body = &obj[brace..];
+        let end = balanced_end(body, '{', '}', false).expect("balanced struct");
+        body[1..end]
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.is_empty()
+                    || line.starts_with("///")
+                    || line.starts_with("//")
+                    || line.starts_with('#')
+                {
+                    return None;
+                }
+                // `pub field: Type,` — fields are one per line.
+                let stripped = line.strip_prefix("pub ")?;
+                Some(stripped.split(':').next().unwrap_or("").trim().to_string())
+            })
+            .filter(|f| !f.is_empty())
+            .collect()
+    }
+
+    /// Field names of a flat TS `interface NAME { ... }` in `src`.
+    /// Block (`/* ... */`) and line (`// ...`) comments are stripped first
+    /// so doc text containing `:` or `;` cannot fake a field.
+    fn ts_interface_fields(src: &str, name: &str) -> Vec<String> {
+        let marker = format!("interface {name} ");
+        let start = src
+            .find(&marker)
+            .unwrap_or_else(|| panic!("interface {name} should exist"));
+        let obj = &src[start + marker.len()..];
+        let brace = obj.find('{').expect("interface body");
+        let body = &obj[brace..];
+        let end = balanced_end(body, '{', '}', true).expect("balanced interface");
+        let uncommented = strip_ts_comments(&body[1..end]);
+        uncommented
+            .split([';', '\n'])
+            .filter_map(|field| {
+                let field = field.trim().trim_end_matches(',').trim().to_string();
+                if field.is_empty() || field.starts_with("//") || field.starts_with('*') {
+                    return None;
+                }
+                let name = field
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_end_matches('?')
+                    .trim()
+                    .to_string();
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name)
+                }
+            })
+            .collect()
+    }
+
+    /// Remove `/* ... */` and `// ...` comments from TypeScript source.
+    /// String literals are honoured so `://` inside a string survives; a `'`
+    /// only opens a string when it does not continue a word.
+    fn strip_ts_comments(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let chars: Vec<char> = src.chars().collect();
+        let mut i = 0;
+        let mut in_str: Option<char> = None;
+        let mut prev: Option<char> = None;
+        while i < chars.len() {
+            let c = chars[i];
+            if let Some(q) = in_str {
+                out.push(c);
+                if c == '\\' && i + 1 < chars.len() {
+                    out.push(chars[i + 1]);
+                    i += 1;
+                } else if c == q {
+                    in_str = None;
+                }
+                prev = Some(c);
+                i += 1;
+                continue;
+            }
+            if c == '"'
+                || c == '`'
+                || (c == '\'' && !prev.is_some_and(|p| p.is_alphanumeric() || p == '_' || p == '$'))
+            {
+                in_str = Some(c);
+                out.push(c);
+                prev = Some(c);
+                i += 1;
+                continue;
+            }
+            if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                i += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                i += 2;
+                continue;
+            }
+            if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            out.push(c);
+            prev = Some(c);
+            i += 1;
+        }
+        out
+    }
+
+    /// Variant names of a Rust enum (`AddDonation(..)` or
+    /// `EndDeclaration { .. }` styles) in `src`.
+    fn rust_enum_variants(src: &str, name: &str) -> Vec<(String, Vec<String>)> {
+        let marker = format!("pub enum {name} ");
+        let start = src
+            .find(&marker)
+            .unwrap_or_else(|| panic!("enum {name} should exist"));
+        let obj = &src[start + marker.len()..];
+        let brace = obj.find('{').expect("enum body");
+        let body = &obj[brace..];
+        let end = balanced_end(body, '{', '}', false).expect("balanced enum");
+        let inner = &body[1..end];
+        split_top_level(inner, false)
+            .iter()
+            .filter_map(|part| {
+                let part = part.trim().to_string();
+                if part.is_empty() || part.starts_with("///") || part.starts_with("//") {
+                    return None;
+                }
+                // Skip attribute lines; variants are `Name(..)` / `Name {..}` / `Name`.
+                let first_line = part.lines().last().unwrap_or("").trim().to_string();
+                let first_line = first_line.trim_end_matches(',').trim().to_string();
+                if first_line.is_empty() {
+                    return None;
+                }
+                let (vname, fields) = if let Some(b) = first_line.find('{') {
+                    let vname = first_line[..b].trim().to_string();
+                    let fbody = &first_line[b..];
+                    let e = balanced_end(fbody, '{', '}', false).unwrap_or(fbody.len());
+                    let fields = fbody[1..e]
+                        .split(',')
+                        .filter_map(|f| {
+                            let f = f.trim().to_string();
+                            if f.is_empty() {
+                                None
+                            } else {
+                                Some(f.split(':').next().unwrap_or("").trim().to_string())
+                            }
+                        })
+                        .collect();
+                    (vname, fields)
+                } else if let Some(b) = first_line.find('(') {
+                    (first_line[..b].trim().to_string(), Vec::new())
+                } else {
+                    (first_line, Vec::new())
+                };
+                if vname.is_empty() || !vname.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                {
+                    None
+                } else {
+                    Some((vname, fields))
+                }
+            })
+            .collect()
+    }
+
+    /// Phase 0.3: nested IPC payloads must match field-for-field. Serde has
+    /// no `rename_all` on any input struct, and `Option` fields without
+    /// `#[serde(default)]` must still be present on the wire, so a frontend
+    /// object that merely omits an optional key fails to deserialize.
+    #[test]
+    fn nested_input_wire_shapes_match() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let root = std::path::PathBuf::from(format!("{manifest}/.."));
+        let read = |p: &str| {
+            std::fs::read_to_string(root.join(p)).unwrap_or_else(|_| panic!("should read {p}"))
+        };
+        let api_ts = read("src/lib/api.ts");
+        let types_ts = read("src/lib/types.ts");
+        let donors_rs = read("crates/application/src/donors.rs");
+        let offerings_rs = read("crates/application/src/offerings.rs");
+        let buildings_rs = read("crates/application/src/community_buildings.rs");
+        let decl_amend_rs = read("crates/domain/src/entities/declaration_amendment.rs");
+        let amend_rs = read("crates/domain/src/entities/amendment.rs");
+
+        let mut mismatches = Vec::new();
+        let check_fields =
+            |label: &str, rust: Vec<String>, ts: Vec<String>, out: &mut Vec<String>| {
+                let r: HashSet<_> = rust.iter().collect();
+                let t: HashSet<_> = ts.iter().collect();
+                if r != t {
+                    out.push(format!("{label}: Rust {rust:?} vs TS {ts:?}"));
+                }
+            };
+
+        // Struct inputs: field sets must be identical.
+        check_fields(
+            "CreateDonorInput",
+            rust_struct_fields(&donors_rs, "CreateDonorInput"),
+            ts_interface_fields(&api_ts, "CreateDonorInput"),
+            &mut mismatches,
+        );
+        check_fields(
+            "AddDonationInput",
+            rust_struct_fields(&offerings_rs, "AddDonationInput"),
+            ts_interface_fields(&types_ts, "AddDonationInput"),
+            &mut mismatches,
+        );
+        check_fields(
+            "CommunityBuildingInput",
+            rust_struct_fields(&buildings_rs, "CommunityBuildingInput"),
+            ts_interface_fields(&types_ts, "CommunityBuildingInput"),
+            &mut mismatches,
+        );
+
+        // DeclarationChange: variant names plus inner field names. The TS
+        // shape is `{ EndDeclaration: { at: string; reason: ... } }`.
+        for (variant, fields) in rust_enum_variants(&decl_amend_rs, "DeclarationChange") {
+            let marker = format!("{variant}:");
+            if !types_ts.contains(&marker) && !types_ts.contains(&format!("{variant} ")) {
+                mismatches.push(format!("DeclarationChange: TS missing variant {variant}"));
+                continue;
+            }
+            for f in fields {
+                // Inner payload object must mention the field name.
+                let variant_pos = types_ts.find(&variant).unwrap_or(usize::MAX);
+                let window = &types_ts[variant_pos..(variant_pos + 200).min(types_ts.len())];
+                if !window.contains(&f) {
+                    mismatches.push(format!(
+                        "DeclarationChange::{variant}: TS payload missing field {f}"
+                    ));
+                }
+            }
+        }
+
+        // AmendmentChange: variant names must exist on both sides.
+        let rust_variants: HashSet<String> = rust_enum_variants(&amend_rs, "AmendmentChange")
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect();
+        for v in &rust_variants {
+            if !types_ts.contains(v) {
+                mismatches.push(format!("AmendmentChange: TS missing variant {v}"));
+            }
+        }
+        // TS uses externally-tagged `{ Variant: ... }` objects; every TS
+        // variant key must be a real Rust variant.
+        for marker in [
+            "AddDonation",
+            "RemoveDonation",
+            "SetCashDenominations",
+            "SetAttendance",
+            "SetDescription",
+        ] {
+            if types_ts.contains(marker) && !rust_variants.contains(marker) {
+                mismatches.push(format!("AmendmentChange: Rust missing variant {marker}"));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "nested IPC shape drift:\n{}",
+            mismatches.join("\n")
+        );
+    }
+
+    /// Phase 0.3: the exact JSON the frontend sends must deserialize into
+    /// the real Rust input types. This is the executable half of the wire
+    /// contract (the parsers above are the drift-detection half).
+    #[test]
+    fn frontend_shaped_inputs_deserialize() {
+        // AddDonationInput as DonationForm.svelte builds it (snake_case keys,
+        // explicit nulls, `date` present).
+        let donation: offering_application::offerings::AddDonationInput =
+            serde_json::from_value(serde_json::json!({
+                "donor_id": null,
+                "amount_pence": 500,
+                "donation_type": "General",
+                "payment_method": "Cash",
+                "classification": "LooseCash",
+                "reference": null,
+                "cash_denominations": { "counts": { "Coin100p": 5 } },
+                "date": null
+            }))
+            .expect("frontend AddDonationInput shape must deserialize");
+        assert_eq!(donation.amount_pence, 500);
+
+        // CreateDonorInput as Donors.svelte builds it.
+        let donor: offering_application::donors::CreateDonorInput =
+            serde_json::from_value(serde_json::json!({
+                "first_name": "Ada",
+                "last_name": "Lovelace",
+                "preferred_name": null,
+                "donor_type": "Uk",
+                "address_line1": null,
+                "address_line2": null,
+                "address_line3": null,
+                "postcode": null,
+                "email": null,
+                "phone": null,
+                "lawful_basis": "Legitimate interest",
+                "privacy_notice_version": null
+            }))
+            .expect("frontend CreateDonorInput shape must deserialize");
+        assert_eq!(donor.first_name, "Ada");
+
+        // DeclarationChange as DonorDetail.svelte builds it.
+        let change: offering_domain::entities::declaration_amendment::DeclarationChange =
+            serde_json::from_value(serde_json::json!({
+                "EndDeclaration": { "at": "2026-04-06T00:00:00Z", "reason": "moved" }
+            }))
+            .expect("frontend DeclarationChange shape must deserialize");
+        assert!(matches!(
+            change,
+            offering_domain::entities::declaration_amendment::DeclarationChange::EndDeclaration { .. }
+        ));
     }
 }

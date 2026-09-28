@@ -119,6 +119,9 @@
       classification: dClass,
       reference: dRef || null,
       cash_denominations: breakdown,
+      // Explicit null: the backend falls back to the offering's date.
+      // The key must be present — the Rust input has no serde default.
+      date: null,
     };
     const done = await onSubmit(input);
     if (!done) return;

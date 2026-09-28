@@ -2,6 +2,7 @@ use tauri::State;
 
 use crate::commands::parse_uuid;
 use crate::commands::AppState;
+use crate::commands::{check_char_len, MAX_SEARCH_QUERY_CHARS};
 use offering_application::donors::CreateDonorInput;
 use offering_application::error::AppErrorDto;
 use offering_domain::entities::donor::Donor;
@@ -62,6 +63,7 @@ pub async fn search_donors(
     include_inactive: bool,
 ) -> Result<Vec<Donor>, AppErrorDto> {
     let actor = with_actor!(state);
+    check_char_len(&query, MAX_SEARCH_QUERY_CHARS, "query").map_err(AppErrorDto::from)?;
     state
         .services
         .donors

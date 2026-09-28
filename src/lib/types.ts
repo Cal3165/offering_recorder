@@ -186,6 +186,8 @@ export interface AddDonationInput {
   classification: DonationClassification;
   reference: string | null;
   cash_denominations: CashTotal | null;
+  /** Optional explicit donation date (ISO). Null omits it: the offering's date is used. */
+  date: string | null;
 }
 
 export interface ValidationIssue {

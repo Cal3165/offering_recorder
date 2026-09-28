@@ -1,6 +1,7 @@
 use tauri::State;
 
 use crate::commands::AppState;
+use crate::commands::{check_byte_len, MAX_CSV_BYTES};
 use offering_application::error::AppErrorDto;
 use offering_application::migration::CsvImportSummary;
 
@@ -13,6 +14,7 @@ pub async fn import_donors_csv(
     csv: String,
 ) -> Result<CsvImportSummary, AppErrorDto> {
     let actor = with_actor!(state);
+    check_byte_len(&csv, MAX_CSV_BYTES, "csv").map_err(AppErrorDto::from)?;
     state
         .services
         .migration

@@ -2,6 +2,7 @@ use tauri::State;
 
 use crate::commands::parse_uuid;
 use crate::commands::AppState;
+use crate::commands::{check_char_len, MAX_REASON_CHARS};
 use offering_application::error::AppErrorDto;
 use offering_domain::entities::amendment::{Amendment, AmendmentChange};
 
@@ -34,6 +35,7 @@ pub async fn create_amendment(
     changes: Vec<AmendmentChange>,
 ) -> Result<Amendment, AppErrorDto> {
     let actor = with_actor!(state);
+    check_char_len(&reason, MAX_REASON_CHARS, "reason").map_err(AppErrorDto::from)?;
     let id = parse_uuid(&offering_id)?;
     state
         .services

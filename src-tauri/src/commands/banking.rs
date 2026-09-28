@@ -2,6 +2,7 @@ use tauri::State;
 
 use crate::commands::parse_uuid;
 use crate::commands::AppState;
+use crate::commands::{check_count, MAX_OFFERING_IDS};
 use offering_application::banking::DepositCandidate;
 use offering_application::error::AppErrorDto;
 use offering_domain::entities::bank_deposit::BankDeposit;
@@ -17,6 +18,7 @@ pub async fn create_deposit(
     reference: Option<String>,
 ) -> Result<BankDeposit, AppErrorDto> {
     let actor = with_actor!(state);
+    check_count(offering_ids.len(), MAX_OFFERING_IDS, "offering_ids").map_err(AppErrorDto::from)?;
     let ids = offering_ids
         .iter()
         .map(|s| parse_uuid(s))

@@ -34,8 +34,17 @@ pub enum LawfulBasis {
     /// Processing necessary for a contract with the donor.
     Contract,
     /// Processing necessary for a legal obligation (e.g. HMRC records).
+    ///
+    /// The serde rename keeps the IPC wire form identical to `Display` (and
+    /// to the `lawful_basis` DB column): the frontend sends
+    /// `"Legal obligation"`, not the Rust variant name.
+    #[serde(rename = "Legal obligation")]
     LegalObligation,
     /// The church's legitimate interests (e.g. administering donations).
+    ///
+    /// Same rename rationale as `LegalObligation`: wire form is
+    /// `"Legitimate interest"`.
+    #[serde(rename = "Legitimate interest")]
     LegitimateInterest,
 }
 

@@ -2,6 +2,7 @@ use tauri::State;
 
 use crate::commands::parse_uuid;
 use crate::commands::AppState;
+use crate::commands::{check_char_len, MAX_DESCRIPTION_CHARS};
 use offering_application::error::AppErrorDto;
 use offering_application::offerings::{AddDonationInput, OfferingReport};
 use offering_application::validation::ValidationIssue;
@@ -19,6 +20,10 @@ pub async fn create_offering(
     description: Option<String>,
 ) -> Result<Offering, AppErrorDto> {
     let actor = with_actor!(state);
+    if let Some(description) = &description {
+        check_char_len(description, MAX_DESCRIPTION_CHARS, "description")
+            .map_err(AppErrorDto::from)?;
+    }
     let id = parse_uuid(&meeting_id)?;
     state
         .services

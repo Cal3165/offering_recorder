@@ -2,6 +2,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 use crate::commands::AppState;
+use crate::commands::{check_byte_len, MAX_PASSPHRASE_BYTES};
 use offering_application::error::AppErrorDto;
 use offering_domain::entities::backup::Backup;
 
@@ -26,6 +27,7 @@ pub async fn create_backup(
     passphrase: String,
 ) -> Result<Backup, AppErrorDto> {
     let actor = with_actor!(state);
+    check_byte_len(&passphrase, MAX_PASSPHRASE_BYTES, "passphrase").map_err(AppErrorDto::from)?;
     let backup_dir = app
         .path()
         .app_data_dir()
@@ -95,6 +97,7 @@ pub async fn restore_backup(
     backup_path: String,
     passphrase: String,
 ) -> Result<(), AppErrorDto> {
+    check_byte_len(&passphrase, MAX_PASSPHRASE_BYTES, "passphrase").map_err(AppErrorDto::from)?;
     // Authenticate directly. We cannot use `with_actor!` here because it rejects
     // every request once the `restoring` flag is raised, and this command is the
     // one that raises it.
