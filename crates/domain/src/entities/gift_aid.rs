@@ -75,6 +75,10 @@ pub struct GiftAidDeclaration {
     pub created_at: DateTime<Utc>,
     pub created_by: Uuid,
     pub version: u32,
+    /// Last mutation instant; the persistence layer treats this as an
+    /// optimistic-concurrency token (`expected_updated_at`), so concurrent
+    /// amendment approvals conflict instead of silently overwriting (Phase 2.6).
+    pub updated_at: DateTime<Utc>,
 }
 
 impl GiftAidDeclaration {
@@ -203,6 +207,7 @@ impl GiftAidDeclaration {
             created_at: now,
             created_by,
             version,
+            updated_at: now,
         })
     }
 
@@ -298,6 +303,7 @@ impl GiftAidDeclaration {
         }
         self.effective_until = Some(at);
         self.status = DeclarationStatus::Ended;
+        self.updated_at = Utc::now();
         Ok(())
     }
 
@@ -308,6 +314,7 @@ impl GiftAidDeclaration {
         self.end(at)?;
         self.cancelled_at = Some(at);
         self.cancellation_reason = reason.map(std::string::ToString::to_string);
+        self.updated_at = Utc::now();
         Ok(())
     }
 
@@ -327,6 +334,7 @@ impl GiftAidDeclaration {
         }
         self.effective_until = Some(at);
         self.status = DeclarationStatus::Revoked;
+        self.updated_at = Utc::now();
         Ok(())
     }
 
@@ -341,6 +349,7 @@ impl GiftAidDeclaration {
         self.revoke(at)?;
         self.cancelled_at = Some(at);
         self.cancellation_reason = reason.map(std::string::ToString::to_string);
+        self.updated_at = Utc::now();
         Ok(())
     }
 
@@ -388,6 +397,7 @@ impl GiftAidDeclaration {
             created_at: now,
             created_by: self.created_by,
             version: self.version + 1,
+            updated_at: now,
         })
     }
 }

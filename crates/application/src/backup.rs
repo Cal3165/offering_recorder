@@ -187,6 +187,29 @@ impl<'a> BackupService<'a> {
         if !can_restore(actor) {
             return Err(unauthorized("restore backups"));
         }
+        // Validate FIRST (Phase 2.3): a corrupt backup or wrong passphrase
+        // aborts here, before the storage layer stages anything near the live
+        // database. The storage layer re-validates the staged copy itself, so
+        // this is defence in depth, not the only check.
+        if let Err(e) = self
+            .storage
+            .validate_backup_file(backup_path, passphrase)
+            .await
+        {
+            let _ = self
+                .audit
+                .record(
+                    actor,
+                    AuditAction::Restore,
+                    "Backup",
+                    None,
+                    None,
+                    None,
+                    Some(format!("database restore FAILED validation: {e}")),
+                )
+                .await;
+            return Err(e);
+        }
         // The start event must be recorded before the storage layer swaps the
         // database file and pool: afterwards, writes land in the restored
         // database rather than the caller's. A failed restore must not leave a

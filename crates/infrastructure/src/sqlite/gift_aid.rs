@@ -71,15 +71,39 @@ pub fn row_to_declaration(row: &SqliteRow) -> Result<GiftAidDeclaration, RepoErr
         created_at: row.get("created_at"),
         created_by: row.get("created_by"),
         version: row.get("version"),
+        updated_at: row.get("updated_at"),
     })
+}
+
+/// Map declaration-write failures to actionable conflicts (Phase 2.5): the
+/// partial unique index on active declarations and the composite version
+/// index both surface as generic unique violations — translate them into
+/// which race happened and whether retrying can help.
+pub(crate) fn map_declaration_err(e: sqlx::Error) -> RepoError {
+    let is_unique = e
+        .as_database_error()
+        .is_some_and(sqlx::error::DatabaseError::is_unique_violation);
+    if is_unique {
+        let detail = e.to_string();
+        tracing::error!(detail = %detail, "declaration unique violation");
+        if detail.contains("version") {
+            return RepoError::Conflict(
+                "another declaration version was recorded concurrently; reload and retry".into(),
+            );
+        }
+        return RepoError::Conflict(
+            "donor already has an active Gift Aid declaration; end or revoke it first".into(),
+        );
+    }
+    map_db_err(e)
 }
 
 #[async_trait]
 impl GiftAidRepository for SqliteGiftAidRepository {
     async fn create(&self, declaration: GiftAidDeclaration) -> RepoResult<GiftAidDeclaration> {
         sqlx::query(
-            "INSERT INTO gift_aid_declarations (id, donor_id, effective_from, effective_until, status, declaration_type, charity_name, donor_full_name, donor_address_line1, donor_address_line2, donor_address_line3, donor_address_postcode, declaration_method, received_at, declaration_text_version, single_donation_id, cancelled_at, cancellation_reason, created_by, created_at, version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO gift_aid_declarations (id, donor_id, effective_from, effective_until, status, declaration_type, charity_name, donor_full_name, donor_address_line1, donor_address_line2, donor_address_line3, donor_address_postcode, declaration_method, received_at, declaration_text_version, single_donation_id, cancelled_at, cancellation_reason, created_by, created_at, version, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(declaration.id)
         .bind(declaration.donor_id)
@@ -102,9 +126,10 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         .bind(declaration.created_by)
         .bind(declaration.created_at)
         .bind(declaration.version)
+        .bind(declaration.updated_at)
         .execute(&self.pool.get())
         .await
-        .map_err(map_db_err)?;
+        .map_err(map_declaration_err)?;
         Ok(declaration)
     }
 
@@ -173,9 +198,17 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         rows.iter().map(row_to_declaration).collect()
     }
 
-    async fn update(&self, declaration: GiftAidDeclaration) -> RepoResult<GiftAidDeclaration> {
-        sqlx::query(
-            "UPDATE gift_aid_declarations SET effective_from = ?, effective_until = ?, status = ?, declaration_type = ?, charity_name = ?, donor_full_name = ?, donor_address_line1 = ?, donor_address_line2 = ?, donor_address_line3 = ?, donor_address_postcode = ?, declaration_method = ?, received_at = ?, declaration_text_version = ?, single_donation_id = ?, cancelled_at = ?, cancellation_reason = ? WHERE id = ?",
+    async fn update(
+        &self,
+        declaration: GiftAidDeclaration,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<GiftAidDeclaration> {
+        // Optimistic concurrency (Phase 2.6, review R4 pattern): the WHERE
+        // clause rejects the write when the row changed since the caller
+        // loaded it, so concurrent amendment approvals conflict on retry
+        // instead of last-writer-wins.
+        let result = sqlx::query(
+            "UPDATE gift_aid_declarations SET effective_from = ?, effective_until = ?, status = ?, declaration_type = ?, charity_name = ?, donor_full_name = ?, donor_address_line1 = ?, donor_address_line2 = ?, donor_address_line3 = ?, donor_address_postcode = ?, declaration_method = ?, received_at = ?, declaration_text_version = ?, single_donation_id = ?, cancelled_at = ?, cancellation_reason = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(declaration.effective_from)
         .bind(declaration.effective_until)
@@ -193,10 +226,17 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         .bind(declaration.single_donation_id)
         .bind(declaration.cancelled_at)
         .bind(&declaration.cancellation_reason)
+        .bind(declaration.updated_at)
         .bind(declaration.id)
+        .bind(expected_updated_at)
         .execute(&self.pool.get())
         .await
-        .map_err(map_db_err)?;
+        .map_err(map_declaration_err)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::Conflict(
+                "declaration was modified by another operation; reload and retry".into(),
+            ));
+        }
         Ok(declaration)
     }
 
@@ -245,5 +285,166 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         .await
         .map_err(map_db_err)?;
         rows.iter().map(row_to_declaration).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect_in_memory;
+    use crate::SqliteStore;
+    use offering_domain::entities::donor::Donor;
+    use offering_domain::entities::role::{Role, RoleSet};
+    use offering_domain::entities::user::User;
+    use offering_persistence::{DonorRepository, UserRepository};
+
+    async fn setup() -> (SqliteStore, Donor, User) {
+        let pool = connect_in_memory().await.unwrap();
+        let store = SqliteStore::from_pool(pool);
+        let user = store
+            .users
+            .create(User::create("admin", "Admin", None, RoleSet::new(vec![Role::Admin])).unwrap())
+            .await
+            .unwrap();
+        let donor = store
+            .donors
+            .create(Donor::create("Jane", "Doe", None, None, None, None).unwrap())
+            .await
+            .unwrap();
+        (store, donor, user)
+    }
+
+    fn declaration(donor_id: Uuid, by: Uuid, version: u32) -> GiftAidDeclaration {
+        GiftAidDeclaration::create_versioned(
+            donor_id,
+            DeclarationType::MultipleDonations,
+            chrono::Utc::now() - chrono::Duration::days(30),
+            Some("Test Church".into()),
+            Some("Jane Doe".into()),
+            None,
+            DeclarationMethod::Written,
+            Some(chrono::Utc::now() - chrono::Duration::days(30)),
+            Some("v1".into()),
+            None,
+            by,
+            version,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn second_active_declaration_conflicts_at_the_database() {
+        // Phase 2.5: the partial unique index backstops the application
+        // check-then-insert race — a concurrent second Active insert fails
+        // with Conflict, not silent overlapping history.
+        let (store, donor, user) = setup().await;
+        store
+            .gift_aid
+            .create(declaration(donor.id, user.id, 1))
+            .await
+            .unwrap();
+        let err = store
+            .gift_aid
+            .create(declaration(donor.id, user.id, 2))
+            .await
+            .expect_err("second active declaration must conflict");
+        assert!(
+            matches!(err, RepoError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_active_allowed_after_previous_ended() {
+        // The partial index only constrains Active rows: ending the first
+        // declaration frees the slot for its successor.
+        let (store, donor, user) = setup().await;
+        let first = store
+            .gift_aid
+            .create(declaration(donor.id, user.id, 1))
+            .await
+            .unwrap();
+        let expected = first.updated_at;
+        let mut ended = first;
+        ended
+            .end_with_reason(chrono::Utc::now(), Some("superseded"))
+            .unwrap();
+        store.gift_aid.update(ended, expected).await.unwrap();
+        store
+            .gift_aid
+            .create(declaration(donor.id, user.id, 2))
+            .await
+            .expect("successor active declaration must be allowed");
+    }
+
+    #[tokio::test]
+    async fn duplicate_version_conflicts_as_retryable() {
+        // Phase 2.5: two inserts racing on max(version)+1 collide on the
+        // composite index and surface Conflict ("reload and retry").
+        let (store, donor, user) = setup().await;
+        let first = store
+            .gift_aid
+            .create(declaration(donor.id, user.id, 1))
+            .await
+            .unwrap();
+        // End it so the partial active index does not mask the version race.
+        let expected = first.updated_at;
+        let mut ended = first;
+        ended.end_with_reason(chrono::Utc::now(), None).unwrap();
+        store.gift_aid.update(ended, expected).await.unwrap();
+        // Both racers computed version 2.
+        store
+            .gift_aid
+            .create(declaration(donor.id, user.id, 2))
+            .await
+            .unwrap();
+        let mut dupe = declaration(donor.id, user.id, 2);
+        dupe.end_with_reason(chrono::Utc::now(), None).unwrap();
+        let err = store
+            .gift_aid
+            .create(dupe)
+            .await
+            .expect_err("duplicate version must conflict");
+        match err {
+            RepoError::Conflict(msg) => assert!(
+                msg.contains("concurrently") || msg.contains("retry"),
+                "version race must be flagged retryable, got: {msg}"
+            ),
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_declaration_update_conflicts() {
+        // Phase 2.6: a write based on a stale read is rejected.
+        let (store, donor, user) = setup().await;
+        let created = store
+            .gift_aid
+            .create(declaration(donor.id, user.id, 1))
+            .await
+            .unwrap();
+        let stale_expected = created.updated_at;
+
+        let mut winner = store.gift_aid.get(created.id).await.unwrap().unwrap();
+        let winner_expected = winner.updated_at;
+        winner
+            .end_with_reason(chrono::Utc::now(), Some("winner"))
+            .unwrap();
+        store
+            .gift_aid
+            .update(winner, winner_expected)
+            .await
+            .unwrap();
+
+        let mut loser = created;
+        loser
+            .end_with_reason(chrono::Utc::now(), Some("loser"))
+            .unwrap();
+        let err = store
+            .gift_aid
+            .update(loser, stale_expected)
+            .await
+            .expect_err("stale write must conflict");
+        assert!(matches!(err, RepoError::Conflict(_)));
     }
 }

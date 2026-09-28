@@ -199,41 +199,26 @@ impl OfferingRepository for SqliteOfferingRepository {
             .await
             .map_err(map_db_err)?;
 
-        // Stable persisted ordinal (review O25) - deletion of other meetings
-        // no longer shifts the numbers this meeting generates.
-        let seq: i64 =
-            sqlx::query_scalar("SELECT COALESCE(meeting_seq, 0) FROM meetings WHERE id = ?")
-                .bind(offering.meeting_id)
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(map_db_err)?;
-
-        // Consume the meeting's monotonic sequence counter. COUNT(*)+1 (and
-        // MAX over remaining rows) reused numbers after a deletion; a
-        // persisted counter consumed under this IMMEDIATE lock never does
-        // (review R6; unique index in migration 20240112 backstops it).
-        let offering_seq: i64 = sqlx::query_scalar(
-            "UPDATE meetings SET offering_seq_counter = offering_seq_counter + 1
-             WHERE id = ? RETURNING offering_seq_counter",
-        )
-        .bind(offering.meeting_id)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(map_db_err)?;
-
-        let seq_u32 = u32::try_from(seq).unwrap_or(u32::MAX);
-        let offering_seq_u32 = u32::try_from(offering_seq).unwrap_or(u32::MAX);
-        offering.offering_number = OfferingNumber::generated(year, seq_u32, offering_seq_u32);
-
-        if let Err(e) = self.insert_offering(&mut conn, &offering).await {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            return Err(e);
+        // Every error path below must leave the transaction: an open
+        // transaction on a pooled connection blocks all later writers
+        // (Phase 2.1). `run_in_immediate` rolls back on `Err`; the explicit
+        // COMMIT only runs on success.
+        let result = self
+            .create_numbered_inner(&mut conn, &mut offering, year)
+            .await;
+        match result {
+            Ok(()) => {
+                sqlx::query("COMMIT")
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(map_db_err)?;
+                Ok(offering)
+            }
+            Err(e) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(e)
+            }
         }
-        sqlx::query("COMMIT")
-            .execute(&mut *conn)
-            .await
-            .map_err(map_db_err)?;
-        Ok(offering)
     }
 
     async fn get(&self, id: Uuid) -> RepoResult<Option<Offering>> {
@@ -518,6 +503,44 @@ impl SqliteOfferingRepository {
         Ok(offerings)
     }
 
+    /// Sequence allocation + insert for [`Self::create_with_generated_number`].
+    /// Runs inside the caller's raw `BEGIN IMMEDIATE`; it never commits or
+    /// rolls back itself — the caller owns the transaction outcome.
+    async fn create_numbered_inner(
+        &self,
+        conn: &mut sqlx::sqlite::SqliteConnection,
+        offering: &mut Offering,
+        year: i32,
+    ) -> RepoResult<()> {
+        // Stable persisted ordinal (review O25) - deletion of other meetings
+        // no longer shifts the numbers this meeting generates.
+        let seq: i64 =
+            sqlx::query_scalar("SELECT COALESCE(meeting_seq, 0) FROM meetings WHERE id = ?")
+                .bind(offering.meeting_id)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(map_db_err)?;
+
+        // Consume the meeting's monotonic sequence counter. COUNT(*)+1 (and
+        // MAX over remaining rows) reused numbers after a deletion; a
+        // persisted counter consumed under this IMMEDIATE lock never does
+        // (review R6; unique index in migration 20240112 backstops it).
+        let offering_seq: i64 = sqlx::query_scalar(
+            "UPDATE meetings SET offering_seq_counter = offering_seq_counter + 1
+             WHERE id = ? RETURNING offering_seq_counter",
+        )
+        .bind(offering.meeting_id)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(map_db_err)?;
+
+        let seq_u32 = u32::try_from(seq).unwrap_or(u32::MAX);
+        let offering_seq_u32 = u32::try_from(offering_seq).unwrap_or(u32::MAX);
+        offering.offering_number = OfferingNumber::generated(year, seq_u32, offering_seq_u32);
+
+        self.insert_offering(conn, offering).await
+    }
+
     /// Insert a fully-formed offering (and its cash denominations and donations)
     /// into the open transaction owned by `conn`.
     async fn insert_offering(
@@ -724,5 +747,60 @@ mod tests {
             "2024/01/0003",
             "sequence must continue from MAX, never reuse deleted numbers"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_numbered_create_rolls_back_and_leaves_pool_usable() {
+        // Regression (Phase 2.1): every error path after the raw
+        // BEGIN IMMEDIATE must ROLLBACK. A failing sequence SELECT (unknown
+        // meeting) used to return with the transaction open, wedging the
+        // pooled connection for all later writers.
+        let (repo, meeting_id) = setup().await;
+        let ghost_meeting = Uuid::new_v4();
+        let err = repo
+            .create_with_generated_number(
+                Offering::create(
+                    ghost_meeting,
+                    OfferingNumber::new("2024/01/0009").unwrap(),
+                    None,
+                )
+                .unwrap(),
+                2024,
+            )
+            .await
+            .expect_err("unknown meeting must fail the seq SELECT");
+        assert!(
+            matches!(err, RepoError::NotFound),
+            "missing meeting should surface as NotFound, got {err:?}"
+        );
+
+        // The pool must still serve writes: a real create succeeds and a
+        // follow-up create gets the next sequence number (lock released).
+        let o1 = repo
+            .create_with_generated_number(
+                Offering::create(
+                    meeting_id,
+                    OfferingNumber::new("2024/01/0001").unwrap(),
+                    None,
+                )
+                .unwrap(),
+                2024,
+            )
+            .await
+            .expect("pool must be usable after a rolled-back failure");
+        assert_eq!(o1.offering_number.as_str(), "2024/01/0001");
+        let o2 = repo
+            .create_with_generated_number(
+                Offering::create(
+                    meeting_id,
+                    OfferingNumber::new("2024/01/0002").unwrap(),
+                    None,
+                )
+                .unwrap(),
+                2024,
+            )
+            .await
+            .expect("sequence counter must not have been consumed by the failure");
+        assert_eq!(o2.offering_number.as_str(), "2024/01/0002");
     }
 }

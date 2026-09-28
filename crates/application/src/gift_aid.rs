@@ -114,6 +114,11 @@ impl<'a> GiftAidService<'a> {
                 ));
             }
         }
+        // NOTE (Phase 2.5): the check above races with concurrent creates, so
+        // the partial unique index on active declarations
+        // (`20240120_declaration_active_unique`) backstops it — the loser gets
+        // Conflict from the insert below. Likewise the `(donor_id, version)`
+        // index turns a version-allocation race into a retryable Conflict.
 
         // A Single declaration must point at a real gift of this donor (plan
         // Phase 4.3): linking prevents an open-ended window masquerading as a
@@ -185,6 +190,8 @@ impl<'a> GiftAidService<'a> {
             .await?
             .ok_or_else(|| AppError::NotFound("declaration not found".into()))?;
         let old = crate::audit::state_json(&declaration);
+        // Snapshot for the optimistic-concurrency check at save time (Phase 2.6).
+        let expected_updated_at = declaration.updated_at;
 
         if self.is_used_in_report(actor, &declaration).await? && at < Utc::now() {
             return Err(AppError::Conflict(
@@ -193,7 +200,10 @@ impl<'a> GiftAidService<'a> {
         }
 
         declaration.end_with_reason(at, reason)?;
-        let updated = self.gift_aid.update(declaration).await?;
+        let updated = self
+            .gift_aid
+            .update(declaration, expected_updated_at)
+            .await?;
         self.audit
             .record(
                 actor,
@@ -227,6 +237,8 @@ impl<'a> GiftAidService<'a> {
             .await?
             .ok_or_else(|| AppError::NotFound("declaration not found".into()))?;
         let old = crate::audit::state_json(&declaration);
+        // Snapshot for the optimistic-concurrency check at save time (Phase 2.6).
+        let expected_updated_at = declaration.updated_at;
 
         if self.is_used_in_report(actor, &declaration).await? && at < Utc::now() {
             return Err(AppError::Conflict(
@@ -235,7 +247,10 @@ impl<'a> GiftAidService<'a> {
         }
 
         declaration.revoke_with_reason(at, reason)?;
-        let updated = self.gift_aid.update(declaration).await?;
+        let updated = self
+            .gift_aid
+            .update(declaration, expected_updated_at)
+            .await?;
         self.audit
             .record(
                 actor,
@@ -407,8 +422,9 @@ impl<'a> GiftAidService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| AppError::NotFound("declaration amendment not found".into()))?;
-        // Snapshot for optimistic-concurrency check at save time (review O27).
-        let expected_updated_at = amendment.updated_at;
+        // Snapshots for the optimistic-concurrency checks at save time
+        // (review O27, Phase 2.6).
+        let expected_amendment_updated_at = amendment.updated_at;
         amendment.approve()?;
 
         let mut declaration = self
@@ -417,6 +433,7 @@ impl<'a> GiftAidService<'a> {
             .await?
             .ok_or_else(|| AppError::NotFound("declaration not found".into()))?;
         let old = crate::audit::state_json(&declaration);
+        let expected_declaration_updated_at = declaration.updated_at;
         match &amendment.change {
             DeclarationChange::EndDeclaration { at, reason } => {
                 declaration.end_with_reason(*at, reason.as_deref())?;
@@ -426,11 +443,18 @@ impl<'a> GiftAidService<'a> {
             }
         }
 
-        let amendment = self
+        // Single unit-of-work (Phase 2.6): approval + declaration-apply commit
+        // atomically; a concurrent approval surfaces Conflict with neither
+        // half applied, so a retry reloads both rows.
+        let (amendment, updated) = self
             .declaration_amendments
-            .update(amendment, expected_updated_at)
+            .approve_and_apply(
+                amendment,
+                expected_amendment_updated_at,
+                declaration,
+                expected_declaration_updated_at,
+            )
             .await?;
-        let updated = self.gift_aid.update(declaration).await?;
         self.audit
             .record(
                 actor,

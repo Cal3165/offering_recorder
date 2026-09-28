@@ -20,7 +20,14 @@ use crate::error::{InfraError, InfraResult};
 
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
+/// GCM authentication tag appended to the ciphertext by AES-256-GCM.
+const TAG_LEN: usize = 16;
 const MAX_BACKUP_SIZE: u64 = 500 * 1024 * 1024; // 500MB
+/// Smallest possible sealed backup: `salt || nonce || tag` with an empty
+/// plaintext. Anything shorter cannot be one of ours (Phase 2.4).
+const MIN_SEALED_LEN: usize = SALT_LEN + NONCE_LEN + TAG_LEN;
+/// Magic bytes of a plaintext SQLite database file.
+const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
 
 /// Derive a 32-byte AES key from a passphrase and a per-backup random salt.
 /// The salt is stored alongside the ciphertext (see [`encrypt_file`]), so a
@@ -115,7 +122,7 @@ pub fn decrypt_file(src: &Path, passphrase: &str) -> InfraResult<Vec<u8>> {
 
     let data =
         fs::read(src).map_err(|e| InfraError::Message(format!("read encrypted backup: {e}")))?;
-    if data.len() <= SALT_LEN + NONCE_LEN {
+    if data.len() < MIN_SEALED_LEN {
         return Err(InfraError::Message("encrypted backup is truncated".into()));
     }
     let (salt, rest) = data.split_at(SALT_LEN);
@@ -131,10 +138,42 @@ pub fn decrypt_file(src: &Path, passphrase: &str) -> InfraResult<Vec<u8>> {
         })
 }
 
+/// Whether `path` looks like a sealed (`salt || nonce || ciphertext`) backup.
+///
+/// Content is authoritative, the `.enc` extension is only a hint (Phase 2.4:
+/// operators rename files, and a misnamed plaintext must never be fed to the
+/// key-derivation path):
+/// - a file starting with the SQLite magic is plaintext, whatever its name;
+/// - a file too short to hold `salt || nonce || tag` is not sealed either;
+/// - otherwise the `.enc` extension decides, falling back to treating
+///   non-SQLite content of sufficient length as sealed (a renamed `.enc`
+///   file) so `validate`/`restore` attempt decryption instead of failing an
+///   integrity check on ciphertext.
 #[must_use]
 pub fn is_encrypted(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("enc"))
+    let has_enc_hint = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("enc"));
+    let content = fs::read(path).ok();
+    match content {
+        None => has_enc_hint,
+        Some(bytes) => {
+            if bytes.starts_with(SQLITE_MAGIC) {
+                return false;
+            }
+            if bytes.len() < MIN_SEALED_LEN {
+                return false;
+            }
+            if has_enc_hint {
+                return true;
+            }
+            // No hint and not SQLite: could be a renamed sealed backup.
+            // Plaintext backups are always SQLite files, so anything else of
+            // sealable length is treated as sealed and offered to decryption
+            // (a wrong guess still fails safe with a decrypt error).
+            true
+        }
+    }
 }
 
 #[cfg(test)]
@@ -206,5 +245,37 @@ mod tests {
     #[test]
     fn wrong_salt_length_is_rejected() {
         assert!(derive_key("x", &[0u8; 8]).is_err());
+    }
+
+    #[test]
+    fn is_encrypted_sniffs_content_not_just_extension() {
+        // Phase 2.4: content wins over the file name.
+        let dir = temp_dir("sniff");
+        // Plaintext SQLite magic with a misleading .enc name is plaintext.
+        let fake_enc = dir.join("plain.sqlite.enc");
+        let mut magic = SQLITE_MAGIC.to_vec();
+        magic.extend_from_slice(&[0u8; 100]);
+        fs::write(&fake_enc, &magic).unwrap();
+        assert!(!is_encrypted(&fake_enc));
+
+        // Real sealed backup renamed to .sqlite is still detected.
+        let src = dir.join("plain.bin");
+        fs::write(&src, b"payload").unwrap();
+        let sealed = dir.join("cipher.enc");
+        encrypt_file(&src, &sealed, "correct").unwrap();
+        assert!(is_encrypted(&sealed));
+        let renamed = dir.join("cipher.sqlite");
+        fs::rename(&sealed, &renamed).unwrap();
+        assert!(
+            is_encrypted(&renamed),
+            "renamed sealed backup must still sniff as encrypted"
+        );
+
+        // Truncated files can never be sealed backups.
+        let tiny = dir.join("tiny.sqlite");
+        fs::write(&tiny, b"not a database").unwrap();
+        assert!(!is_encrypted(&tiny));
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

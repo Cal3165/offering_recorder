@@ -159,6 +159,89 @@ impl DeclarationAmendmentRepository for SqliteDeclarationAmendmentRepository {
         Ok(amendment)
     }
 
+    async fn approve_and_apply(
+        &self,
+        amendment: DeclarationAmendment,
+        expected_amendment_updated_at: chrono::DateTime<chrono::Utc>,
+        declaration: offering_domain::entities::gift_aid::GiftAidDeclaration,
+        expected_declaration_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<(
+        DeclarationAmendment,
+        offering_domain::entities::gift_aid::GiftAidDeclaration,
+    )> {
+        // Single unit-of-work (Phase 2.6): the approval and the declaration
+        // state it produces commit atomically. Either optimistic-concurrency
+        // check failing rolls back both writes — a retry then sees Conflict
+        // with no half-applied state. The sqlx transaction guard rolls back
+        // on any early return, so no raw ROLLBACK strings are needed.
+        let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
+
+        let change = to_json(&amendment.change)?;
+        let counter = amendment
+            .counter_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
+        let checker = amendment
+            .checker_signature
+            .as_ref()
+            .map(to_json)
+            .transpose()?;
+        let amendment_rows = sqlx::query(
+            "UPDATE declaration_amendments SET reason = ?, change = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+        )
+        .bind(&amendment.reason)
+        .bind(change)
+        .bind(&counter)
+        .bind(&checker)
+        .bind(to_json(&amendment.status)?)
+        .bind(amendment.updated_at)
+        .bind(amendment.id)
+        .bind(expected_amendment_updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db_err)?;
+        if amendment_rows.rows_affected() == 0 {
+            return Err(RepoError::Conflict(
+                "declaration amendment was modified by another operation; reload and retry".into(),
+            ));
+        }
+
+        let declaration_rows = sqlx::query(
+            "UPDATE gift_aid_declarations SET effective_from = ?, effective_until = ?, status = ?, declaration_type = ?, charity_name = ?, donor_full_name = ?, donor_address_line1 = ?, donor_address_line2 = ?, donor_address_line3 = ?, donor_address_postcode = ?, declaration_method = ?, received_at = ?, declaration_text_version = ?, single_donation_id = ?, cancelled_at = ?, cancellation_reason = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+        )
+        .bind(declaration.effective_from)
+        .bind(declaration.effective_until)
+        .bind(to_json(&declaration.status)?)
+        .bind(to_json(&declaration.declaration_type)?)
+        .bind(&declaration.charity_name)
+        .bind(&declaration.donor_full_name)
+        .bind(declaration.donor_address.as_ref().map(|a| a.line1.clone()))
+        .bind(declaration.donor_address.as_ref().and_then(|a| a.line2.clone()))
+        .bind(declaration.donor_address.as_ref().and_then(|a| a.line3.clone()))
+        .bind(declaration.donor_address.as_ref().map(|a| a.postcode.as_str()))
+        .bind(to_json(&declaration.declaration_method)?)
+        .bind(declaration.received_at)
+        .bind(&declaration.declaration_text_version)
+        .bind(declaration.single_donation_id)
+        .bind(declaration.cancelled_at)
+        .bind(&declaration.cancellation_reason)
+        .bind(declaration.updated_at)
+        .bind(declaration.id)
+        .bind(expected_declaration_updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(super::gift_aid::map_declaration_err)?;
+        if declaration_rows.rows_affected() == 0 {
+            return Err(RepoError::Conflict(
+                "declaration was modified by another operation; reload and retry".into(),
+            ));
+        }
+
+        tx.commit().await.map_err(map_db_err)?;
+        Ok((amendment, declaration))
+    }
+
     async fn delete(&self, id: Uuid) -> RepoResult<()> {
         sqlx::query("DELETE FROM declaration_amendments WHERE id = ?")
             .bind(id)

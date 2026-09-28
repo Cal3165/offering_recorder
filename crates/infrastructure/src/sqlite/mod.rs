@@ -37,9 +37,11 @@ pub fn map_db_err(e: sqlx::Error) -> RepoError {
     match e {
         sqlx::Error::RowNotFound => RepoError::NotFound,
         other => {
+            let detail = other.to_string();
             // Unique-constraint violations are business-level conflicts
             // (duplicate deposit, duplicate username, duplicate declaration
-            // version), not opaque database failures (review O9).
+            // version, second active declaration), not opaque database
+            // failures (review O9).
             if other
                 .as_database_error()
                 .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
@@ -47,13 +49,69 @@ pub fn map_db_err(e: sqlx::Error) -> RepoError {
                 // Static message (plan Phase 8.1): the raw SQLite error names
                 // tables/constraints and must not reach the WebView; the
                 // detail goes to the application log instead.
-                tracing::error!(detail = %other, "unique constraint violation");
+                tracing::error!(detail = %detail, "unique constraint violation");
                 RepoError::Conflict("record conflicts with an existing entry".into())
+            } else if detail.contains("FOREIGN KEY constraint failed") {
+                // Phase 2.9: dangling references (offering for a deleted
+                // meeting, donation for a deleted donor) are conflicts with
+                // the current data, actionable by reloading/relinking — not
+                // opaque internals.
+                tracing::error!(detail = %detail, "foreign key violation");
+                RepoError::Conflict(
+                    "record references another record that does not exist; reload and retry".into(),
+                )
+            } else if detail.contains("NOT NULL constraint failed")
+                || detail.contains("CHECK constraint failed")
+                || is_guard_trigger_message(&detail)
+            {
+                // Phase 2.9: NOT NULL / CHECK / money-and-guard trigger
+                // rejections mean the data itself is invalid. Our trigger
+                // messages ("amount_pence must be >= 0", ...) are written for
+                // operators and carry no internals, so they are safe to
+                // surface; anything else is reduced to a generic message with
+                // the detail in the log.
+                tracing::error!(detail = %detail, "data guard violation");
+                RepoError::InvalidData(guard_message(&detail))
             } else {
-                RepoError::Database(other.to_string())
+                tracing::error!(detail = %detail, "database error");
+                RepoError::Database(detail)
             }
         }
     }
+}
+
+/// Our own trigger guard messages are operator-actionable plain sentences
+/// (see migrations `20240110*` and `20240118/19*`); surface them verbatim.
+fn is_guard_trigger_message(detail: &str) -> bool {
+    const GUARDS: &[&str] = &[
+        "must be >= 0",
+        "must not be null",
+        "must not be empty",
+        "deposit amounts",
+        "deposit item amounts",
+        "gasds claim amounts",
+        "date must",
+        "attendance must",
+    ];
+    GUARDS.iter().any(|g| detail.contains(g))
+}
+
+/// Surface our own guard-trigger text verbatim (it names no tables or files);
+/// collapse every other raw SQLite message to a generic sentence so table,
+/// trigger and file-path internals never reach the `WebView` (plan Phase 8.1).
+fn guard_message(detail: &str) -> String {
+    // Trigger ABORTs surface as the bare message; SQLite constraint failures
+    // arrive prefixed ("CHECK constraint failed: ..."). Prefer the part after
+    // the first ": " when it looks like one of our guard sentences.
+    if let Some((_, tail)) = detail.split_once(": ") {
+        if is_guard_trigger_message(tail) {
+            return tail.trim().to_string();
+        }
+    }
+    if is_guard_trigger_message(detail) && !detail.contains("constraint failed") {
+        return detail.trim().to_string();
+    }
+    "stored data failed validation; details are in the application log".into()
 }
 
 /// # Errors
@@ -106,4 +164,91 @@ pub fn page_binds(limit: Option<u32>, offset: Option<u32>) -> (i64, i64) {
         None => -1,
     };
     (limit, i64::from(offset.unwrap_or(0)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect_in_memory;
+
+    #[tokio::test]
+    async fn foreign_key_violations_become_actionable_conflicts() {
+        // Phase 2.9: an offering for a meeting that does not exist is a
+        // conflict with current data (reload/relink), not an opaque failure —
+        // and the raw SQLite text must not leak.
+        let pool = connect_in_memory().await.unwrap();
+        let err = sqlx::query(
+            "INSERT INTO offerings (id, meeting_id, offering_number, status, created_at, updated_at)
+             VALUES ('o1', 'missing-meeting', '2024/01/0001', '\"Draft\"', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+        )
+        .execute(&pool)
+        .await
+        .map_err(map_db_err)
+        .expect_err("dangling meeting_id must fail");
+        match err {
+            RepoError::Conflict(msg) => {
+                assert!(msg.contains("does not exist"), "actionable, got: {msg}");
+                assert!(!msg.contains("FOREIGN KEY"), "no raw SQL text: {msg}");
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn not_null_violations_become_invalid_data() {
+        // Phase 2.9: missing required columns are InvalidData without raw
+        // SQLite internals.
+        let pool = connect_in_memory().await.unwrap();
+        let err = sqlx::query("INSERT INTO meetings (id) VALUES ('m1')")
+            .execute(&pool)
+            .await
+            .map_err(map_db_err)
+            .expect_err("NULL name must fail");
+        match err {
+            RepoError::InvalidData(msg) => {
+                assert!(!msg.contains("sqlite"), "no raw SQL text: {msg}");
+                assert!(!msg.contains("meetings.name"), "no internals: {msg}");
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn guard_trigger_messages_stay_operator_readable() {
+        // Phase 2.9: our own money/guard trigger sentences are safe to surface
+        // verbatim — they name no tables or files.
+        let pool = connect_in_memory().await.unwrap();
+        let err = sqlx::query(
+            "INSERT INTO donation_cash_denominations (donation_id, denomination, count) VALUES ('d1', '\"Note500p\"', -1)",
+        )
+        .execute(&pool)
+        .await
+        .map_err(map_db_err)
+        .expect_err("negative count must fail");
+        match err {
+            RepoError::InvalidData(msg) => {
+                assert!(msg.contains("count must be >= 0"), "got: {msg}");
+            }
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unique_violations_stay_conflicts_without_internals() {
+        // Unchanged behavior, pinned: Conflict with no table/constraint names.
+        let pool = connect_in_memory().await.unwrap();
+        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES ('m1', 'A', 0, '10:00', 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let err = sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES ('m1', 'B', 1, '11:00', 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
+            .execute(&pool)
+            .await
+            .map_err(map_db_err)
+            .expect_err("duplicate id must fail");
+        match err {
+            RepoError::Conflict(msg) => assert!(!msg.contains("meetings"), "got: {msg}"),
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
 }

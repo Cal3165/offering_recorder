@@ -1,10 +1,33 @@
 use sqlx::migrate::Migrator;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::error::{InfraError, InfraResult};
 
 pub static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
+
+/// How long a connection waits on a locked database before surfacing
+/// `SQLITE_BUSY` (Phase 2.2): concurrent writers (offering creates, meeting
+/// creates) serialise instead of failing immediately.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Apply per-connection pragmas after connecting: WAL lets readers proceed
+/// during a writer's transaction and `NORMAL` synchronous is the documented
+/// safe setting for WAL mode.
+async fn apply_pragmas(pool: &SqlitePool) -> InfraResult<()> {
+    sqlx::query("PRAGMA journal_mode=WAL")
+        .execute(pool)
+        .await
+        .map_err(InfraError::Database)?;
+    sqlx::query("PRAGMA synchronous=NORMAL")
+        .execute(pool)
+        .await
+        .map_err(InfraError::Database)?;
+    Ok(())
+}
 
 /// # Errors
 ///
@@ -13,11 +36,15 @@ pub async fn connect(path: &str) -> InfraResult<SqlitePool> {
     let options = SqliteConnectOptions::from_str(path)
         .map_err(|e| InfraError::Message(format!("invalid sqlite path: {e}")))?
         .create_if_missing(true)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        .busy_timeout(BUSY_TIMEOUT)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
         .await?;
+    apply_pragmas(&pool).await?;
     MIGRATOR.run(&pool).await?;
     Ok(pool)
 }
@@ -30,7 +57,8 @@ pub async fn connect_in_memory() -> InfraResult<SqlitePool> {
     let url = format!("sqlite:file:{db_name}?mode=memory&cache=shared");
     let options = SqliteConnectOptions::from_str(&url)
         .map_err(|e| InfraError::Message(format!("invalid sqlite path: {e}")))?
-        .foreign_keys(true);
+        .foreign_keys(true)
+        .busy_timeout(BUSY_TIMEOUT);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
@@ -147,6 +175,32 @@ mod tests {
         ] {
             assert!(audit.contains(col), "audit_events missing column {col}");
         }
+    }
+
+    #[tokio::test]
+    async fn file_connections_use_wal_and_busy_timeout() {
+        // Phase 2.2: lock contention must wait (busy_timeout) rather than
+        // fail with SQLITE_BUSY, and readers must not block writers (WAL).
+        let dir = std::env::temp_dir().join(format!("offrec_pragma_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("app.sqlite");
+        let pool = connect(db_path.to_str().unwrap()).await.unwrap();
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            journal.to_lowercase(),
+            "wal",
+            "file databases must run in WAL mode"
+        );
+        let timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(timeout, 5000, "busy_timeout must be 5s");
+        drop(pool);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]

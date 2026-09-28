@@ -95,7 +95,11 @@ pub trait GiftAidRepository: Send + Sync {
     /// # Errors
     ///
     /// Implementations return [`RepoError`] on storage failure.
-    async fn update(&self, declaration: GiftAidDeclaration) -> RepoResult<GiftAidDeclaration>;
+    async fn update(
+        &self,
+        declaration: GiftAidDeclaration,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<GiftAidDeclaration>;
     /// # Errors
     ///
     /// Implementations return [`RepoError`] on storage failure.
@@ -136,6 +140,21 @@ pub trait DeclarationAmendmentRepository: Send + Sync {
         amendment: DeclarationAmendment,
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> RepoResult<DeclarationAmendment>;
+    /// Atomically persist an approved amendment together with the declaration
+    /// state it produces (Phase 2.6): both writes share one transaction and
+    /// both optimistic-concurrency checks must pass, so a concurrent approval
+    /// surfaces [`RepoError::Conflict`] with neither half applied.
+    /// # Errors
+    ///
+    /// Implementations return [`RepoError::Conflict`] when either row changed
+    /// since it was loaded, or [`RepoError`] on storage failure.
+    async fn approve_and_apply(
+        &self,
+        amendment: DeclarationAmendment,
+        expected_amendment_updated_at: chrono::DateTime<chrono::Utc>,
+        declaration: GiftAidDeclaration,
+        expected_declaration_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<(DeclarationAmendment, GiftAidDeclaration)>;
     /// # Errors
     ///
     /// Implementations return [`RepoError`] on storage failure.

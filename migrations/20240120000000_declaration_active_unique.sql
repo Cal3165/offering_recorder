@@ -1,0 +1,25 @@
+-- Phase 2.5: at most one ACTIVE declaration per donor.
+--
+-- The application pre-check in `GiftAidService::create_declaration` races
+-- with concurrent creates (check-then-insert), so this partial unique index
+-- is the backstop: the loser gets a unique-violation mapped to Conflict
+-- ("donor already has an active Gift Aid declaration") instead of silently
+-- ambiguous overlapping history. Ended/Revoked rows are unaffected, so
+-- ending one declaration and creating its successor keeps working.
+--
+-- NOTE: `status` stores serde_json text, i.e. the value includes its double
+-- quotes ('"Active"', not 'Active').
+--
+-- If this migration fails on an existing database with a UNIQUE constraint
+-- error, the database already holds two active declarations for one donor
+-- (manual recovery):
+--   1. Find them:
+--        SELECT donor_id, COUNT(*) FROM gift_aid_declarations
+--        WHERE status = '"Active"' GROUP BY donor_id HAVING COUNT(*) > 1;
+--   2. For each listed donor, inspect the rows (effective_from, version,
+--      created_by) and decide which one is authoritative; END the others via
+--      the application's declaration-amendment flow (or, if the rows were
+--      never used in a report, end them directly).
+--   3. Re-run the migration (restart the app).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_declarations_donor_active
+    ON gift_aid_declarations(donor_id) WHERE status = '"Active"';
