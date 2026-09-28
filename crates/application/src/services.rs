@@ -93,7 +93,7 @@ impl<'a> Services<'a> {
                 audit,
             ),
             community_buildings: CommunityBuildingService::new(community_buildings, audit),
-            banking: BankingService::new(deposits, offerings, meetings, audit),
+            banking: BankingService::new(deposits, offerings, meetings, amendments, audit),
             reports: ReportService::new(
                 reports, offerings, meetings, gift_aid, deposits, amendments, audit,
             ),

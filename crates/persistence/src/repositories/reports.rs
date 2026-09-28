@@ -97,7 +97,11 @@ pub struct GasdsReportEntry {
     pub meeting_name: String,
     pub attendance: Option<u32>,
     pub eligible_amount: Money,
-    pub claimable_amount: Money,
+    /// Eligible amount BEFORE the Gift Aid matching limit and annual ceiling.
+    /// Those are year-scoped and applied when a claim is prepared, never in a
+    /// date-range report (plan Phase 4.5). Previously `claimable_amount`,
+    /// renamed because the old name was presented as a final claim figure.
+    pub eligible_before_matching: Money,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

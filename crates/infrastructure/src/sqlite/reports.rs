@@ -1,22 +1,22 @@
 use super::donors::row_to_address;
 use super::{from_json, map_db_err};
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::NaiveDate;
 use offering_domain::donation_type::DonationType;
 use offering_domain::entities::amendment::Amendment;
 use offering_domain::entities::audit_event::AuditEvent;
 use offering_domain::entities::gift_aid::GiftAidDeclaration;
 use offering_domain::offering_number::OfferingNumber;
 use offering_domain::tax_year::TaxYear;
-/// Exclusive upper bound for a date range: the start of the day *after* `end`.
-/// Using `<` against this (instead of `<= end 23:59:59`) includes donations
-/// stamped in the final second / with sub-second precision of `end` (R3).
-fn day_range_end(end: NaiveDate) -> DateTime<Utc> {
+/// Exclusive upper bound for donation-date (`d.date`, `YYYY-MM-DD` text)
+/// ranges: the day after `end`, formatted for lexicographic comparison.
+/// All statutory reports filter on the donation's collection date, never the
+/// audit `created_at` (plan Phase 4.2).
+fn exclusive_end_str(end: NaiveDate) -> String {
     end.succ_opt()
         .unwrap_or(NaiveDate::MAX)
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc()
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 use offering_persistence::{
@@ -119,16 +119,26 @@ async fn load_amendments_for_offerings(
     if offering_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = super::in_placeholders(offering_ids.len());
-    let query = format!(
-        "SELECT * FROM amendments WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
-    );
-    let mut q = sqlx::query(&query);
-    for id in offering_ids {
-        q = q.bind(id);
+    // Chunked (plan Phase 4.5): one statement per 500 ids, never one giant
+    // `IN (...)` that trips SQLite's bind-variable ceiling.
+    let mut out = Vec::new();
+    for chunk in offering_ids.chunks(super::IN_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len());
+        let query = format!(
+            "SELECT * FROM amendments WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
+        );
+        let mut q = sqlx::query(&query);
+        for id in chunk {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
+        out.extend(
+            rows.iter()
+                .map(row_to_amendment)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
     }
-    let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
-    rows.iter().map(row_to_amendment).collect()
+    Ok(out)
 }
 
 #[async_trait]
@@ -139,13 +149,17 @@ impl ReportRepository for SqliteReportRepository {
         end: NaiveDate,
         meeting_id: Option<Uuid>,
     ) -> RepoResult<Vec<BookkeepingEntry>> {
-        let start_dt = start.and_hms_opt(0, 0, 0).unwrap().and_utc();
-        let end_dt = day_range_end(end);
+        // Donation-date basis (plan Phase 4.2): `d.date`, like gift_aid_report.
+        // The offering's `created_at` is when the row was typed in, not when
+        // the money was collected — back-entered donations landed in the wrong
+        // period on every report but Gift Aid.
+        let start_str = start.format("%Y-%m-%d").to_string();
+        let end_exclusive = exclusive_end_str(end);
 
         let mut sql = String::from(
             "SELECT d.donation_type, SUM(d.amount_pence) AS total, COUNT(*) AS count
              FROM donations d JOIN offerings o ON o.id = d.offering_id
-             WHERE o.created_at >= ? AND o.created_at < ?",
+             WHERE d.date >= ? AND d.date < ?",
         );
         if meeting_id.is_some() {
             sql.push_str(" AND o.meeting_id = ?");
@@ -153,7 +167,7 @@ impl ReportRepository for SqliteReportRepository {
         sql.push_str(" GROUP BY d.donation_type");
 
         let mut query = sqlx::query(&sql);
-        query = query.bind(start_dt).bind(end_dt);
+        query = query.bind(start_str).bind(end_exclusive);
         if let Some(mid) = meeting_id {
             query = query.bind(mid);
         }
@@ -179,25 +193,25 @@ impl ReportRepository for SqliteReportRepository {
         start: NaiveDate,
         end: NaiveDate,
     ) -> RepoResult<Vec<DonorReportEntry>> {
-        let start_dt = start.and_hms_opt(0, 0, 0).unwrap().and_utc();
-        let end_dt = day_range_end(end);
+        let start_str = start.format("%Y-%m-%d").to_string();
+        let end_exclusive = exclusive_end_str(end);
 
         let sql = format!(
             "SELECT donors.id, donors.first_name, donors.last_name, donors.preferred_name,
                     donors.address_line1, donors.address_line2, donors.address_line3, donors.postcode,
                     COUNT(d.id) AS donation_count, SUM(d.amount_pence) AS total_pence,
-                    MAX(d.created_at) AS most_recent,
+                    MAX(d.date) AS most_recent,
                     MAX(CASE WHEN {0} THEN 1 ELSE 0 END) AS eligible
              FROM donors JOIN donations d ON d.donor_id = donors.id
              JOIN offerings o ON o.id = d.offering_id
-             WHERE o.created_at >= ? AND o.created_at < ?
+             WHERE d.date >= ? AND d.date < ?
              GROUP BY donors.id ORDER BY donors.last_name, donors.first_name",
             declaration_covers_donation_sql()
         );
 
         let rows = sqlx::query(&sql)
-            .bind(start_dt)
-            .bind(end_dt)
+            .bind(start_str)
+            .bind(end_exclusive)
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
@@ -207,6 +221,16 @@ impl ReportRepository for SqliteReportRepository {
             let first: String = row.get("first_name");
             let last: String = row.get("last_name");
             let preferred: Option<String> = row.get("preferred_name");
+            // `MAX(d.date)` is `YYYY-MM-DD` text (the donation-date basis,
+            // plan Phase 4.2), not a timestamp.
+            let most_recent = row
+                .get::<Option<String>, _>("most_recent")
+                .map(|s| {
+                    NaiveDate::parse_from_str(&s, "%F").map_err(|e| {
+                        RepoError::InvalidData(format!("invalid donation date {s:?}: {e}"))
+                    })
+                })
+                .transpose()?;
             entries.push(DonorReportEntry {
                 donor_id: row.get("id"),
                 donor_name: donor_name(&first, &last, preferred.as_deref()),
@@ -214,9 +238,7 @@ impl ReportRepository for SqliteReportRepository {
                 total_donations: super::money_from_pence(row.get::<i64, _>("total_pence"))?,
                 donation_count: u32::try_from(row.get::<i64, _>("donation_count"))
                     .unwrap_or(u32::MAX),
-                most_recent_donation: row
-                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("most_recent")
-                    .map(|dt| dt.date_naive()),
+                most_recent_donation: most_recent,
                 gift_aid_eligible: row.get::<i64, _>("eligible") > 0,
             });
         }
@@ -228,21 +250,24 @@ impl ReportRepository for SqliteReportRepository {
         start: NaiveDate,
         end: NaiveDate,
     ) -> RepoResult<Vec<IifDonationRow>> {
-        let start_dt = start.and_hms_opt(0, 0, 0).unwrap().and_utc();
-        let end_dt = day_range_end(end);
+        let start_str = start.format("%Y-%m-%d").to_string();
+        let end_exclusive = exclusive_end_str(end);
 
-        let sql = "SELECT o.offering_number, o.created_at AS offering_date,
+        // Donation-date basis (plan Phase 4.2): the exported DATE is when the
+        // money was collected (`d.date`), and the window filters on it — not
+        // on when the offering row was typed in.
+        let sql = "SELECT o.offering_number, d.date AS donation_date,
                           donor.first_name, donor.last_name, donor.preferred_name,
                           d.amount_pence, d.donation_type, d.payment_method
                    FROM donations d
                    JOIN offerings o ON o.id = d.offering_id
                    LEFT JOIN donors donor ON donor.id = d.donor_id
-                   WHERE o.created_at >= ? AND o.created_at < ?
-                   ORDER BY o.created_at, d.created_at";
+                   WHERE d.date >= ? AND d.date < ?
+                   ORDER BY d.date, d.created_at";
 
         let rows = sqlx::query(sql)
-            .bind(start_dt)
-            .bind(end_dt)
+            .bind(start_str)
+            .bind(end_exclusive)
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
@@ -256,10 +281,12 @@ impl ReportRepository for SqliteReportRepository {
                 (Some(f), Some(l)) => Some(donor_name(&f, &l, preferred.as_deref())),
                 _ => None,
             };
+            let date_str: String = row.get("donation_date");
+            let donation_date = NaiveDate::parse_from_str(&date_str, "%F").map_err(|e| {
+                RepoError::InvalidData(format!("invalid donation date {date_str:?}: {e}"))
+            })?;
             out.push(IifDonationRow {
-                donation_date: row
-                    .get::<chrono::DateTime<chrono::Utc>, _>("offering_date")
-                    .date_naive(),
+                donation_date,
                 offering_number: row.get("offering_number"),
                 donor_name,
                 amount_pence: row.get("amount_pence"),
@@ -275,7 +302,9 @@ impl ReportRepository for SqliteReportRepository {
     async fn gift_aid_report(&self, tax_year: TaxYear) -> RepoResult<Vec<GiftAidReportEntry>> {
         let (start, end) = tax_year_bounds(&tax_year);
         let start_str = start.format("%Y-%m-%d").to_string();
-        let end_str = end.format("%Y-%m-%d").to_string();
+        // Exclusive upper bound (plan Phase 4.5): `< day-after-end` instead of
+        // `<= end`, so every report uses the same half-open convention.
+        let end_exclusive = exclusive_end_str(end);
 
         let sql = format!(
             "SELECT donors.id, donors.last_name, donors.first_name,
@@ -303,15 +332,15 @@ impl ReportRepository for SqliteReportRepository {
                   )
                 ORDER BY ga2.version DESC LIMIT 1
              )
-             WHERE d.date >= ? AND d.date <= ?
+             WHERE d.date >= ? AND d.date < ?
                AND {0}
-             ORDER BY COALESCE(ga.donor_full_name, donors.last_name), d.created_at",
+             ORDER BY COALESCE(ga.donor_full_name, donors.last_name), d.date",
             declaration_covers_donation_sql()
         );
 
         let rows = sqlx::query(&sql)
             .bind(&start_str)
-            .bind(&end_str)
+            .bind(&end_exclusive)
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
@@ -414,22 +443,31 @@ impl ReportRepository for SqliteReportRepository {
             &amendments,
             &declaration_amendments,
         );
-        let placeholders = super::in_placeholders(related_ids.len());
-        let audit_sql = format!(
-            "SELECT * FROM audit_events WHERE entity_id IN ({placeholders}) ORDER BY timestamp"
-        );
-        let mut audit_query = sqlx::query(&audit_sql);
-        for id in &related_ids {
-            audit_query = audit_query.bind(id);
+        // Chunked (plan Phase 4.5): a long-standing donor can relate to more
+        // ids than one statement accepts. Chunks are merged and re-sorted here
+        // because no single ORDER BY spans statements.
+        let mut audit_events: Vec<AuditEvent> = Vec::new();
+        for chunk in related_ids.chunks(super::IN_CHUNK_SIZE) {
+            let placeholders = super::in_placeholders(chunk.len());
+            let audit_sql = format!(
+                "SELECT * FROM audit_events WHERE entity_id IN ({placeholders}) ORDER BY timestamp"
+            );
+            let mut audit_query = sqlx::query(&audit_sql);
+            for id in chunk {
+                audit_query = audit_query.bind(id);
+            }
+            let audit_rows = audit_query
+                .fetch_all(&self.pool.get())
+                .await
+                .map_err(map_db_err)?;
+            audit_events.extend(
+                audit_rows
+                    .iter()
+                    .map(row_to_event)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
-        let audit_rows = audit_query
-            .fetch_all(&self.pool.get())
-            .await
-            .map_err(map_db_err)?;
-        let audit_events: Vec<AuditEvent> = audit_rows
-            .iter()
-            .map(row_to_event)
-            .collect::<Result<_, _>>()?;
+        audit_events.sort_by_key(|e| e.timestamp);
 
         Ok(GdprReport {
             donor,

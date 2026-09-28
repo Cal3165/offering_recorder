@@ -298,7 +298,7 @@
             <td>{e.meeting_name}</td>
             <td>{e.attendance ?? ""}</td>
             <td>{fmtPence(e.eligible_amount.pence)}</td>
-            <td>{fmtPence(e.claimable_amount.pence)}</td>
+            <td>{fmtPence(e.eligible_before_matching.pence)}</td>
           </tr>
         {/each}
       </tbody>

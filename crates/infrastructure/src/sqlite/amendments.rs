@@ -143,19 +143,34 @@ impl AmendmentRepository for SqliteAmendmentRepository {
         .await
         .map_err(map_db_err)?;
         if result.rows_affected() == 0 {
-            return Err(RepoError::Conflict(
-                "amendment was modified by another operation; reload and retry".into(),
-            ));
+            // Phase 4.4: missing row → NotFound; live row with a moved
+            // timestamp → Conflict (optimistic-concurrency, unchanged). No
+            // open transaction here, so a fresh connection is safe.
+            let mut conn = self.pool.get().acquire().await.map_err(map_db_err)?;
+            if super::row_exists(&mut conn, "amendments", amendment.id()).await? {
+                return Err(RepoError::Conflict(
+                    "amendment was modified by another operation; reload and retry".into(),
+                ));
+            }
+            return Err(RepoError::NotFound);
         }
         Ok(amendment)
     }
 
     async fn delete(&self, id: Uuid) -> RepoResult<()> {
-        sqlx::query("DELETE FROM amendments WHERE id = ?")
+        // Phase 4.4: deleting an amendment that is not there is NotFound.
+        // Policy (no CASCADE migration): approved amendments are financial
+        // evidence and are rejected at the application layer with Conflict;
+        // drafts may be deleted by their recorders. Offering deletes never
+        // cascade into this table (see `SqliteOfferingRepository::delete`).
+        let result = sqlx::query("DELETE FROM amendments WHERE id = ?")
             .bind(id)
             .execute(&self.pool.get())
             .await
             .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::NotFound);
+        }
         Ok(())
     }
 
@@ -174,5 +189,66 @@ impl AmendmentRepository for SqliteAmendmentRepository {
             .await
             .map_err(map_db_err)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect_in_memory;
+    use chrono::Utc;
+
+    /// Seed the user → meeting → offering parents required by foreign keys.
+    async fn setup() -> (SqliteAmendmentRepository, Uuid, Uuid) {
+        let pool = connect_in_memory().await.unwrap();
+        let now = Utc::now().to_rfc3339();
+        let user = Uuid::new_v4();
+        let meeting = Uuid::new_v4();
+        let offering = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, username, display_name, roles, is_active, created_at, updated_at) VALUES (?, ?, ?, '[]', 1, ?, ?)")
+            .bind(user).bind("recorder").bind("Recorder").bind(&now).bind(&now)
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, ?, ?)")
+            .bind(meeting).bind(&now).bind(&now)
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO offerings (id, meeting_id, offering_number, status, created_at, updated_at) VALUES (?, ?, '1', 'Locked', ?, ?)")
+            .bind(offering).bind(meeting).bind(&now).bind(&now)
+            .execute(&pool).await.unwrap();
+        (
+            SqliteAmendmentRepository::new(crate::SharedPool::new(pool)),
+            offering,
+            user,
+        )
+    }
+
+    #[tokio::test]
+    async fn delete_missing_amendment_is_not_found() {
+        // Phase 4.4: deleting what is not there is NotFound, not a silent
+        // no-op.
+        let (repo, _, _) = setup().await;
+        let err = repo.delete(Uuid::new_v4()).await.unwrap_err();
+        assert!(
+            matches!(err, RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_missing_amendment_is_not_found() {
+        // Phase 4.4: a conditional write against a gone row is NotFound; the
+        // Conflict arm is reserved for live rows with a moved timestamp.
+        let (repo, offering_id, user) = setup().await;
+        let ghost = Amendment::create(
+            offering_id,
+            "correction",
+            vec![AmendmentChange::SetAttendance(10)],
+            user,
+        )
+        .unwrap();
+        let err = repo.update(ghost, Utc::now()).await.unwrap_err();
+        assert!(
+            matches!(err, RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
     }
 }

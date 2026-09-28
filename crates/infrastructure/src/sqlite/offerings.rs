@@ -101,21 +101,24 @@ async fn load_cash_totals_batch(
     if offering_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let placeholders = super::in_placeholders(offering_ids.len());
-    let query = format!(
-        "SELECT offering_id, denomination, count FROM offering_cash_denominations WHERE offering_id IN ({placeholders})"
-    );
-    let mut q = sqlx::query(&query);
-    for id in offering_ids {
-        q = q.bind(id);
-    }
-    let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
+    // Chunked (plan Phase 4.5): one statement per 500 ids.
     let mut map: std::collections::HashMap<Uuid, CashTotal> = std::collections::HashMap::new();
-    for row in rows {
-        let oid: Uuid = row.get("offering_id");
-        let denom: Denomination = from_json(&row.get::<String, _>("denomination"))?;
-        let count: u32 = row.get("count");
-        map.entry(oid).or_default().set(denom, count);
+    for chunk in offering_ids.chunks(super::IN_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len());
+        let query = format!(
+            "SELECT offering_id, denomination, count FROM offering_cash_denominations WHERE offering_id IN ({placeholders})"
+        );
+        let mut q = sqlx::query(&query);
+        for id in chunk {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
+        for row in rows {
+            let oid: Uuid = row.get("offering_id");
+            let denom: Denomination = from_json(&row.get::<String, _>("denomination"))?;
+            let count: u32 = row.get("count");
+            map.entry(oid).or_default().set(denom, count);
+        }
     }
     Ok(map)
 }
@@ -128,20 +131,22 @@ async fn load_donations_batch(
     if offering_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let placeholders = super::in_placeholders(offering_ids.len());
-    let query = format!(
-        "SELECT * FROM donations WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
-    );
-    let mut q = sqlx::query(&query);
-    for id in offering_ids {
-        q = q.bind(id);
-    }
-    let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
     let mut map: std::collections::HashMap<Uuid, Vec<Donation>> = std::collections::HashMap::new();
-    for row in rows {
-        let oid: Uuid = row.get("offering_id");
-        let donation = row_to_donation(&row)?;
-        map.entry(oid).or_default().push(donation);
+    for chunk in offering_ids.chunks(super::IN_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len());
+        let query = format!(
+            "SELECT * FROM donations WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
+        );
+        let mut q = sqlx::query(&query);
+        for id in chunk {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
+        for row in rows {
+            let oid: Uuid = row.get("offering_id");
+            let donation = row_to_donation(&row)?;
+            map.entry(oid).or_default().push(donation);
+        }
     }
     Ok(map)
 }
@@ -154,24 +159,26 @@ async fn load_cash_breakdowns_batch(
     if donation_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let placeholders = super::in_placeholders(donation_ids.len());
-    let query = format!(
-        "SELECT donation_id, denomination, count FROM donation_cash_denominations WHERE donation_id IN ({placeholders})"
-    );
-    let mut q = sqlx::query(&query);
-    for id in donation_ids {
-        q = q.bind(id);
-    }
-    let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
-    let mut map: std::collections::HashMap<Uuid, CashTotal> = std::collections::HashMap::new();
-    for row in rows {
-        let did: Uuid = row.get("donation_id");
-        let denom: Denomination = from_json(&row.get::<String, _>("denomination"))?;
-        let count: u32 = row.get("count");
-        map.entry(did).or_default().set(denom, count);
+    let mut all: std::collections::HashMap<Uuid, CashTotal> = std::collections::HashMap::new();
+    for chunk in donation_ids.chunks(super::IN_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len());
+        let query = format!(
+            "SELECT donation_id, denomination, count FROM donation_cash_denominations WHERE donation_id IN ({placeholders})"
+        );
+        let mut q = sqlx::query(&query);
+        for id in chunk {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
+        for row in rows {
+            let did: Uuid = row.get("donation_id");
+            let denom: Denomination = from_json(&row.get::<String, _>("denomination"))?;
+            let count: u32 = row.get("count");
+            all.entry(did).or_default().set(denom, count);
+        }
     }
     let result: std::collections::HashMap<Uuid, Option<CashTotal>> =
-        map.into_iter().map(|(k, v)| (k, Some(v))).collect();
+        all.into_iter().map(|(k, v)| (k, Some(v))).collect();
     Ok(result)
 }
 
@@ -329,9 +336,16 @@ impl OfferingRepository for SqliteOfferingRepository {
         .await
         .map_err(map_db_err)?;
         if result.rows_affected() == 0 {
-            return Err(RepoError::Conflict(
-                "offering was modified by another operation; reload and retry".into(),
-            ));
+            // Phase 4.4: missing row → NotFound; live row with a moved
+            // timestamp → Conflict (optimistic-concurrency, unchanged). The
+            // check runs inside this transaction: a second connection would
+            // block on the open write's table locks.
+            if super::row_exists(&mut tx, "offerings", offering.id()).await? {
+                return Err(RepoError::Conflict(
+                    "offering was modified by another operation; reload and retry".into(),
+                ));
+            }
+            return Err(RepoError::NotFound);
         }
 
         sqlx::query("DELETE FROM offering_cash_denominations WHERE offering_id = ?")
@@ -357,12 +371,16 @@ impl OfferingRepository for SqliteOfferingRepository {
             .await
             .map_err(map_db_err)?;
         for donation in offering.donations() {
+            // Phase 4.4 overwrite policy: the rewrite is a full replace, so
+            // child rows always belong to the parent being saved. A stale or
+            // foreign `donation.offering_id` (e.g. a donation object carried
+            // across offerings) is overwritten here rather than persisted.
             sqlx::query(
                 "INSERT INTO donations (id, offering_id, donor_id, amount_pence, donation_type, payment_method, classification, reference, created_at, updated_at, date)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(donation.id)
-            .bind(donation.offering_id)
+            .bind(offering.id())
             .bind(donation.donor_id)
             .bind(donation.amount.pence())
             .bind(super::to_json(&donation.donation_type)?)
@@ -395,11 +413,20 @@ impl OfferingRepository for SqliteOfferingRepository {
     }
 
     async fn delete(&self, id: Uuid) -> RepoResult<()> {
-        sqlx::query("DELETE FROM offerings WHERE id = ?")
+        // Phase 4.4 amendment-delete policy: NO cascade. Amendments are
+        // financial audit evidence, so `offerings → amendments` stays
+        // RESTRICT: deleting an offering that has amendments fails the
+        // foreign key and surfaces as Conflict (delete or correct the
+        // amendments first). Donations cascade (they are part of the
+        // offering); a missing offering is NotFound, not a silent no-op.
+        let result = sqlx::query("DELETE FROM offerings WHERE id = ?")
             .bind(id)
             .execute(&self.pool.get())
             .await
             .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::NotFound);
+        }
         Ok(())
     }
 
@@ -578,12 +605,14 @@ impl SqliteOfferingRepository {
         }
 
         for donation in offering.donations() {
+            // Same overwrite policy as `update`: child rows belong to the
+            // parent being saved (Phase 4.4).
             sqlx::query(
                 "INSERT INTO donations (id, offering_id, donor_id, amount_pence, donation_type, payment_method, classification, reference, created_at, updated_at, date)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(donation.id)
-            .bind(donation.offering_id)
+            .bind(offering.id())
             .bind(donation.donor_id)
             .bind(donation.amount.pence())
             .bind(super::to_json(&donation.donation_type)?)
@@ -790,5 +819,86 @@ mod tests {
             .await
             .expect("sequence counter must not have been consumed by the failure");
         assert_eq!(o2.offering_number().as_str(), "2024/01/0002");
+    }
+
+    #[tokio::test]
+    async fn delete_missing_offering_is_not_found() {
+        // Phase 4.4: deleting what is not there is NotFound, not a silent
+        // no-op.
+        let (repo, _) = setup().await;
+        let err = repo.delete(Uuid::new_v4()).await.unwrap_err();
+        assert!(
+            matches!(err, RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_missing_offering_is_not_found() {
+        // Phase 4.4: a conditional write against a gone row is NotFound; the
+        // Conflict arm is reserved for live rows with a moved timestamp.
+        let (repo, meeting_id) = setup().await;
+        let num = OfferingNumber::new("2024/01/0009").unwrap();
+        let offering = Offering::create(meeting_id, num, None).unwrap();
+        let err = repo.update(offering, chrono::Utc::now()).await.unwrap_err();
+        assert!(
+            matches!(err, RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_rewrite_forces_child_donation_offering_id() {
+        // Phase 4.4 overwrite policy: the rewrite is a full replace, so a
+        // stale/foreign `donation.offering_id` carried in memory must not be
+        // persisted — the child row belongs to the parent being saved.
+        use offering_domain::donation_type::DonationType;
+        use offering_domain::entities::donation::Donation;
+        use offering_domain::money::Money;
+        use offering_domain::payment_method::PaymentMethod;
+
+        let (repo, meeting_id) = setup().await;
+        let num = OfferingNumber::new("2024/01/0007").unwrap();
+        let mut offering = Offering::create(meeting_id, num, None).unwrap();
+        offering
+            .add_donation(
+                Donation::anonymous(
+                    offering.id(),
+                    Money::from_pence(1000).unwrap(),
+                    DonationType::Offering,
+                    PaymentMethod::Cheque,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let created = repo.create(offering).await.unwrap();
+
+        let loaded = repo.get(created.id()).await.unwrap().unwrap();
+        let expected = loaded.updated_at();
+        let mut donations = loaded.donations().to_vec();
+        assert_eq!(donations.len(), 1);
+        donations[0].offering_id = Uuid::new_v4();
+        let tampered = Offering::reconstitute(
+            loaded.id(),
+            loaded.meeting_id(),
+            loaded.offering_number().clone(),
+            loaded.description().map(str::to_string),
+            loaded.cash_denominations().clone(),
+            loaded.attendance(),
+            donations,
+            loaded.counter_signature().cloned(),
+            loaded.checker_signature().cloned(),
+            loaded.status(),
+            loaded.created_at(),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        repo.update(tampered, expected).await.unwrap();
+
+        let reloaded = repo.get(created.id()).await.unwrap().unwrap();
+        assert_eq!(reloaded.donations().len(), 1);
+        assert_eq!(reloaded.donations()[0].offering_id, created.id());
     }
 }

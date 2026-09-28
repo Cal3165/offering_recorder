@@ -1,10 +1,12 @@
 use chrono::{DateTime, Utc};
+use offering_domain::entities::amendment::OfferingReconstruction;
 use offering_domain::entities::bank_deposit::{BankDeposit, BankDepositItem};
 use offering_domain::entities::user::User;
 use offering_domain::money::Money;
 use offering_domain::payment_method::PaymentMethod;
 use offering_persistence::{
-    AuditRepository, BankDepositRepository, MeetingRepository, OfferingRepository,
+    AmendmentRepository, AuditRepository, BankDepositRepository, MeetingRepository,
+    OfferingRepository,
 };
 use uuid::Uuid;
 
@@ -17,6 +19,7 @@ pub struct BankingService<'a> {
     deposits: &'a dyn BankDepositRepository,
     offerings: &'a dyn OfferingRepository,
     meetings: &'a dyn MeetingRepository,
+    amendments: &'a dyn AmendmentRepository,
     audit: AuditLog<'a>,
 }
 
@@ -25,13 +28,40 @@ impl<'a> BankingService<'a> {
         deposits: &'a dyn BankDepositRepository,
         offerings: &'a dyn OfferingRepository,
         meetings: &'a dyn MeetingRepository,
+        amendments: &'a dyn AmendmentRepository,
         audit_repo: &'a dyn AuditRepository,
     ) -> Self {
         BankingService {
             deposits,
             offerings,
             meetings,
+            amendments,
             audit: AuditLog::new(audit_repo),
+        }
+    }
+
+    /// Current (post-amendment) state of a stored offering row (plan Phase
+    /// 4.1). Deposit snapshots and candidate totals must reflect approved
+    /// amendments, never the stale pre-amendment row.
+    async fn current_offering(
+        &self,
+        offering_id: Uuid,
+    ) -> AppResult<offering_domain::entities::offering::Offering> {
+        let stored = self
+            .offerings
+            .get(offering_id)
+            .await?
+            .ok_or_else(|| crate::error::AppError::NotFound("offering not found".into()))?;
+        let approved = self
+            .amendments
+            .approved_amendments_for_offering(offering_id)
+            .await?;
+        if approved.is_empty() {
+            Ok(stored)
+        } else {
+            Ok(OfferingReconstruction::from_amendments(stored, approved)?
+                .current()
+                .clone())
         }
     }
 
@@ -65,11 +95,18 @@ impl<'a> BankingService<'a> {
 
         let mut items = Vec::new();
         for offering_id in offering_ids {
-            let offering = self
-                .offerings
-                .get(offering_id)
-                .await?
-                .ok_or_else(|| crate::error::AppError::NotFound("offering not found".into()))?;
+            // Snapshot the CURRENT offering (plan Phase 4.1): approved
+            // amendments applied first, so a correction approved before
+            // banking is what gets deposited — not the stale stored row.
+            //
+            // Post-deposit amendments are NOT folded into this snapshot. The
+            // deposit is banking evidence taken at a point in time; when an
+            // amendment is approved after banking, the claim paths see the new
+            // current state while this snapshot stays fixed, and GASDS
+            // readiness excludes the unbanked difference with a shortfall
+            // warning until the deposit is deleted and re-taken (re-bank
+            // flow — deletion is blocked once actuals are recorded).
+            let offering = self.current_offering(offering_id).await?;
             if !offering.is_locked() {
                 return Err(crate::error::AppError::Validation(
                     "only locked offerings can be banked".into(),
@@ -127,8 +164,10 @@ impl<'a> BankingService<'a> {
         }
 
         // The PK on bank_deposit_items(offering_id) backs the pre-check above:
-        // losing the race surfaces as the precise AlreadyDeposited error
-        // instead of a raw constraint message (review O9).
+        // losing the race surfaces as an explicit AlreadyDeposited conflict
+        // (Phase 4.3 keeps the single-deposit-per-offering PK; splits across
+        // deposits are not supported) instead of a raw constraint message
+        // (review O9).
         let deposit = self.deposits.create(deposit).await.map_err(|e| match e {
             offering_persistence::RepoError::Conflict(_) => {
                 crate::error::AppError::AlreadyDeposited
@@ -258,8 +297,11 @@ impl<'a> BankingService<'a> {
         }
         // Resolve everything with three queries instead of one round-trip per
         // offering (the previous N+1 fetched deposits and the meeting for every
-        // offering individually).
-        let all = self.offerings.list(None, None).await?;
+        // offering individually). Candidate totals use CURRENT (post-amendment)
+        // state (plan Phase 4.1) so the banking screen agrees with what a
+        // deposit would snapshot.
+        let stored = self.offerings.list(None, None).await?;
+        let all = crate::offerings::apply_approved_amendments(self.amendments, stored).await?;
         let deposited_ids: std::collections::HashSet<Uuid> = self
             .deposits
             .list()

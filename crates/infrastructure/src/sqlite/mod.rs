@@ -147,11 +147,45 @@ pub fn parse_enum<T: DeserializeOwned>(name: &str) -> Result<T, RepoError> {
 ///
 /// The values themselves are always supplied via `.bind()`, never interpolated
 /// into the SQL string, so the generated statement is injection-safe.
+///
+/// Callers must slice large id lists into [`IN_CHUNK_SIZE`] pieces first: a
+/// single statement with more bind variables than SQLite accepts fails with
+/// "too many SQL variables" (plan Phase 4.5).
 #[must_use]
 pub fn in_placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count)
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Maximum number of bound ids in one `IN (...)` clause (plan Phase 4.5).
+/// Well under every SQLite `SQLITE_MAX_VARIABLE_NUMBER` build (999+), so
+/// large reconciliations batch safely on all targets.
+pub const IN_CHUNK_SIZE: usize = 500;
+
+/// Phase 4.4: classify a zero-row conditional write. `true` when the row is
+/// still there but moved under the writer (stale `expected_updated_at` →
+/// caller returns `Conflict`), `false` when the row is gone (→ `NotFound`).
+///
+/// Must run on the SAME connection as the failed write (pass `&mut *tx`):
+/// a second pooled connection blocks on the open write transaction's table
+/// locks (shared-cache in-memory databases hang; file databases would wait
+/// out the busy timeout). Table names are caller constants, never user input.
+/// # Errors
+///
+/// Returns [`RepoError`] if the existence check itself fails.
+pub async fn row_exists(
+    conn: &mut sqlx::sqlite::SqliteConnection,
+    table: &str,
+    id: uuid::Uuid,
+) -> Result<bool, RepoError> {
+    let query = format!("SELECT 1 AS one FROM {table} WHERE id = ?");
+    let row = sqlx::query(&query)
+        .bind(id)
+        .fetch_optional(conn)
+        .await
+        .map_err(map_db_err)?;
+    Ok(row.is_some())
 }
 
 /// Resolve optional paging arguments into SQL `LIMIT ? OFFSET ?` binds.

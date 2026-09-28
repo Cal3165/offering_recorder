@@ -317,8 +317,12 @@ impl<'a> AmendmentService<'a> {
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
         if amendment.status() == offering_domain::entities::amendment::AmendmentStatus::Approved {
-            return Err(crate::error::AppError::Validation(
-                "approved amendments cannot be deleted".into(),
+            // Phase 4.4 policy: approved amendments are financial evidence and
+            // can never be deleted — only corrected by a further amendment. A
+            // real state conflict, not an input error, hence Conflict.
+            return Err(crate::error::AppError::Conflict(
+                "approved amendments cannot be deleted; record a correcting amendment instead"
+                    .into(),
             ));
         }
         let old = crate::audit::state_json(&amendment);

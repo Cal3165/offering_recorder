@@ -259,11 +259,11 @@ impl<'a> ReportService<'a> {
                 .get(meeting_id)
                 .await?
                 .map_or_else(|| "Unknown".to_string(), |m| m.name);
-            // "Claimable" here is eligible-before-matching (plan Phase 4.5):
-            // the Gift Aid matching limit and annual ceiling are year-scoped
-            // and applied when a claim is prepared (see claim_readiness), not
-            // in an arbitrary date-range report. Never present this column as
-            // a final claim figure.
+            // `eligible_before_matching` (plan Phase 4.5): the Gift Aid
+            // matching limit and annual ceiling are year-scoped and applied
+            // when a claim is prepared (see claim_readiness), not in an
+            // arbitrary date-range report. Never present this column as a
+            // final claim figure.
             entries.push(GasdsReportEntry {
                 meeting_id,
                 meeting_name,
@@ -273,7 +273,7 @@ impl<'a> ReportService<'a> {
                     Some(attendance)
                 },
                 eligible_amount: result.eligible_amount,
-                claimable_amount: result.eligible_amount,
+                eligible_before_matching: result.eligible_amount,
             });
         }
         entries.sort_by_key(|e| e.meeting_id);
@@ -303,9 +303,13 @@ impl<'a> ReportService<'a> {
     ) -> AppResult<Vec<offering_domain::entities::BankDeposit>> {
         Self::require_deposit_permission(actor)?;
         let mut deposits = self.deposits.list().await?;
+        // Exclusive upper bound (plan Phase 4.5): half-open `[start, end+1)`
+        // like every other report, so the boundary day belongs to exactly one
+        // period.
+        let end_exclusive = end.succ_opt().unwrap_or(chrono::NaiveDate::MAX);
         deposits.retain(|d| {
             let date = d.deposit_date.date_naive();
-            date >= start && date <= end
+            date >= start && date < end_exclusive
         });
         deposits.sort_by_key(|d| d.deposit_date);
         self.audit

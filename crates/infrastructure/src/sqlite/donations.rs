@@ -82,23 +82,26 @@ impl SqliteDonationRepository {
         if ids.is_empty() {
             return Ok(out);
         }
-        let placeholders = super::in_placeholders(ids.len());
-        let query = format!(
-            "SELECT donation_id, denomination, count FROM donation_cash_denominations WHERE donation_id IN ({placeholders})"
-        );
-        let mut q = sqlx::query(&query);
-        for id in &ids {
-            q = q.bind(id);
-        }
+        // Chunked (plan Phase 4.5): one statement per 500 ids.
         let pool = self.pool.get();
-        let breakdown_rows = q.fetch_all(&pool).await.map_err(map_db_err)?;
         let mut totals: std::collections::HashMap<Uuid, CashTotal> =
             std::collections::HashMap::new();
-        for row in breakdown_rows {
-            let did: Uuid = row.get("donation_id");
-            let denom: Denomination = super::from_json(&row.get::<String, _>("denomination"))?;
-            let count: u32 = row.get("count");
-            totals.entry(did).or_default().set(denom, count);
+        for chunk in ids.chunks(super::IN_CHUNK_SIZE) {
+            let placeholders = super::in_placeholders(chunk.len());
+            let query = format!(
+                "SELECT donation_id, denomination, count FROM donation_cash_denominations WHERE donation_id IN ({placeholders})"
+            );
+            let mut q = sqlx::query(&query);
+            for id in chunk {
+                q = q.bind(id);
+            }
+            let breakdown_rows = q.fetch_all(&pool).await.map_err(map_db_err)?;
+            for row in breakdown_rows {
+                let did: Uuid = row.get("donation_id");
+                let denom: Denomination = super::from_json(&row.get::<String, _>("denomination"))?;
+                let count: u32 = row.get("count");
+                totals.entry(did).or_default().set(denom, count);
+            }
         }
         for donation in &mut out {
             if let Some(total) = totals.remove(&donation.id) {
@@ -231,11 +234,16 @@ impl DonationRepository for SqliteDonationRepository {
     }
 
     async fn delete(&self, id: Uuid) -> RepoResult<()> {
-        sqlx::query("DELETE FROM donations WHERE id = ?")
+        // Phase 4.4: deleting a donation that is not there is NotFound, not a
+        // silent no-op.
+        let result = sqlx::query("DELETE FROM donations WHERE id = ?")
             .bind(id)
             .execute(&self.pool.get())
             .await
             .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::NotFound);
+        }
         Ok(())
     }
 
@@ -282,5 +290,18 @@ mod tests {
         assert_eq!(loaded.amount.pence(), 1000);
         let breakdown = loaded.cash_denominations.expect("breakdown must roundtrip");
         assert_eq!(breakdown.total().pence(), 1000);
+    }
+
+    #[tokio::test]
+    async fn delete_missing_donation_is_not_found() {
+        // Phase 4.4: deleting what is not there is NotFound, not a silent
+        // no-op.
+        let pool = connect_in_memory().await.unwrap();
+        let repo = SqliteDonationRepository::new(SharedPool::new(pool));
+        let err = repo.delete(Uuid::new_v4()).await.unwrap_err();
+        assert!(
+            matches!(err, RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
     }
 }

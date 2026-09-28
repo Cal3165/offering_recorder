@@ -305,7 +305,7 @@ export interface GasdsReportEntry {
   meeting_name: string;
   attendance: number | null;
   eligible_amount: Money;
-  claimable_amount: Money;
+  eligible_before_matching: Money;
 }
 
 export type DeclarationAmendmentStatus = "Draft" | "CounterSigned" | "CheckerSigned" | "Approved";

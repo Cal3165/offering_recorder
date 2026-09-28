@@ -13,6 +13,12 @@ pub struct SqliteBankDepositRepository {
     pool: SharedPool,
 }
 
+/// Phase 4.3 decision: keep `bank_deposit_items.offering_id` as the primary
+/// key (one offering is banked exactly once, as a whole — splits across
+/// deposits are not supported). The PK plus the application pre-check makes a
+/// double-deposit impossible; a lost pre-check race surfaces here as an
+/// explicit `Conflict("... already been included in a bank deposit")`, never a
+/// raw constraint message.
 impl SqliteBankDepositRepository {
     #[must_use]
     pub fn new(pool: SharedPool) -> Self {
@@ -69,20 +75,23 @@ async fn load_items_batch(
     if deposit_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let placeholders = super::in_placeholders(deposit_ids.len());
-    let query = format!(
-        "SELECT * FROM bank_deposit_items WHERE deposit_id IN ({placeholders}) ORDER BY deposit_id"
-    );
-    let mut q = sqlx::query(&query);
-    for id in deposit_ids {
-        q = q.bind(id);
-    }
-    let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
+    // Chunked (plan Phase 4.5): one statement per 500 ids.
     let mut map: std::collections::HashMap<Uuid, Vec<BankDepositItem>> =
         std::collections::HashMap::new();
-    for row in rows {
-        let did: Uuid = row.get("deposit_id");
-        map.entry(did).or_default().push(row_to_item(&row)?);
+    for chunk in deposit_ids.chunks(super::IN_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len());
+        let query = format!(
+            "SELECT * FROM bank_deposit_items WHERE deposit_id IN ({placeholders}) ORDER BY deposit_id"
+        );
+        let mut q = sqlx::query(&query);
+        for id in chunk {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
+        for row in rows {
+            let did: Uuid = row.get("deposit_id");
+            map.entry(did).or_default().push(row_to_item(&row)?);
+        }
     }
     Ok(map)
 }
@@ -122,7 +131,21 @@ impl BankDepositRepository for SqliteBankDepositRepository {
             .bind(item.donation_count)
             .execute(&mut *tx)
             .await
-            .map_err(map_db_err)?;
+            .map_err(|e| {
+                // Phase 4.3: the PK on `offering_id` rejects a second deposit
+                // of the same offering (e.g. a lost pre-check race). Name the
+                // business reason instead of leaking the constraint text.
+                if e.as_database_error()
+                    .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+                {
+                    RepoError::Conflict(format!(
+                        "offering {} has already been included in a bank deposit; an offering can only be banked once",
+                        item.offering_id
+                    ))
+                } else {
+                    map_db_err(e)
+                }
+            })?;
         }
 
         tx.commit().await.map_err(map_db_err)?;
@@ -168,10 +191,13 @@ impl BankDepositRepository for SqliteBankDepositRepository {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> RepoResult<BankDeposit> {
         let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
+        // Phase 4.4: `banker_id` is persisted on update (it was silently
+        // dropped before, so a re-assigned deposit kept the old banker).
         let result = sqlx::query(
-            "UPDATE bank_deposits SET deposit_date = ?, actual_cash_pence = ?, actual_cheques_pence = ?, actual_other_pence = ?, reference = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+            "UPDATE bank_deposits SET deposit_date = ?, banker_id = ?, actual_cash_pence = ?, actual_cheques_pence = ?, actual_other_pence = ?, reference = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(deposit.deposit_date)
+        .bind(deposit.banker_id)
         .bind(deposit.actual_cash.pence())
         .bind(deposit.actual_cheques.pence())
         .bind(deposit.actual_other.pence())
@@ -183,9 +209,16 @@ impl BankDepositRepository for SqliteBankDepositRepository {
         .await
         .map_err(map_db_err)?;
         if result.rows_affected() == 0 {
-            return Err(RepoError::Conflict(
-                "deposit was modified by another operation; reload and retry".into(),
-            ));
+            // Phase 4.4: missing row → NotFound; live row with a moved
+            // timestamp → Conflict (optimistic-concurrency, unchanged). The
+            // check runs inside this transaction: a second connection would
+            // block on the open write's table locks.
+            if super::row_exists(&mut tx, "bank_deposits", deposit.id).await? {
+                return Err(RepoError::Conflict(
+                    "deposit was modified by another operation; reload and retry".into(),
+                ));
+            }
+            return Err(RepoError::NotFound);
         }
 
         sqlx::query("DELETE FROM bank_deposit_items WHERE deposit_id = ?")
@@ -215,11 +248,16 @@ impl BankDepositRepository for SqliteBankDepositRepository {
     }
 
     async fn delete(&self, id: Uuid) -> RepoResult<()> {
-        sqlx::query("DELETE FROM bank_deposits WHERE id = ?")
+        // Phase 4.4: deleting a deposit that is not there is NotFound, not a
+        // silent no-op.
+        let result = sqlx::query("DELETE FROM bank_deposits WHERE id = ?")
             .bind(id)
             .execute(&self.pool.get())
             .await
             .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::NotFound);
+        }
         Ok(())
     }
 
@@ -257,7 +295,7 @@ mod tests {
     use chrono::Utc;
 
     /// Seed user → meeting → offering parents required by foreign keys.
-    async fn setup() -> (SqliteBankDepositRepository, Uuid, Uuid) {
+    async fn setup() -> (SqliteBankDepositRepository, Uuid, Uuid, Pool<Sqlite>) {
         let pool = connect_in_memory().await.unwrap();
         let now = Utc::now().to_rfc3339();
         let banker = Uuid::new_v4();
@@ -272,8 +310,8 @@ mod tests {
         sqlx::query("INSERT INTO offerings (id, meeting_id, offering_number, status, created_at, updated_at) VALUES (?, ?, '1', 'Draft', ?, ?)")
             .bind(offering).bind(meeting).bind(&now).bind(&now)
             .execute(&pool).await.unwrap();
-        let repo = SqliteBankDepositRepository::new(SharedPool::new(pool));
-        (repo, offering, banker)
+        let repo = SqliteBankDepositRepository::new(SharedPool::new(pool.clone()));
+        (repo, offering, banker, pool)
     }
 
     fn deposit_with_other(offering_id: Uuid, banker_id: Uuid, other_pence: i64) -> BankDeposit {
@@ -292,7 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_preserves_item_other_amount() {
-        let (repo, offering_id, banker_id) = setup().await;
+        let (repo, offering_id, banker_id, _) = setup().await;
         let created = repo
             .create(deposit_with_other(offering_id, banker_id, 1500))
             .await
@@ -320,7 +358,7 @@ mod tests {
     async fn stale_deposit_update_conflicts() {
         // Plan Phase 6: concurrent actuals writes fail loudly (Conflict),
         // matching the offering/amendment guards.
-        let (repo, offering_id, banker_id) = setup().await;
+        let (repo, offering_id, banker_id, _) = setup().await;
         let created = repo
             .create(deposit_with_other(offering_id, banker_id, 1500))
             .await
@@ -345,7 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_roundtrips_all_item_amounts() {
-        let (repo, offering_id, banker_id) = setup().await;
+        let (repo, offering_id, banker_id, _) = setup().await;
         let created = repo
             .create(deposit_with_other(offering_id, banker_id, 1234))
             .await
@@ -355,5 +393,76 @@ mod tests {
         assert_eq!(loaded.items[0].cash_amount.pence(), 5000);
         assert_eq!(loaded.items[0].cheque_amount.pence(), 2000);
         assert_eq!(loaded.items[0].other_amount.pence(), 1234);
+    }
+
+    #[tokio::test]
+    async fn redeposit_same_offering_is_explicit_conflict() {
+        // Phase 4.3: the `offering_id` PK keeps the single-deposit invariant;
+        // the violation names the business reason instead of leaking SQL text.
+        let (repo, offering_id, banker_id, _) = setup().await;
+        repo.create(deposit_with_other(offering_id, banker_id, 0))
+            .await
+            .unwrap();
+        let err = repo
+            .create(deposit_with_other(offering_id, banker_id, 0))
+            .await
+            .unwrap_err();
+        match err {
+            offering_persistence::RepoError::Conflict(msg) => assert!(
+                msg.contains("already been included in a bank deposit"),
+                "explicit business reason, got: {msg}"
+            ),
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_persists_banker_id() {
+        // Phase 4.4: re-assigning the deposit must survive the round trip.
+        let (repo, offering_id, banker_id, pool) = setup().await;
+        let created = repo
+            .create(deposit_with_other(offering_id, banker_id, 0))
+            .await
+            .unwrap();
+
+        let successor = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO users (id, username, display_name, roles, is_active, created_at, updated_at) VALUES (?, ?, ?, '[]', 1, ?, ?)")
+            .bind(successor).bind("banker2").bind("Banker Two").bind(&now).bind(&now)
+            .execute(&pool).await.unwrap();
+
+        let mut loaded = repo.get(created.id).await.unwrap().unwrap();
+        assert_eq!(loaded.banker_id, banker_id);
+        let expected = loaded.updated_at;
+        loaded.banker_id = successor;
+        repo.update(loaded, expected).await.unwrap();
+
+        let reloaded = repo.get(created.id).await.unwrap().unwrap();
+        assert_eq!(reloaded.banker_id, successor);
+    }
+
+    #[tokio::test]
+    async fn delete_missing_deposit_is_not_found() {
+        // Phase 4.4: deleting what is not there is NotFound, not a silent
+        // no-op.
+        let (repo, _, _, _) = setup().await;
+        let err = repo.delete(Uuid::new_v4()).await.unwrap_err();
+        assert!(
+            matches!(err, offering_persistence::RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_missing_deposit_is_not_found() {
+        // Phase 4.4: a conditional write against a gone row is NotFound; the
+        // Conflict arm is reserved for live rows with a moved timestamp.
+        let (repo, _, banker_id, _) = setup().await;
+        let ghost = deposit_with_other(Uuid::new_v4(), banker_id, 0);
+        let err = repo.update(ghost, Utc::now()).await.unwrap_err();
+        assert!(
+            matches!(err, offering_persistence::RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
     }
 }
