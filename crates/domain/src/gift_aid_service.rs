@@ -1,23 +1,33 @@
 use crate::entities::gift_aid::GiftAidDeclaration;
 use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 pub struct GiftAidService;
 
 impl GiftAidService {
+    /// Find the covering declaration for one donor on a date (Phase 3.4).
+    /// Filtering by `donor_id` internally closes the cross-donor hole where
+    /// a caller passing another donor's declarations could inherit coverage.
     #[must_use]
     pub fn find_declaration_for_date(
         declarations: &[GiftAidDeclaration],
+        donor_id: Uuid,
         date: DateTime<Utc>,
     ) -> Option<&GiftAidDeclaration> {
         declarations
             .iter()
-            .filter(|d| d.covers_date(date))
+            .filter(|d| d.donor_id == donor_id && d.covers_date(date))
             .max_by_key(|d| d.version)
     }
 
+    /// Whether `donor_id` has Gift Aid coverage on `date` (Phase 3.4).
     #[must_use]
-    pub fn is_gift_aid_eligible(declarations: &[GiftAidDeclaration], date: DateTime<Utc>) -> bool {
-        Self::find_declaration_for_date(declarations, date).is_some()
+    pub fn is_gift_aid_eligible(
+        declarations: &[GiftAidDeclaration],
+        donor_id: Uuid,
+        date: DateTime<Utc>,
+    ) -> bool {
+        Self::find_declaration_for_date(declarations, donor_id, date).is_some()
     }
 }
 
@@ -68,7 +78,11 @@ mod tests {
         let start = dt(2024, 1, 1);
         let d = make_declaration(donor, start, user);
         let donation_date = dt(2024, 6, 15);
-        assert!(GiftAidService::is_gift_aid_eligible(&[d], donation_date));
+        assert!(GiftAidService::is_gift_aid_eligible(
+            &[d],
+            donor,
+            donation_date
+        ));
     }
 
     #[test]
@@ -78,7 +92,11 @@ mod tests {
         let start = dt(2024, 1, 1);
         let d = make_declaration(donor, start, user);
         let donation_date = dt(2023, 12, 31);
-        assert!(!GiftAidService::is_gift_aid_eligible(&[d], donation_date));
+        assert!(!GiftAidService::is_gift_aid_eligible(
+            &[d],
+            donor,
+            donation_date
+        ));
     }
 
     #[test]
@@ -90,7 +108,11 @@ mod tests {
         let mut d = make_declaration(donor, start, user);
         d.end(end).unwrap();
         let donation_date = dt(2024, 7, 1);
-        assert!(!GiftAidService::is_gift_aid_eligible(&[d], donation_date));
+        assert!(!GiftAidService::is_gift_aid_eligible(
+            &[d],
+            donor,
+            donation_date
+        ));
     }
 
     #[test]
@@ -102,7 +124,11 @@ mod tests {
         let mut d = make_declaration(donor, start, user);
         d.end(end).unwrap();
         let donation_date = dt(2024, 5, 31);
-        assert!(GiftAidService::is_gift_aid_eligible(&[d], donation_date));
+        assert!(GiftAidService::is_gift_aid_eligible(
+            &[d],
+            donor,
+            donation_date
+        ));
     }
 
     #[test]
@@ -121,9 +147,14 @@ mod tests {
 
         assert!(!GiftAidService::is_gift_aid_eligible(
             &[d.clone()],
+            donor,
             dt(2024, 7, 1)
         ));
-        assert!(GiftAidService::is_gift_aid_eligible(&[d], dt(2024, 5, 31)));
+        assert!(GiftAidService::is_gift_aid_eligible(
+            &[d],
+            donor,
+            dt(2024, 5, 31)
+        ));
     }
 
     #[test]
@@ -154,12 +185,21 @@ mod tests {
         // Before d1
         assert!(!GiftAidService::is_gift_aid_eligible(
             &all,
+            donor,
             dt(2023, 12, 31)
         ));
         // During d1
-        assert!(GiftAidService::is_gift_aid_eligible(&all, dt(2024, 3, 1)));
+        assert!(GiftAidService::is_gift_aid_eligible(
+            &all,
+            donor,
+            dt(2024, 3, 1)
+        ));
         // During d2
-        assert!(GiftAidService::is_gift_aid_eligible(&all, dt(2024, 9, 1)));
+        assert!(GiftAidService::is_gift_aid_eligible(
+            &all,
+            donor,
+            dt(2024, 9, 1)
+        ));
         // Gap between d1 end and d2 start: end1 is 2024-06-01 00:00:00, start2 is 2024-06-02 00:00:00
         // So dt(2024, 6, 1) is before end of d1? Actually d1.covers_date checks date <= until
         // dt(2024, 6, 1) = June 1, d1.effective_until = June 1, so it should still be covered
@@ -176,8 +216,14 @@ mod tests {
 
         let date = dt(2024, 6, 1);
         let all = [d1.clone(), d2.clone()];
-        let found = GiftAidService::find_declaration_for_date(&all, date);
+        let found = GiftAidService::find_declaration_for_date(&all, donor1, date);
         assert!(found.is_some());
+        assert_eq!(found.unwrap().donor_id, donor1);
+
+        // Cross-donor isolation (Phase 3.4): a donor with no declaration is
+        // never covered, even when other donors' declarations match the date.
+        let other = Uuid::new_v4();
+        assert!(!GiftAidService::is_gift_aid_eligible(&all, other, date));
 
         // Filter should work: find for specific donor
         let filtered: Vec<_> = vec![d1, d2]
@@ -185,7 +231,9 @@ mod tests {
             .filter(|d| d.donor_id == donor1)
             .collect();
         assert_eq!(filtered.len(), 1);
-        assert!(GiftAidService::is_gift_aid_eligible(&filtered, date));
+        assert!(GiftAidService::is_gift_aid_eligible(
+            &filtered, donor1, date
+        ));
     }
 
     #[test]
@@ -199,7 +247,7 @@ mod tests {
 
         let date = dt(2024, 6, 1);
         let all = [d1, d2];
-        let found = GiftAidService::find_declaration_for_date(&all, date);
+        let found = GiftAidService::find_declaration_for_date(&all, donor, date);
         assert!(found.is_some());
         assert_eq!(found.unwrap().version, 2);
     }
@@ -207,7 +255,11 @@ mod tests {
     #[test]
     fn no_declarations_not_eligible() {
         let date = dt(2024, 6, 1);
-        assert!(!GiftAidService::is_gift_aid_eligible(&[], date));
+        assert!(!GiftAidService::is_gift_aid_eligible(
+            &[],
+            Uuid::new_v4(),
+            date
+        ));
     }
 
     #[test]
@@ -221,10 +273,15 @@ mod tests {
         // eligible after revocation (review R1)…
         assert!(GiftAidService::is_gift_aid_eligible(
             &[d.clone()],
+            donor,
             dt(2024, 3, 1)
         ));
         // …but anything received after the revocation date is not covered.
-        assert!(!GiftAidService::is_gift_aid_eligible(&[d], dt(2024, 7, 1)));
+        assert!(!GiftAidService::is_gift_aid_eligible(
+            &[d],
+            donor,
+            dt(2024, 7, 1)
+        ));
     }
 
     #[test]

@@ -25,7 +25,11 @@ impl SqliteOfferingRepository {
     }
 }
 
-fn row_to_offering_base(row: &SqliteRow) -> Result<Offering, RepoError> {
+fn row_to_offering_base(
+    row: &SqliteRow,
+    cash_denominations: CashTotal,
+    donations: Vec<Donation>,
+) -> Result<Offering, RepoError> {
     let offering_number = OfferingNumber::new(&row.get::<String, _>("offering_number"))
         .map_err(|e| RepoError::InvalidData(e.to_string()))?;
     let status: OfferingStatus = from_json(&row.get::<String, _>("status"))?;
@@ -37,20 +41,23 @@ fn row_to_offering_base(row: &SqliteRow) -> Result<Offering, RepoError> {
         .get::<Option<String>, _>("checker_signature")
         .map(|s| from_json(&s))
         .transpose()?;
-    Ok(Offering {
-        id: row.get("id"),
-        meeting_id: row.get("meeting_id"),
+    // Private-field reconstruction (Phase 3.1): rows re-enter through the
+    // validated constructor, never struct-literal assignment.
+    Offering::reconstitute(
+        row.get("id"),
+        row.get("meeting_id"),
         offering_number,
-        description: row.get("description"),
-        cash_denominations: CashTotal::new(),
-        attendance: row.get("attendance"),
-        donations: Vec::new(),
+        row.get("description"),
+        cash_denominations,
+        row.get("attendance"),
+        donations,
         counter_signature,
         checker_signature,
         status,
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    })
+        row.get("created_at"),
+        row.get("updated_at"),
+    )
+    .map_err(|e| RepoError::InvalidData(e.to_string()))
 }
 
 async fn load_cash_total(pool: &Pool<Sqlite>, offering_id: Uuid) -> RepoResult<CashTotal> {
@@ -229,10 +236,9 @@ impl OfferingRepository for SqliteOfferingRepository {
             .map_err(map_db_err)?;
         match row {
             Some(row) => {
-                let mut offering = row_to_offering_base(&row)?;
-                offering.cash_denominations = load_cash_total(&self.pool.get(), id).await?;
-                offering.donations = load_donations(&self.pool.get(), id).await?;
-                Ok(Some(offering))
+                let cash = load_cash_total(&self.pool.get(), id).await?;
+                let donations = load_donations(&self.pool.get(), id).await?;
+                Ok(Some(row_to_offering_base(&row, cash, donations)?))
             }
             None => Ok(None),
         }
@@ -301,31 +307,23 @@ impl OfferingRepository for SqliteOfferingRepository {
     ) -> RepoResult<Offering> {
         let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
 
-        let counter = offering
-            .counter_signature
-            .as_ref()
-            .map(to_json)
-            .transpose()?;
-        let checker = offering
-            .checker_signature
-            .as_ref()
-            .map(to_json)
-            .transpose()?;
+        let counter = offering.counter_signature().map(to_json).transpose()?;
+        let checker = offering.checker_signature().map(to_json).transpose()?;
 
         // Optimistic concurrency: the WHERE clause rejects the write when the
         // row changed since the caller loaded it (review R4).
         let result = sqlx::query(
             "UPDATE offerings SET meeting_id = ?, offering_number = ?, description = ?, attendance = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
-        .bind(offering.meeting_id)
-        .bind(offering.offering_number.as_str())
-        .bind(&offering.description)
-        .bind(offering.attendance)
+        .bind(offering.meeting_id())
+        .bind(offering.offering_number().as_str())
+        .bind(offering.description())
+        .bind(offering.attendance())
         .bind(&counter)
         .bind(&checker)
-        .bind(super::to_json(&offering.status)?)
-        .bind(offering.updated_at)
-        .bind(offering.id)
+        .bind(super::to_json(&offering.status())?)
+        .bind(offering.updated_at())
+        .bind(offering.id())
         .bind(expected_updated_at)
         .execute(&mut *tx)
         .await
@@ -337,15 +335,15 @@ impl OfferingRepository for SqliteOfferingRepository {
         }
 
         sqlx::query("DELETE FROM offering_cash_denominations WHERE offering_id = ?")
-            .bind(offering.id)
+            .bind(offering.id())
             .execute(&mut *tx)
             .await
             .map_err(map_db_err)?;
-        for (denom, count) in offering.cash_denominations.iter() {
+        for (denom, count) in offering.cash_denominations().iter() {
             sqlx::query(
                 "INSERT INTO offering_cash_denominations (offering_id, denomination, count) VALUES (?, ?, ?)",
             )
-            .bind(offering.id)
+            .bind(offering.id())
             .bind(super::to_json(&denom)?)
             .bind(*count)
             .execute(&mut *tx)
@@ -354,11 +352,11 @@ impl OfferingRepository for SqliteOfferingRepository {
         }
 
         sqlx::query("DELETE FROM donations WHERE offering_id = ?")
-            .bind(offering.id)
+            .bind(offering.id())
             .execute(&mut *tx)
             .await
             .map_err(map_db_err)?;
-        for donation in &offering.donations {
+        for donation in offering.donations() {
             sqlx::query(
                 "INSERT INTO donations (id, offering_id, donor_id, amount_pence, donation_type, payment_method, classification, reference, created_at, updated_at, date)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -491,14 +489,12 @@ impl SqliteOfferingRepository {
         let mut offerings = Vec::with_capacity(rows.len());
         for row in rows {
             let id: Uuid = row.get("id");
-            let mut offering = row_to_offering_base(&row)?;
-            offering.cash_denominations = cash_totals.get(&id).cloned().unwrap_or_default();
+            let cash = cash_totals.get(&id).cloned().unwrap_or_default();
             let mut donations = donations_by_offering.get(&id).cloned().unwrap_or_default();
             for d in &mut donations {
                 d.cash_denominations = breakdowns.get(&d.id).cloned().flatten();
             }
-            offering.donations = donations;
-            offerings.push(offering);
+            offerings.push(row_to_offering_base(&row, cash, donations)?);
         }
         Ok(offerings)
     }
@@ -516,7 +512,7 @@ impl SqliteOfferingRepository {
         // no longer shifts the numbers this meeting generates.
         let seq: i64 =
             sqlx::query_scalar("SELECT COALESCE(meeting_seq, 0) FROM meetings WHERE id = ?")
-                .bind(offering.meeting_id)
+                .bind(offering.meeting_id())
                 .fetch_one(&mut *conn)
                 .await
                 .map_err(map_db_err)?;
@@ -529,14 +525,14 @@ impl SqliteOfferingRepository {
             "UPDATE meetings SET offering_seq_counter = offering_seq_counter + 1
              WHERE id = ? RETURNING offering_seq_counter",
         )
-        .bind(offering.meeting_id)
+        .bind(offering.meeting_id())
         .fetch_one(&mut *conn)
         .await
         .map_err(map_db_err)?;
 
         let seq_u32 = u32::try_from(seq).unwrap_or(u32::MAX);
         let offering_seq_u32 = u32::try_from(offering_seq).unwrap_or(u32::MAX);
-        offering.offering_number = OfferingNumber::generated(year, seq_u32, offering_seq_u32);
+        offering.set_offering_number(OfferingNumber::generated(year, seq_u32, offering_seq_u32));
 
         self.insert_offering(conn, offering).await
     }
@@ -548,40 +544,32 @@ impl SqliteOfferingRepository {
         conn: &mut sqlx::sqlite::SqliteConnection,
         offering: &Offering,
     ) -> RepoResult<()> {
-        let counter = offering
-            .counter_signature
-            .as_ref()
-            .map(to_json)
-            .transpose()?;
-        let checker = offering
-            .checker_signature
-            .as_ref()
-            .map(to_json)
-            .transpose()?;
+        let counter = offering.counter_signature().map(to_json).transpose()?;
+        let checker = offering.checker_signature().map(to_json).transpose()?;
 
         sqlx::query(
             "INSERT INTO offerings (id, meeting_id, offering_number, description, attendance, counter_signature, checker_signature, status, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(offering.id)
-        .bind(offering.meeting_id)
-        .bind(offering.offering_number.as_str())
-        .bind(&offering.description)
-        .bind(offering.attendance)
+        .bind(offering.id())
+        .bind(offering.meeting_id())
+        .bind(offering.offering_number().as_str())
+        .bind(offering.description())
+        .bind(offering.attendance())
         .bind(&counter)
         .bind(&checker)
-        .bind(super::to_json(&offering.status)?)
-        .bind(offering.created_at)
-        .bind(offering.updated_at)
+        .bind(super::to_json(&offering.status())?)
+        .bind(offering.created_at())
+        .bind(offering.updated_at())
         .execute(&mut *conn)
         .await
         .map_err(map_db_err)?;
 
-        for (denom, count) in offering.cash_denominations.iter() {
+        for (denom, count) in offering.cash_denominations().iter() {
             sqlx::query(
                 "INSERT INTO offering_cash_denominations (offering_id, denomination, count) VALUES (?, ?, ?)",
             )
-            .bind(offering.id)
+            .bind(offering.id())
             .bind(super::to_json(&denom)?)
             .bind(*count)
             .execute(&mut *conn)
@@ -589,7 +577,7 @@ impl SqliteOfferingRepository {
             .map_err(map_db_err)?;
         }
 
-        for donation in &offering.donations {
+        for donation in offering.donations() {
             sqlx::query(
                 "INSERT INTO donations (id, offering_id, donor_id, amount_pence, donation_type, payment_method, classification, reference, created_at, updated_at, date)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -654,17 +642,17 @@ mod tests {
         let offering = Offering::create(meeting_id, num, None).unwrap();
         let created = repo.create(offering).await.unwrap();
 
-        let first = repo.get(created.id).await.unwrap().unwrap();
-        assert_eq!(first.attendance, None);
+        let first = repo.get(created.id()).await.unwrap().unwrap();
+        assert_eq!(first.attendance(), None);
 
         // A concurrent writer saves first.
-        let mut winner = repo.get(created.id).await.unwrap().unwrap();
-        let winner_expected = winner.updated_at;
+        let mut winner = repo.get(created.id()).await.unwrap().unwrap();
+        let winner_expected = winner.updated_at();
         winner.set_attendance(50).unwrap();
         repo.update(winner, winner_expected).await.unwrap();
 
         // The stale snapshot (loaded before the winner's save) must conflict.
-        let loser_expected = first.updated_at;
+        let loser_expected = first.updated_at();
         let mut loser = first;
         loser.set_attendance(99).unwrap();
         let result = repo.update(loser, loser_expected).await;
@@ -674,8 +662,8 @@ mod tests {
         );
 
         // The winner's value survived.
-        let final_state = repo.get(created.id).await.unwrap().unwrap();
-        assert_eq!(final_state.attendance, Some(50));
+        let final_state = repo.get(created.id()).await.unwrap().unwrap();
+        assert_eq!(final_state.attendance(), Some(50));
     }
 
     #[tokio::test]
@@ -686,13 +674,13 @@ mod tests {
             .create(Offering::create(meeting_id, num, None).unwrap())
             .await
             .unwrap();
-        let loaded = repo.get(created.id).await.unwrap().unwrap();
-        let expected = loaded.updated_at;
+        let loaded = repo.get(created.id()).await.unwrap().unwrap();
+        let expected = loaded.updated_at();
         let mut fresh = loaded;
         fresh.set_attendance(10).unwrap();
         repo.update(fresh, expected).await.unwrap();
-        let reloaded = repo.get(created.id).await.unwrap().unwrap();
-        assert_eq!(reloaded.attendance, Some(10));
+        let reloaded = repo.get(created.id()).await.unwrap().unwrap();
+        assert_eq!(reloaded.attendance(), Some(10));
     }
 
     #[tokio::test]
@@ -725,10 +713,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(o1.offering_number.as_str(), "2024/01/0001");
-        assert_eq!(o2.offering_number.as_str(), "2024/01/0002");
+        assert_eq!(o1.offering_number().as_str(), "2024/01/0001");
+        assert_eq!(o2.offering_number().as_str(), "2024/01/0002");
 
-        repo.delete(o2.id).await.unwrap();
+        repo.delete(o2.id()).await.unwrap();
 
         let o3 = repo
             .create_with_generated_number(
@@ -743,7 +731,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            o3.offering_number.as_str(),
+            o3.offering_number().as_str(),
             "2024/01/0003",
             "sequence must continue from MAX, never reuse deleted numbers"
         );
@@ -788,7 +776,7 @@ mod tests {
             )
             .await
             .expect("pool must be usable after a rolled-back failure");
-        assert_eq!(o1.offering_number.as_str(), "2024/01/0001");
+        assert_eq!(o1.offering_number().as_str(), "2024/01/0001");
         let o2 = repo
             .create_with_generated_number(
                 Offering::create(
@@ -801,6 +789,6 @@ mod tests {
             )
             .await
             .expect("sequence counter must not have been consumed by the failure");
-        assert_eq!(o2.offering_number.as_str(), "2024/01/0002");
+        assert_eq!(o2.offering_number().as_str(), "2024/01/0002");
     }
 }

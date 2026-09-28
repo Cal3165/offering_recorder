@@ -1,7 +1,9 @@
 use crate::entities::donation::{Donation, DonationClassification};
 use crate::entities::gift_aid::GiftAidDeclaration;
 use crate::entities::offering::Offering;
+use crate::errors::{DomainError, DomainResult};
 use crate::money::Money;
+use crate::tax_year::TaxYear;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +35,29 @@ impl Default for GasdsConfig {
     }
 }
 
+impl GasdsConfig {
+    /// Year-aware constructor (Phase 3.6): the annual ceiling is derived from
+    /// the tax year (£5,000 before April 2016, £8,000 after). The stored
+    /// `annual_limit` remains as an explicit override knob for tests and for
+    /// legislation changes — prefer this constructor for real claims.
+    #[must_use]
+    pub fn for_tax_year(tax_year: &TaxYear) -> Self {
+        GasdsConfig {
+            annual_limit: Money::from_pence_unchecked(annual_ceiling_pence(tax_year.start_year())),
+            gift_aid_claimed: Money::zero(),
+            matching_multiplier: crate::entities::gasds_claim::gasds_matching_multiplier(tax_year),
+        }
+    }
+
+    /// Year-aware constructor with an explicit Gift Aid total.
+    #[must_use]
+    pub fn for_tax_year_with_gift_aid(tax_year: &TaxYear, gift_aid_claimed: Money) -> Self {
+        let mut cfg = Self::for_tax_year(tax_year);
+        cfg.gift_aid_claimed = gift_aid_claimed;
+        cfg
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExclusionReason {
     ChequeNotEligible,
@@ -42,6 +67,12 @@ pub enum ExclusionReason {
     OverThirtyPounds,
     FiftyPoundNote,
     NamedWithGiftAid,
+    /// Cash recorded but not yet banked (Phase 3.5). The calculator itself is
+    /// a pre-banking candidate estimator; pass banked status via
+    /// `exclusion_reason_for_banked` / `calculate_offering_banked` (or apply
+    /// the banking filter downstream as claim readiness does) so unbanked
+    /// cash is excluded with this reason instead of silently claimed.
+    NotBanked,
     Other(String),
 }
 
@@ -69,6 +100,9 @@ impl std::fmt::Display for ExclusionReason {
                     f,
                     "Named donation with valid Gift Aid declaration uses regular Gift Aid"
                 )
+            }
+            ExclusionReason::NotBanked => {
+                write!(f, "Cash recorded but not yet banked")
             }
             ExclusionReason::Other(s) => write!(f, "{s}"),
         }
@@ -98,8 +132,10 @@ impl std::fmt::Display for TaxTreatment {
 impl TaxTreatment {
     /// Decide which scheme a donation is claimed under.
     ///
-    /// * A named donation with a valid Gift Aid declaration covering `date`
-    ///   is claimed under Gift Aid.
+    /// * A named donation with a valid *claim-complete* Gift Aid declaration
+    ///   covering `date` is claimed under Gift Aid (Phase 3.9: coverage alone
+    ///   is not enough — see `covered_by_declaration` vs
+    ///   `claimable_under_gift_aid`).
     /// * Otherwise a donation that passes the GASDS eligibility checks is
     ///   claimed under GASDS.
     /// * Everything else is `Neither`.
@@ -112,7 +148,7 @@ impl TaxTreatment {
         if matches!(
             donation.classification,
             crate::entities::donation::DonationClassification::Named
-        ) && Self::covered_by_gift_aid_declaration(donation, declarations, date)
+        ) && Self::claimable_under_gift_aid(donation, declarations, date)
         {
             return TaxTreatment::GiftAid;
         }
@@ -124,10 +160,34 @@ impl TaxTreatment {
         }
     }
 
-    fn covered_by_gift_aid_declaration(
+    /// Coverage ignoring completeness: a declaration window covers the gift
+    /// (used for reporting "covered but incomplete" states).
+    #[must_use]
+    pub fn covered_by_declaration(
         donation: &Donation,
         declarations: &[GiftAidDeclaration],
         date: DateTime<Utc>,
+    ) -> bool {
+        Self::covered_by_gift_aid_declaration_inner(donation, declarations, date, false)
+    }
+
+    /// Claimable under Gift Aid: covered AND the covering declaration carries
+    /// what HMRC requires (`is_complete_for_claim`). Incomplete declarations
+    /// are valid records but excluded from claim schedules until completed.
+    #[must_use]
+    pub fn claimable_under_gift_aid(
+        donation: &Donation,
+        declarations: &[GiftAidDeclaration],
+        date: DateTime<Utc>,
+    ) -> bool {
+        Self::covered_by_gift_aid_declaration_inner(donation, declarations, date, true)
+    }
+
+    fn covered_by_gift_aid_declaration_inner(
+        donation: &Donation,
+        declarations: &[GiftAidDeclaration],
+        date: DateTime<Utc>,
+        require_complete: bool,
     ) -> bool {
         let Some(donor_id) = donation.donor_id else {
             return false;
@@ -137,6 +197,7 @@ impl TaxTreatment {
         declarations
             .iter()
             .filter(|d| d.donor_id == donor_id)
+            .filter(|d| !require_complete || d.is_complete_for_claim())
             .any(|d| d.covers_donation(date, donation.id))
     }
 
@@ -196,15 +257,19 @@ impl GasdsResult {
         )
     }
 
-    pub fn add_evaluation(&mut self, eval: DonationEvaluation) {
-        self.eligible_amount = self.eligible_amount.saturating_add(&eval.eligible_amount);
-        self.excluded_amount = self.excluded_amount.saturating_add(&eval.excluded_amount);
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if totals overflow (checked arithmetic, Phase 3.2).
+    pub fn add_evaluation(&mut self, eval: DonationEvaluation) -> DomainResult<()> {
+        self.eligible_amount = self.eligible_amount.add(&eval.eligible_amount)?;
+        self.excluded_amount = self.excluded_amount.add(&eval.excluded_amount)?;
         if eval.excluded_amount.pence() > 0 {
             if let Some(reason) = &eval.exclusion_reason {
                 self.reasons.push(reason.clone());
             }
         }
         self.evaluations.push(eval);
+        Ok(())
     }
 }
 
@@ -244,15 +309,17 @@ pub fn annual_ceiling_pence(tax_year_start_year: i32) -> i64 {
 }
 
 impl GasdsCalculator {
+    /// Candidate estimator (Phase 3.5): pre-banking figures. Downstream claim
+    /// paths must apply the banked filter (see `exclusion_reason_for_banked`
+    /// and claim readiness) before submitting.
     /// # Errors
     ///
-    /// Returns [`DomainError`] if the input violates a domain invariant.
-    #[must_use]
+    /// Returns [`DomainError`] if totals overflow (checked arithmetic).
     pub fn calculate_offering(
         offering: &Offering,
         declarations: &[GiftAidDeclaration],
         config: &GasdsConfig,
-    ) -> GasdsResult {
+    ) -> DomainResult<GasdsResult> {
         let mut result = GasdsResult::new();
         result.annual_limit = config.annual_limit;
         result.gift_aid_claimed = config.gift_aid_claimed;
@@ -261,27 +328,59 @@ impl GasdsCalculator {
             .gift_aid_claimed
             .pence()
             .checked_mul(config.matching_multiplier)
-            .unwrap_or(i64::MAX);
-        let matching_cap = Money::from_pence_unchecked(raw.min(config.annual_limit.pence()));
+            .ok_or(DomainError::ArithmeticOverflow)?;
+        let matching_cap = Money::from_pence(raw.min(config.annual_limit.pence()))?;
         result.maximum_allowed = matching_cap;
 
-        for donation in &offering.donations {
-            let eval = Self::evaluate_donation(donation, declarations);
-            result.add_evaluation(eval);
+        for donation in offering.donations() {
+            let eval = Self::evaluate_donation(donation, declarations)?;
+            result.add_evaluation(eval)?;
         }
 
-        result
+        Ok(result)
+    }
+
+    /// Banked-status-aware variant (Phase 3.5): cash donations for offerings
+    /// absent from `banked_offering_ids` are excluded as
+    /// [`ExclusionReason::NotBanked`].
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if totals overflow (checked arithmetic).
+    pub fn calculate_offering_banked(
+        offering: &Offering,
+        declarations: &[GiftAidDeclaration],
+        config: &GasdsConfig,
+        banked_offering_ids: &std::collections::HashSet<uuid::Uuid>,
+    ) -> DomainResult<GasdsResult> {
+        let mut result = GasdsResult::new();
+        result.annual_limit = config.annual_limit;
+        result.gift_aid_claimed = config.gift_aid_claimed;
+
+        let raw = config
+            .gift_aid_claimed
+            .pence()
+            .checked_mul(config.matching_multiplier)
+            .ok_or(DomainError::ArithmeticOverflow)?;
+        let matching_cap = Money::from_pence(raw.min(config.annual_limit.pence()))?;
+        result.maximum_allowed = matching_cap;
+
+        let banked = banked_offering_ids.contains(&offering.id());
+        for donation in offering.donations() {
+            let eval = Self::evaluate_donation_banked(donation, declarations, banked);
+            result.add_evaluation(eval)?;
+        }
+
+        Ok(result)
     }
 
     /// # Errors
     ///
-    /// Returns [`DomainError`] if the input violates a domain invariant.
-    #[must_use]
+    /// Returns [`DomainError`] if totals overflow (checked arithmetic).
     pub fn calculate_period(
         offerings: &[Offering],
         declarations_by_donor: &std::collections::HashMap<uuid::Uuid, Vec<GiftAidDeclaration>>,
         config: &GasdsConfig,
-    ) -> GasdsResult {
+    ) -> DomainResult<GasdsResult> {
         let mut result = GasdsResult::new();
         result.annual_limit = config.annual_limit;
         result.gift_aid_claimed = config.gift_aid_claimed;
@@ -290,38 +389,60 @@ impl GasdsCalculator {
             .gift_aid_claimed
             .pence()
             .checked_mul(config.matching_multiplier)
-            .unwrap_or(i64::MAX);
-        let matching_cap = Money::from_pence_unchecked(raw.min(config.annual_limit.pence()));
+            .ok_or(DomainError::ArithmeticOverflow)?;
+        let matching_cap = Money::from_pence(raw.min(config.annual_limit.pence()))?;
         result.maximum_allowed = matching_cap;
 
         for offering in offerings {
-            for donation in &offering.donations {
+            for donation in offering.donations() {
                 let donor_decls = donation
                     .donor_id
                     .and_then(|id| declarations_by_donor.get(&id))
                     .map_or(&[] as &[_], Vec::as_slice);
 
                 let donation_date = donation.date;
-                let eval = Self::evaluate_donation_with_date(donation, donor_decls, donation_date);
-                result.add_evaluation(eval);
+                let eval = Self::evaluate_donation_with_date(donation, donor_decls, donation_date)?;
+                result.add_evaluation(eval)?;
             }
         }
 
-        result
+        Ok(result)
     }
 
     fn evaluate_donation(
         donation: &Donation,
         declarations: &[GiftAidDeclaration],
-    ) -> DonationEvaluation {
+    ) -> DomainResult<DonationEvaluation> {
         Self::evaluate_donation_with_date(donation, declarations, donation.date)
+    }
+
+    fn evaluate_donation_banked(
+        donation: &Donation,
+        declarations: &[GiftAidDeclaration],
+        banked: bool,
+    ) -> DonationEvaluation {
+        if !banked && donation.payment_method == crate::payment_method::PaymentMethod::Cash {
+            let total = donation.amount;
+            return DonationEvaluation {
+                donation_id: donation.id,
+                amount: total,
+                eligible_amount: Money::zero(),
+                excluded_amount: total,
+                classification: donation.classification,
+                eligible: false,
+                exclusion_reason: Some(ExclusionReason::NotBanked),
+                tax_treatment: TaxTreatment::Neither,
+            };
+        }
+        Self::evaluate_donation_with_date(donation, declarations, donation.date)
+            .expect("donation evaluation uses checked arithmetic on validated totals")
     }
 
     fn evaluate_donation_with_date(
         donation: &Donation,
         declarations: &[GiftAidDeclaration],
         date: NaiveDate,
-    ) -> DonationEvaluation {
+    ) -> DomainResult<DonationEvaluation> {
         // Breakdown-aware evaluation applies the per-donation limit per
         // denomination, but ONLY for pooled LooseCash. HMRC's £30 limit is
         // per gift: a single £40 Named/Anonymous gift recorded as 2×£20 notes
@@ -342,7 +463,7 @@ impl GasdsCalculator {
             (Money::zero(), amount)
         };
 
-        DonationEvaluation {
+        Ok(DonationEvaluation {
             donation_id: donation.id,
             amount,
             eligible_amount,
@@ -351,18 +472,18 @@ impl GasdsCalculator {
             eligible: is_eligible,
             exclusion_reason,
             tax_treatment: TaxTreatment::classify(donation, declarations, donation_datetime(date)),
-        }
+        })
     }
 
     fn evaluate_loose_cash(
         donation: &Donation,
         declarations: &[GiftAidDeclaration],
-    ) -> DonationEvaluation {
+    ) -> DomainResult<DonationEvaluation> {
         // Method / coverage rules apply to the whole donation; the limit is
         // then applied per denomination.
         if let Some(reason) = Self::exclusion_without_limit(donation, declarations, donation.date) {
             let total = donation.amount;
-            return DonationEvaluation {
+            return Ok(DonationEvaluation {
                 donation_id: donation.id,
                 amount: total,
                 eligible_amount: Money::zero(),
@@ -371,7 +492,7 @@ impl GasdsCalculator {
                 eligible: false,
                 exclusion_reason: Some(reason),
                 tax_treatment: TaxTreatment::Neither,
-            };
+            });
         }
         // Cash is always an eligible method; the per-donation limit depends on
         // when the donation was made (£20 before April 2019, £30 after).
@@ -384,11 +505,18 @@ impl GasdsCalculator {
         match &donation.cash_denominations {
             Some(breakdown) => {
                 for (denom, count) in breakdown.iter() {
-                    let item = Money::from_pence_unchecked(denom.pence() * i64::from(*count));
+                    // Checked per-item arithmetic (Phase 3.2): overflow is a
+                    // data error, never silently saturated.
+                    let item = Money::from_pence(
+                        denom
+                            .pence()
+                            .checked_mul(i64::from(*count))
+                            .ok_or(DomainError::ArithmeticOverflow)?,
+                    )?;
                     if denom.pence() <= limit {
-                        eligible_amount = eligible_amount.saturating_add(&item);
+                        eligible_amount = eligible_amount.add(&item)?;
                     } else {
-                        excluded_amount = excluded_amount.saturating_add(&item);
+                        excluded_amount = excluded_amount.add(&item)?;
                         if denom.pence() == 5000 {
                             saw_fifty_pound = true;
                         }
@@ -418,7 +546,7 @@ impl GasdsCalculator {
         // include the eligible part instead of dropping it (plan Phase 4.1).
         // `eligible` stays a fully-eligible flag for display purposes.
         let has_eligible = !eligible_amount.is_zero();
-        DonationEvaluation {
+        Ok(DonationEvaluation {
             donation_id: donation.id,
             amount: total,
             eligible_amount,
@@ -431,7 +559,7 @@ impl GasdsCalculator {
             } else {
                 TaxTreatment::Neither
             },
-        }
+        })
     }
 
     /// The single source of truth for GASDS eligibility (review O3): every
@@ -444,11 +572,34 @@ impl GasdsCalculator {
     /// only from 6 April 2019; per-donation limit £30 (£20 before); named
     /// donations already covered by a valid Gift Aid declaration belong to
     /// Gift Aid instead.
+    ///
+    /// NOTE (Phase 3.5): this is a pre-banking candidate check — it does not
+    /// consider whether cash was banked. Pass banked status via
+    /// [`Self::exclusion_reason_for_banked`] (or filter downstream as claim
+    /// readiness does) to exclude unbanked cash with
+    /// [`ExclusionReason::NotBanked`].
     fn exclusion_reason_for(
         donation: &Donation,
         declarations: &[GiftAidDeclaration],
         date: NaiveDate,
     ) -> Option<ExclusionReason> {
+        Self::exclusion_reason_for_banked(donation, declarations, date, true)
+    }
+
+    /// Banked-status-aware eligibility (Phase 3.5): unbanked cash donations
+    /// are excluded with [`ExclusionReason::NotBanked`]. Non-cash methods
+    /// (card etc.) are unaffected by the flag.
+    #[must_use]
+    pub fn exclusion_reason_for_banked(
+        donation: &Donation,
+        declarations: &[GiftAidDeclaration],
+        date: NaiveDate,
+        banked: bool,
+    ) -> Option<ExclusionReason> {
+        use crate::payment_method::PaymentMethod;
+        if !banked && donation.payment_method == PaymentMethod::Cash {
+            return Some(ExclusionReason::NotBanked);
+        }
         Self::exclusion_without_limit(donation, declarations, date).or_else(|| {
             (donation.amount.pence() > per_donation_limit_pence(date))
                 .then_some(ExclusionReason::OverThirtyPounds)
@@ -653,9 +804,13 @@ mod tests {
     #[test]
     fn boundary_29_99_eligible() {
         let mut o = make_offering();
-        o.add_donation(cash_donation(o.id, 2999, DonationClassification::Anonymous))
-            .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        o.add_donation(cash_donation(
+            o.id(),
+            2999,
+            DonationClassification::Anonymous,
+        ))
+        .unwrap();
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         let eval = &result.evaluations[0];
         assert!(eval.eligible);
         assert_eq!(result.eligible_amount.pence(), 2999);
@@ -664,9 +819,13 @@ mod tests {
     #[test]
     fn boundary_30_00_eligible() {
         let mut o = make_offering();
-        o.add_donation(cash_donation(o.id, 3000, DonationClassification::Anonymous))
-            .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        o.add_donation(cash_donation(
+            o.id(),
+            3000,
+            DonationClassification::Anonymous,
+        ))
+        .unwrap();
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         let eval = &result.evaluations[0];
         assert!(eval.eligible);
         assert_eq!(result.eligible_amount.pence(), 3000);
@@ -679,7 +838,7 @@ mod tests {
         // donation over the limit.
         o.add_donation(
             Donation::anonymous(
-                o.id,
+                o.id(),
                 Money::from_pence(3001).unwrap(),
                 DonationType::Offering,
                 PaymentMethod::Cash,
@@ -689,7 +848,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         let eval = &result.evaluations[0];
         assert!(!eval.eligible);
         assert!(matches!(
@@ -701,18 +860,26 @@ mod tests {
     #[test]
     fn anonymous_donation_eligible() {
         let mut o = make_offering();
-        o.add_donation(cash_donation(o.id, 2000, DonationClassification::Anonymous))
-            .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        o.add_donation(cash_donation(
+            o.id(),
+            2000,
+            DonationClassification::Anonymous,
+        ))
+        .unwrap();
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         assert_eq!(result.eligible_amount.pence(), 2000);
     }
 
     #[test]
     fn loose_cash_eligible() {
         let mut o = make_offering();
-        o.add_donation(cash_donation(o.id, 500, DonationClassification::LooseCash))
-            .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        o.add_donation(cash_donation(
+            o.id(),
+            500,
+            DonationClassification::LooseCash,
+        ))
+        .unwrap();
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         assert_eq!(result.eligible_amount.pence(), 500);
     }
 
@@ -720,12 +887,12 @@ mod tests {
     fn cheque_donation_not_eligible() {
         let mut o = make_offering();
         o.add_donation(cheque_donation(
-            o.id,
+            o.id(),
             2000,
             DonationClassification::Anonymous,
         ))
         .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         assert_eq!(result.eligible_amount.pence(), 0);
         for eval in &result.evaluations {
             if !eval.eligible {
@@ -741,12 +908,12 @@ mod tests {
     fn bank_transfer_donation_not_eligible() {
         let mut o = make_offering();
         o.add_donation(bank_transfer_donation(
-            o.id,
+            o.id(),
             2000,
             DonationClassification::Anonymous,
         ))
         .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         assert_eq!(result.eligible_amount.pence(), 0);
         for eval in &result.evaluations {
             if !eval.eligible {
@@ -771,12 +938,12 @@ mod tests {
     fn contactless_donation_eligible() {
         let mut o = make_offering();
         o.add_donation(cash_payment_donation(
-            o.id,
+            o.id(),
             2000,
             crate::payment_method::PaymentMethod::Contactless,
         ))
         .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         let eval = &result.evaluations[0];
         assert!(eval.eligible);
         assert_eq!(result.eligible_amount.pence(), 2000);
@@ -787,12 +954,12 @@ mod tests {
     fn chip_and_pin_donation_eligible() {
         let mut o = make_offering();
         o.add_donation(cash_payment_donation(
-            o.id,
+            o.id(),
             2000,
             crate::payment_method::PaymentMethod::ChipAndPin,
         ))
         .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         let eval = &result.evaluations[0];
         assert!(eval.eligible);
         assert_eq!(result.eligible_amount.pence(), 2000);
@@ -803,12 +970,12 @@ mod tests {
     fn contactless_over_thirty_pounds_not_eligible() {
         let mut o = make_offering();
         o.add_donation(cash_payment_donation(
-            o.id,
+            o.id(),
             3001,
             crate::payment_method::PaymentMethod::Contactless,
         ))
         .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         let eval = &result.evaluations[0];
         assert!(!eval.eligible);
         assert!(matches!(
@@ -822,7 +989,7 @@ mod tests {
         let mut o = make_offering();
         let donor = Uuid::new_v4();
         let donation = Donation::named(
-            o.id,
+            o.id(),
             donor,
             Money::from_pence(2000).unwrap(),
             DonationType::Tithe,
@@ -834,7 +1001,8 @@ mod tests {
         o.add_donation(donation).unwrap();
 
         let empty_decls: Vec<GiftAidDeclaration> = vec![];
-        let result = GasdsCalculator::calculate_offering(&o, &empty_decls, &GasdsConfig::default());
+        let result =
+            GasdsCalculator::calculate_offering(&o, &empty_decls, &GasdsConfig::default()).unwrap();
         assert_eq!(result.eligible_amount.pence(), 2000);
     }
 
@@ -844,7 +1012,7 @@ mod tests {
         let user = Uuid::new_v4();
         let mut o = make_offering();
         let donation = Donation::named(
-            o.id,
+            o.id(),
             donor,
             Money::from_pence(2000).unwrap(),
             DonationType::Tithe,
@@ -857,7 +1025,8 @@ mod tests {
 
         let from = dt(2024, 1, 1);
         let decl = GiftAidDeclaration::create(donor, from, user).unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[decl], &GasdsConfig::default());
+        let result =
+            GasdsCalculator::calculate_offering(&o, &[decl], &GasdsConfig::default()).unwrap();
         assert_eq!(result.eligible_amount.pence(), 0);
     }
 
@@ -868,9 +1037,9 @@ mod tests {
         ct.set(Denomination::Note2000p, 3);
         ct.set(Denomination::Note1000p, 14);
         ct.set(Denomination::Note5000p, 3);
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+        o.add_donation(Donation::loose_cash(o.id(), ct).unwrap())
             .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         // 3×£20 + 14×£10 = £200 eligible; 3×£50 = £150 excluded
         assert_eq!(result.eligible_amount.pence(), 20_000);
         assert_eq!(result.excluded_amount.pence(), 15_000);
@@ -889,9 +1058,9 @@ mod tests {
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Note2000p, 3);
         ct.set(Denomination::Note1000p, 14);
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+        o.add_donation(Donation::loose_cash(o.id(), ct).unwrap())
             .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         // 3×£20 + 14×£10 = £200 eligible, nothing excluded
         assert_eq!(result.eligible_amount.pence(), 20_000);
         assert_eq!(result.excluded_amount.pence(), 0);
@@ -905,9 +1074,13 @@ mod tests {
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Note2000p, 1);
         o.set_cash_denominations(ct).unwrap();
-        o.add_donation(cash_donation(o.id, 500, DonationClassification::LooseCash))
-            .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        o.add_donation(cash_donation(
+            o.id(),
+            500,
+            DonationClassification::LooseCash,
+        ))
+        .unwrap();
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         assert_eq!(result.eligible_amount.pence(), 500);
         assert_eq!(result.excluded_amount.pence(), 0);
     }
@@ -917,9 +1090,9 @@ mod tests {
         let mut o = make_offering();
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Note5000p, 1);
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+        o.add_donation(Donation::loose_cash(o.id(), ct).unwrap())
             .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         assert_eq!(result.eligible_amount.pence(), 0);
         assert_eq!(result.excluded_amount.pence(), 5000);
     }
@@ -928,15 +1101,19 @@ mod tests {
     fn annual_limit_caps_eligible() {
         let mut o = make_offering();
         for _ in 0..20 {
-            o.add_donation(cash_donation(o.id, 2000, DonationClassification::Anonymous))
-                .unwrap();
+            o.add_donation(cash_donation(
+                o.id(),
+                2000,
+                DonationClassification::Anonymous,
+            ))
+            .unwrap();
         }
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(800_000),
             gift_aid_claimed: Money::from_pence_unchecked(100_000), // £1000 Gift Aid → £10,000 cap
             matching_multiplier: 10,
         };
-        let result = GasdsCalculator::calculate_offering(&o, &[], &config);
+        let result = GasdsCalculator::calculate_offering(&o, &[], &config).unwrap();
         // 20 * £20 = £400, limits are £10,000 and £8,000, so all eligible
         assert_eq!(result.eligible_amount.pence(), 40_000);
         assert_eq!(result.claimable_amount().pence(), 40_000);
@@ -946,15 +1123,19 @@ mod tests {
     fn annual_limit_enforced() {
         let mut o = make_offering();
         for _ in 0..270 {
-            o.add_donation(cash_donation(o.id, 3000, DonationClassification::Anonymous))
-                .unwrap();
+            o.add_donation(cash_donation(
+                o.id(),
+                3000,
+                DonationClassification::Anonymous,
+            ))
+            .unwrap();
         }
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(800_000),
             gift_aid_claimed: Money::from_pence_unchecked(100_000), // £1000 → £10,000 cap, capped by £8,000
             matching_multiplier: 10,
         };
-        let result = GasdsCalculator::calculate_offering(&o, &[], &config);
+        let result = GasdsCalculator::calculate_offering(&o, &[], &config).unwrap();
         // 270 * £30 = £8100, annual limit is £8000
         assert_eq!(result.eligible_amount.pence(), 810_000);
         assert_eq!(result.maximum_allowed.pence(), 800_000);
@@ -965,15 +1146,19 @@ mod tests {
     fn matching_rule_caps_when_gift_aid_low() {
         let mut o = make_offering();
         for _ in 0..20 {
-            o.add_donation(cash_donation(o.id, 2000, DonationClassification::Anonymous))
-                .unwrap();
+            o.add_donation(cash_donation(
+                o.id(),
+                2000,
+                DonationClassification::Anonymous,
+            ))
+            .unwrap();
         }
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(800_000),
             gift_aid_claimed: Money::from_pence_unchecked(1000), // £10 Gift Aid → £100 GASDS max (10:1)
             matching_multiplier: 10,
         };
-        let result = GasdsCalculator::calculate_offering(&o, &[], &config);
+        let result = GasdsCalculator::calculate_offering(&o, &[], &config).unwrap();
         assert_eq!(result.maximum_allowed.pence(), 10_000);
         assert_eq!(result.claimable_amount().pence(), 10_000);
     }
@@ -982,15 +1167,19 @@ mod tests {
     fn annual_limit_used_when_gift_aid_high() {
         let mut o = make_offering();
         for _ in 0..20 {
-            o.add_donation(cash_donation(o.id, 3000, DonationClassification::Anonymous))
-                .unwrap();
+            o.add_donation(cash_donation(
+                o.id(),
+                3000,
+                DonationClassification::Anonymous,
+            ))
+            .unwrap();
         }
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(800_000),
             gift_aid_claimed: Money::from_pence_unchecked(100_000), // £1000 Gift Aid → £10,000, capped by £8,000
             matching_multiplier: 10,
         };
-        let result = GasdsCalculator::calculate_offering(&o, &[], &config);
+        let result = GasdsCalculator::calculate_offering(&o, &[], &config).unwrap();
         assert_eq!(result.maximum_allowed.pence(), 800_000);
         assert_eq!(result.claimable_amount().pence(), 60_000);
     }
@@ -998,19 +1187,31 @@ mod tests {
     #[test]
     fn mixed_donations_sum_eligible() {
         let mut o = make_offering();
-        o.add_donation(cash_donation(o.id, 2000, DonationClassification::Anonymous))
-            .unwrap();
-        o.add_donation(cash_donation(o.id, 2500, DonationClassification::LooseCash))
-            .unwrap();
-        o.add_donation(cheque_donation(
-            o.id,
+        o.add_donation(cash_donation(
+            o.id(),
             2000,
             DonationClassification::Anonymous,
         ))
         .unwrap();
-        o.add_donation(cash_donation(o.id, 4000, DonationClassification::Anonymous))
-            .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        o.add_donation(cash_donation(
+            o.id(),
+            2500,
+            DonationClassification::LooseCash,
+        ))
+        .unwrap();
+        o.add_donation(cheque_donation(
+            o.id(),
+            2000,
+            DonationClassification::Anonymous,
+        ))
+        .unwrap();
+        o.add_donation(cash_donation(
+            o.id(),
+            4000,
+            DonationClassification::Anonymous,
+        ))
+        .unwrap();
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         // The £30 per-gift limit applies to the whole gift (plan Phase 4.1):
         // the £40 anonymous gift is one £40 donation over the limit even
         // though its breakdown is 2×£20 notes. Eligible: £20 anonymous +
@@ -1030,7 +1231,7 @@ mod tests {
         );
         o.add_donation(
             Donation::anonymous(
-                o.id,
+                o.id(),
                 Money::from_pence(4000).unwrap(),
                 DonationType::Offering,
                 PaymentMethod::Cash,
@@ -1040,7 +1241,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         let eval = &result.evaluations[0];
         assert!(!eval.eligible);
         assert_eq!(eval.tax_treatment, TaxTreatment::Neither);
@@ -1061,9 +1262,9 @@ mod tests {
             crate::entities::cash_denomination::Denomination::Note2000p,
             2,
         );
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+        o.add_donation(Donation::loose_cash(o.id(), ct).unwrap())
             .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         let eval = &result.evaluations[0];
         assert!(eval.eligible);
         assert_eq!(eval.tax_treatment, TaxTreatment::Gasds);
@@ -1086,9 +1287,9 @@ mod tests {
             crate::entities::cash_denomination::Denomination::Note2000p,
             10,
         );
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+        o.add_donation(Donation::loose_cash(o.id(), ct).unwrap())
             .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         let eval = &result.evaluations[0];
         assert!(!eval.eligible);
         assert_eq!(eval.tax_treatment, TaxTreatment::Gasds);
@@ -1102,14 +1303,14 @@ mod tests {
     fn multiple_offerings_aggregate() {
         let mut o1 = make_offering();
         o1.add_donation(cash_donation(
-            o1.id,
+            o1.id(),
             2000,
             DonationClassification::Anonymous,
         ))
         .unwrap();
         let mut o2 = make_offering();
         o2.add_donation(cash_donation(
-            o2.id,
+            o2.id(),
             1000,
             DonationClassification::Anonymous,
         ))
@@ -1118,7 +1319,8 @@ mod tests {
             &[o1, o2],
             &std::collections::HashMap::new(),
             &GasdsConfig::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(result.eligible_amount.pence(), 3000);
     }
 
@@ -1126,14 +1328,14 @@ mod tests {
     fn multiple_meetings_same_result() {
         let mut o1 = make_offering();
         o1.add_donation(cash_donation(
-            o1.id,
+            o1.id(),
             2000,
             DonationClassification::Anonymous,
         ))
         .unwrap();
         let mut o2 = make_offering();
         o2.add_donation(cash_donation(
-            o2.id,
+            o2.id(),
             3000,
             DonationClassification::LooseCash,
         ))
@@ -1142,7 +1344,8 @@ mod tests {
             &[o1, o2],
             &std::collections::HashMap::new(),
             &GasdsConfig::default(),
-        );
+        )
+        .unwrap();
         // Should aggregate across meetings
         assert_eq!(result.eligible_amount.pence(), 5000);
     }
@@ -1150,14 +1353,18 @@ mod tests {
     #[test]
     fn claimable_never_exceeds_eligible() {
         let mut o = make_offering();
-        o.add_donation(cash_donation(o.id, 1000, DonationClassification::Anonymous))
-            .unwrap();
+        o.add_donation(cash_donation(
+            o.id(),
+            1000,
+            DonationClassification::Anonymous,
+        ))
+        .unwrap();
         let config = GasdsConfig {
             annual_limit: Money::from_pence_unchecked(500), // £5 limit
             gift_aid_claimed: Money::from_pence_unchecked(1000),
             matching_multiplier: 10,
         };
-        let result = GasdsCalculator::calculate_offering(&o, &[], &config);
+        let result = GasdsCalculator::calculate_offering(&o, &[], &config).unwrap();
         assert_eq!(result.eligible_amount.pence(), 1000);
         assert_eq!(result.maximum_allowed.pence(), 500);
         assert_eq!(result.claimable_amount().pence(), 500);
@@ -1187,7 +1394,7 @@ mod tests {
         // April 2019 £20→£30 limit change (review O2).
         let mut historic = make_offering();
         let d = Donation::anonymous(
-            historic.id,
+            historic.id(),
             Money::from_pence(2500).unwrap(),
             DonationType::Offering,
             PaymentMethod::Cash,
@@ -1197,7 +1404,8 @@ mod tests {
         .unwrap()
         .with_date(chrono::NaiveDate::from_ymd_opt(2018, 6, 1).unwrap());
         historic.add_donation(d).unwrap();
-        let result = GasdsCalculator::calculate_offering(&historic, &[], &GasdsConfig::default());
+        let result =
+            GasdsCalculator::calculate_offering(&historic, &[], &GasdsConfig::default()).unwrap();
 
         let eval = &result.evaluations[0];
         assert!(!eval.eligible);
@@ -1209,7 +1417,7 @@ mod tests {
         let make = |year: i32| {
             let mut o = make_offering();
             let mut d = Donation::anonymous(
-                o.id,
+                o.id(),
                 Money::from_pence(1000).unwrap(),
                 DonationType::Offering,
                 PaymentMethod::Contactless,
@@ -1223,10 +1431,10 @@ mod tests {
         };
         let config = GasdsConfig::default();
 
-        let modern = GasdsCalculator::calculate_offering(&make(2024), &[], &config);
+        let modern = GasdsCalculator::calculate_offering(&make(2024), &[], &config).unwrap();
         assert!(modern.evaluations[0].eligible);
 
-        let historic = GasdsCalculator::calculate_offering(&make(2018), &[], &config);
+        let historic = GasdsCalculator::calculate_offering(&make(2018), &[], &config).unwrap();
         let eval = &historic.evaluations[0];
         assert!(!eval.eligible);
         assert!(matches!(
@@ -1247,10 +1455,25 @@ mod tests {
         let donor = Uuid::new_v4();
         let user = Uuid::new_v4();
         let from = dt(2024, 1, 1);
-        let decl = GiftAidDeclaration::create(donor, from, user).unwrap();
+        // Phase 3.9: only a claim-complete declaration supports Gift Aid.
+        let decl = GiftAidDeclaration::create_full(
+            donor,
+            crate::entities::gift_aid::DeclarationType::MultipleDonations,
+            from,
+            Some("Test Church".to_string()),
+            Some("Complete Person".to_string()),
+            Some(test_address()),
+            crate::entities::gift_aid::DeclarationMethod::Written,
+            Some(from),
+            Some("v1".to_string()),
+            None,
+            user,
+        )
+        .unwrap();
+        assert!(decl.is_complete_for_claim());
         let mut o = make_offering();
         let donation = Donation::named(
-            o.id,
+            o.id(),
             donor,
             Money::from_pence(2000).unwrap(),
             DonationType::Tithe,
@@ -1265,8 +1488,84 @@ mod tests {
             TaxTreatment::classify(&donation, std::slice::from_ref(&decl), date),
             TaxTreatment::GiftAid
         );
-        let result = GasdsCalculator::calculate_offering(&o, &[decl], &GasdsConfig::default());
+        let result =
+            GasdsCalculator::calculate_offering(&o, &[decl], &GasdsConfig::default()).unwrap();
         assert_eq!(result.evaluations[0].tax_treatment, TaxTreatment::GiftAid);
+    }
+
+    #[test]
+    fn classify_named_with_incomplete_declaration_is_not_gift_aid() {
+        // Phase 3.9: coverage without completeness is reported via
+        // `covered_by_declaration` but is NOT claimable under Gift Aid.
+        let donor = Uuid::new_v4();
+        let user = Uuid::new_v4();
+        let from = dt(2024, 1, 1);
+        let decl = GiftAidDeclaration::create(donor, from, user).unwrap();
+        assert!(!decl.is_complete_for_claim());
+        let mut o = make_offering();
+        let donation = Donation::named(
+            o.id(),
+            donor,
+            Money::from_pence(2000).unwrap(),
+            DonationType::Tithe,
+            crate::payment_method::PaymentMethod::Cash,
+            None,
+            None,
+        )
+        .unwrap();
+        o.add_donation(donation.clone()).unwrap();
+        let date = dt(2024, 6, 1);
+        assert!(TaxTreatment::covered_by_declaration(
+            &donation,
+            std::slice::from_ref(&decl),
+            date
+        ));
+        assert!(!TaxTreatment::claimable_under_gift_aid(
+            &donation,
+            std::slice::from_ref(&decl),
+            date
+        ));
+        assert_eq!(
+            TaxTreatment::classify(&donation, std::slice::from_ref(&decl), date),
+            TaxTreatment::Neither
+        );
+    }
+
+    #[test]
+    fn unbanked_cash_is_excluded_as_not_banked() {
+        // Phase 3.5: banked-status-aware evaluation excludes unbanked cash.
+        let mut o = make_offering();
+        o.add_donation(cash_donation(
+            o.id(),
+            2000,
+            DonationClassification::Anonymous,
+        ))
+        .unwrap();
+        let banked = std::collections::HashSet::new();
+        let result =
+            GasdsCalculator::calculate_offering_banked(&o, &[], &GasdsConfig::default(), &banked)
+                .unwrap();
+        assert_eq!(result.eligible_amount.pence(), 0);
+        assert!(matches!(
+            result.evaluations[0].exclusion_reason,
+            Some(ExclusionReason::NotBanked)
+        ));
+        let mut ids = std::collections::HashSet::new();
+        ids.insert(o.id());
+        let result =
+            GasdsCalculator::calculate_offering_banked(&o, &[], &GasdsConfig::default(), &ids)
+                .unwrap();
+        assert_eq!(result.eligible_amount.pence(), 2000);
+    }
+
+    fn test_address() -> crate::address::Address {
+        crate::address::Address::new(
+            "1 Road".to_string(),
+            None,
+            None,
+            crate::postcode::Postcode::new("AB1 2CD").unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1274,7 +1573,7 @@ mod tests {
         let donor = Uuid::new_v4();
         let mut o = make_offering();
         let donation = Donation::named(
-            o.id,
+            o.id(),
             donor,
             Money::from_pence(2000).unwrap(),
             DonationType::Tithe,
@@ -1284,7 +1583,7 @@ mod tests {
         )
         .unwrap();
         o.add_donation(donation).unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         assert_eq!(result.evaluations[0].tax_treatment, TaxTreatment::Gasds);
     }
 
@@ -1293,7 +1592,7 @@ mod tests {
         let donor = Uuid::new_v4();
         let mut o = make_offering();
         let donation = Donation::named(
-            o.id,
+            o.id(),
             donor,
             Money::from_pence(2000).unwrap(),
             DonationType::Tithe,
@@ -1303,7 +1602,7 @@ mod tests {
         )
         .unwrap();
         o.add_donation(donation).unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         assert_eq!(result.evaluations[0].tax_treatment, TaxTreatment::Neither);
     }
 
@@ -1312,9 +1611,9 @@ mod tests {
         let mut o = make_offering();
         let mut ct = crate::entities::cash_denomination::CashTotal::new();
         ct.set(Denomination::Coin100p, 5);
-        o.add_donation(Donation::loose_cash(o.id, ct).unwrap())
+        o.add_donation(Donation::loose_cash(o.id(), ct).unwrap())
             .unwrap();
-        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default());
+        let result = GasdsCalculator::calculate_offering(&o, &[], &GasdsConfig::default()).unwrap();
         assert_eq!(result.evaluations[0].tax_treatment, TaxTreatment::Gasds);
     }
 
@@ -1345,7 +1644,8 @@ mod tests {
             ))
             .unwrap();
         let r_inside =
-            GasdsCalculator::calculate_offering(&inside, &[decl.clone()], &GasdsConfig::default());
+            GasdsCalculator::calculate_offering(&inside, &[decl.clone()], &GasdsConfig::default())
+                .unwrap();
 
         let mut outside = make_offering();
         outside
@@ -1354,7 +1654,8 @@ mod tests {
             ))
             .unwrap();
         let r_outside =
-            GasdsCalculator::calculate_offering(&outside, &[decl.clone()], &GasdsConfig::default());
+            GasdsCalculator::calculate_offering(&outside, &[decl.clone()], &GasdsConfig::default())
+                .unwrap();
 
         assert_eq!(r_inside.eligible_amount.pence(), 0);
         assert_eq!(r_outside.eligible_amount.pence(), 1000);

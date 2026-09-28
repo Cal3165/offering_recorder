@@ -183,8 +183,8 @@ export const checkerSign = (offering_id: string, guest_name: string | null) =>
   run<Offering>("checker_sign", { offering_id: offering_id, guest_name: guest_name });
 export const lockOffering = (offering_id: string) =>
   run<Offering>("lock_offering", { offering_id: offering_id });
-export const withdrawSignature = (offering_id: string) =>
-  run<Offering>("withdraw_signature", { offering_id: offering_id });
+export const withdrawSignature = (offering_id: string, reason?: string) =>
+  run<Offering>("withdraw_signature", { offering_id: offering_id, reason: reason ?? null });
 export const gasdsForOffering = (offering_id: string) =>
   run<GasdsResult>("gasds_for_offering", { offering_id: offering_id });
 

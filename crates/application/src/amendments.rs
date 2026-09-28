@@ -128,7 +128,7 @@ impl<'a> AmendmentService<'a> {
                 actor,
                 AuditAction::AmendmentCreated,
                 "Amendment",
-                Some(amendment.id),
+                Some(amendment.id()),
                 None,
                 crate::audit::state_json(&amendment),
                 Some("amendment created".into()),
@@ -155,7 +155,7 @@ impl<'a> AmendmentService<'a> {
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
         // Snapshot for optimistic-concurrency check at save time (review O27).
-        let expected_updated_at = amendment.updated_at;
+        let expected_updated_at = amendment.updated_at();
         amendment.counter_sign(Self::signature_for(actor, guest_name))?;
         let amendment = self
             .amendments
@@ -166,7 +166,7 @@ impl<'a> AmendmentService<'a> {
                 actor,
                 AuditAction::AmendmentSigned,
                 "Amendment",
-                Some(amendment.id),
+                Some(amendment.id()),
                 None,
                 crate::audit::state_json(&amendment),
                 Some("amendment counter signed".into()),
@@ -193,9 +193,9 @@ impl<'a> AmendmentService<'a> {
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
         // Snapshot for optimistic-concurrency check at save time (review O27).
-        let expected_updated_at = amendment.updated_at;
+        let expected_updated_at = amendment.updated_at();
         let checker_sig = Self::signature_for(actor, guest_name);
-        if let Some(counter_sig) = amendment.counter_signature.as_ref() {
+        if let Some(counter_sig) = amendment.counter_signature().as_ref() {
             Self::reject_same_user_double_sign(actor, counter_sig, &checker_sig)?;
         }
         amendment.checker_sign(checker_sig)?;
@@ -208,7 +208,7 @@ impl<'a> AmendmentService<'a> {
                 actor,
                 AuditAction::AmendmentSigned,
                 "Amendment",
-                Some(amendment.id),
+                Some(amendment.id()),
                 None,
                 crate::audit::state_json(&amendment),
                 Some("amendment checker signed".into()),
@@ -237,15 +237,15 @@ impl<'a> AmendmentService<'a> {
         // amendment must not approve it — approval is the second pair of eyes.
         // An Admin may explicitly override (single-administrator parishes have
         // no second approver); the override is audited with the approval.
-        if actor.id == amendment.created_by && !actor.is_admin() {
+        if actor.id == amendment.created_by() && !actor.is_admin() {
             return Err(crate::error::AppError::Conflict(
                 "amendment approver must be different from the creator (Admin override only)"
                     .into(),
             ));
         }
         // Snapshot for optimistic-concurrency check at save time (review O27).
-        let expected_updated_at = amendment.updated_at;
-        amendment.approve()?;
+        let expected_updated_at = amendment.updated_at();
+        amendment.approve(actor.id)?;
         let amendment = self
             .amendments
             .update(amendment, expected_updated_at)
@@ -255,7 +255,7 @@ impl<'a> AmendmentService<'a> {
                 actor,
                 AuditAction::OfferingAmended,
                 "Amendment",
-                Some(amendment.id),
+                Some(amendment.id()),
                 None,
                 crate::audit::state_json(&amendment),
                 Some("amendment approved".into()),
@@ -280,7 +280,7 @@ impl<'a> AmendmentService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
-        let expected_updated_at = amendment.updated_at;
+        let expected_updated_at = amendment.updated_at();
         let old = crate::audit::state_json(&amendment);
         amendment.withdraw_signature()?;
         let amendment = self
@@ -292,12 +292,12 @@ impl<'a> AmendmentService<'a> {
                 actor,
                 AuditAction::AmendmentSignatureWithdrawn,
                 "Amendment",
-                Some(amendment.id),
+                Some(amendment.id()),
                 old,
                 crate::audit::state_json(&amendment),
                 Some(format!(
                     "amendment signature withdrawn, status now {}",
-                    amendment.status
+                    amendment.status()
                 )),
             )
             .await?;
@@ -316,7 +316,7 @@ impl<'a> AmendmentService<'a> {
             .get(amendment_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("amendment not found".into()))?;
-        if amendment.status == offering_domain::entities::amendment::AmendmentStatus::Approved {
+        if amendment.status() == offering_domain::entities::amendment::AmendmentStatus::Approved {
             return Err(crate::error::AppError::Validation(
                 "approved amendments cannot be deleted".into(),
             ));
@@ -331,7 +331,7 @@ impl<'a> AmendmentService<'a> {
                 Some(amendment_id),
                 old,
                 None,
-                Some(format!("amendment deleted ({})", amendment.reason)),
+                Some(format!("amendment deleted ({})", amendment.reason())),
             )
             .await?;
         Ok(())

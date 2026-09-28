@@ -340,13 +340,13 @@ pub async fn setup_offering_with_loose_cash(
     let offering = create_test_offering(services, admin, meeting_id).await;
     services
         .offerings
-        .set_attendance(admin, offering.id, attendance)
+        .set_attendance(admin, offering.id(), attendance)
         .await
         .unwrap();
     add_loose_cash_donation(
         services,
         admin,
-        offering.id,
+        offering.id(),
         amount_pence,
         denom,
         count,
@@ -355,7 +355,7 @@ pub async fn setup_offering_with_loose_cash(
     .await;
     services
         .offerings
-        .get_offering(admin, offering.id)
+        .get_offering(admin, offering.id())
         .await
         .unwrap()
         .unwrap()
@@ -428,9 +428,22 @@ pub async fn drive_claim_to_approval(
         .await
         .unwrap();
     assert_eq!(claim.status, GasdsClaimStatus::InReview);
+    // Phase 3.7 SoD: the approver must differ from the preparer.
+    let approver = services
+        .auth
+        .create_user(
+            admin,
+            &format!("claim_approver_{}", &claim.id.to_string()[0..8]),
+            "pw",
+            "Claim Approver",
+            None,
+            RoleSet::new(vec![Role::GiftAid]),
+        )
+        .await
+        .unwrap();
     let claim = services
         .gasds_claims
-        .approve(admin, claim.id)
+        .approve(&approver, claim.id)
         .await
         .unwrap();
     assert_eq!(claim.status, GasdsClaimStatus::Approved);
@@ -497,7 +510,7 @@ pub async fn create_dated_loose_offering(
     let offering = create_test_offering(services, admin, meeting_id).await;
     services
         .offerings
-        .set_attendance(admin, offering.id, attendance)
+        .set_attendance(admin, offering.id(), attendance)
         .await
         .unwrap();
     let breakdown = cash_total(Denomination::Note500p, 1);
@@ -505,7 +518,7 @@ pub async fn create_dated_loose_offering(
         .offerings
         .add_donation(
             admin,
-            offering.id,
+            offering.id(),
             AddDonationInput {
                 donor_id: None,
                 amount_pence: 500,
@@ -521,10 +534,10 @@ pub async fn create_dated_loose_offering(
         .unwrap();
     services
         .offerings
-        .set_cash_denominations(admin, offering.id, breakdown)
+        .set_cash_denominations(admin, offering.id(), breakdown)
         .await
         .unwrap();
-    lock_offering(services, admin, offering.id).await;
+    lock_offering(services, admin, offering.id()).await;
     offering
 }
 
@@ -565,17 +578,17 @@ pub async fn approve_offering_amendment(
         create_counter_and_checker(services, admin, counter_name, checker_name).await;
     let amendment = services
         .amendments
-        .sign_amendment_counter(&counter, amendment.id, None)
+        .sign_amendment_counter(&counter, amendment.id(), None)
         .await
         .unwrap();
     let amendment = services
         .amendments
-        .sign_amendment_checker(&checker, amendment.id, None)
+        .sign_amendment_checker(&checker, amendment.id(), None)
         .await
         .unwrap();
     services
         .amendments
-        .approve_amendment(admin, amendment.id)
+        .approve_amendment(admin, amendment.id())
         .await
         .unwrap();
 }
@@ -592,7 +605,7 @@ pub async fn get_donation_id_by_amount(
         .await
         .unwrap()
         .unwrap()
-        .donations
+        .donations()
         .iter()
         .find(|d| d.amount.pence() == amount_pence)
         .unwrap()
@@ -661,26 +674,26 @@ pub async fn setup_full_offering_with_mixed_donations(
         .await
         .unwrap();
     assert_eq!(
-        offering.offering_number.to_string(),
+        offering.offering_number().to_string(),
         format!("{}/01/0001", chrono::Utc::now().year())
     );
     services
         .offerings
-        .set_attendance(admin, offering.id, 120)
+        .set_attendance(admin, offering.id(), 120)
         .await
         .unwrap();
     let mut cash = CashTotal::new();
     cash.set(Denomination::Note1000p, 2);
     services
         .offerings
-        .set_cash_denominations(admin, offering.id, cash)
+        .set_cash_denominations(admin, offering.id(), cash)
         .await
         .unwrap();
     services
         .offerings
         .add_donation(
             admin,
-            offering.id,
+            offering.id(),
             AddDonationInput {
                 donor_id: Some(donor_id),
                 amount_pence: 1000,
@@ -704,7 +717,7 @@ pub async fn setup_full_offering_with_mixed_donations(
             .offerings
             .add_donation(
                 admin,
-                offering.id,
+                offering.id(),
                 AddDonationInput {
                     donor_id: None,
                     amount_pence: 1000,
@@ -749,7 +762,7 @@ pub async fn sign_verify_and_lock(
         .counter_sign(counter, offering_id, None)
         .await
         .unwrap();
-    assert_eq!(signed_counter.status, OfferingStatus::CounterSigned);
+    assert_eq!(signed_counter.status(), OfferingStatus::CounterSigned);
     assert!(services
         .offerings
         .counter_sign(counter, offering_id, None)
@@ -760,13 +773,13 @@ pub async fn sign_verify_and_lock(
         .checker_sign(checker, offering_id, None)
         .await
         .unwrap();
-    assert_eq!(signed_checker.status, OfferingStatus::CheckerSigned);
+    assert_eq!(signed_checker.status(), OfferingStatus::CheckerSigned);
     let locked = services
         .offerings
         .lock_offering(checker, offering_id)
         .await
         .unwrap();
-    assert_eq!(locked.status, OfferingStatus::Locked);
+    assert_eq!(locked.status(), OfferingStatus::Locked);
     assert!(locked.is_locked());
     let after_lock = services
         .offerings
@@ -774,7 +787,7 @@ pub async fn sign_verify_and_lock(
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(after_lock.status, OfferingStatus::Locked);
+    assert_eq!(after_lock.status(), OfferingStatus::Locked);
     assert_eq!(after_lock.donation_total().unwrap().pence(), 3000);
     let gasds = services
         .offerings
@@ -804,17 +817,17 @@ pub async fn amend_attendance_and_bank(
         .unwrap();
     let amendment = services
         .amendments
-        .sign_amendment_counter(counter, amendment.id, None)
+        .sign_amendment_counter(counter, amendment.id(), None)
         .await
         .unwrap();
     let amendment = services
         .amendments
-        .sign_amendment_checker(checker, amendment.id, None)
+        .sign_amendment_checker(checker, amendment.id(), None)
         .await
         .unwrap();
     let amendment = services
         .amendments
-        .approve_amendment(admin, amendment.id)
+        .approve_amendment(admin, amendment.id())
         .await
         .unwrap();
     assert!(amendment.is_approved());
@@ -824,7 +837,7 @@ pub async fn amend_attendance_and_bank(
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(amended.attendance, Some(130));
+    assert_eq!(amended.attendance(), Some(130));
     let deposit = services
         .banking
         .create_deposit(
@@ -836,8 +849,8 @@ pub async fn amend_attendance_and_bank(
         .await
         .unwrap();
     assert_eq!(deposit.items.len(), 1);
-    assert_eq!(deposit.expected_cash().pence(), 2000);
-    assert_eq!(deposit.expected_cheques().pence(), 1000);
+    assert_eq!(deposit.expected_cash().unwrap().pence(), 2000);
+    assert_eq!(deposit.expected_cheques().unwrap().pence(), 1000);
     assert!(services
         .banking
         .create_deposit(admin, vec![offering_id], chrono::Utc::now(), None)
@@ -868,7 +881,7 @@ pub async fn setup_banked_offering_with_mixed_payments(
         .offerings
         .add_donation(
             admin,
-            offering.id,
+            offering.id(),
             AddDonationInput {
                 donor_id: None,
                 amount_pence: 2000,
@@ -884,7 +897,7 @@ pub async fn setup_banked_offering_with_mixed_payments(
         .unwrap();
     services
         .offerings
-        .set_cash_denominations(admin, offering.id, ct)
+        .set_cash_denominations(admin, offering.id(), ct)
         .await
         .unwrap();
     for (method, pence) in [
@@ -895,7 +908,7 @@ pub async fn setup_banked_offering_with_mixed_payments(
             .offerings
             .add_donation(
                 admin,
-                offering.id,
+                offering.id(),
                 AddDonationInput {
                     donor_id: None,
                     amount_pence: pence,
@@ -912,10 +925,10 @@ pub async fn setup_banked_offering_with_mixed_payments(
     }
     services
         .offerings
-        .set_attendance(admin, offering.id, 42)
+        .set_attendance(admin, offering.id(), 42)
         .await
         .unwrap();
-    lock_offering(services, admin, offering.id).await;
+    lock_offering(services, admin, offering.id()).await;
     offering
 }
 
@@ -940,11 +953,11 @@ pub async fn record_exact_actuals_and_assert_evidence(
         .record_actuals(admin, deposit.id, 2000, 3000, 1500)
         .await
         .unwrap();
-    assert!(!updated.has_discrepancy());
+    assert!(!updated.has_discrepancy().unwrap());
     let reloaded = services.banking.list_deposits(admin).await.unwrap();
     let stored = reloaded.iter().find(|d| d.id == deposit.id).unwrap();
     assert_eq!(stored.items[0].other_amount.pence(), 1500);
-    assert_eq!(stored.expected_other().pence(), 1500);
+    assert_eq!(stored.expected_other().unwrap().pence(), 1500);
     assert!(services
         .banking
         .delete_deposit(admin, deposit.id)
@@ -971,7 +984,7 @@ pub async fn assert_unreconciled_deposit_deletable(
         .offerings
         .add_donation(
             admin,
-            offering2.id,
+            offering2.id(),
             AddDonationInput {
                 donor_id: None,
                 amount_pence: 1000,
@@ -987,18 +1000,18 @@ pub async fn assert_unreconciled_deposit_deletable(
         .unwrap();
     services
         .offerings
-        .set_cash_denominations(admin, offering2.id, coin10())
+        .set_cash_denominations(admin, offering2.id(), coin10())
         .await
         .unwrap();
     services
         .offerings
-        .set_attendance(admin, offering2.id, 5)
+        .set_attendance(admin, offering2.id(), 5)
         .await
         .unwrap();
-    lock_offering(services, admin, offering2.id).await;
+    lock_offering(services, admin, offering2.id()).await;
     let deposit2 = services
         .banking
-        .create_deposit(admin, vec![offering2.id], chrono::Utc::now(), None)
+        .create_deposit(admin, vec![offering2.id()], chrono::Utc::now(), None)
         .await
         .unwrap();
     services
@@ -1008,7 +1021,7 @@ pub async fn assert_unreconciled_deposit_deletable(
         .unwrap();
     let again = services
         .banking
-        .create_deposit(admin, vec![offering2.id], chrono::Utc::now(), None)
+        .create_deposit(admin, vec![offering2.id()], chrono::Utc::now(), None)
         .await;
     assert!(
         again.is_ok(),

@@ -274,7 +274,7 @@ async fn declaration_amendment_flow_for_used_declaration() {
 
     let meeting = create_test_meeting(&services, &admin, "Sunday").await;
     let offering = create_test_offering(&services, &admin, meeting.id).await;
-    add_named_cheque_donation(&services, &admin, offering.id, donor.id, 5000).await;
+    add_named_cheque_donation(&services, &admin, offering.id(), donor.id, 5000).await;
 
     let stored = services
         .gift_aid
@@ -425,7 +425,7 @@ async fn ending_used_declaration_with_past_date_requires_amendment() {
         .offerings
         .add_donation(
             &admin,
-            offering.id,
+            offering.id(),
             offering_application::offerings::AddDonationInput {
                 donation_type: offering_domain::donation_type::DonationType::Tithe,
                 payment_method: offering_domain::payment_method::PaymentMethod::Cheque,
@@ -573,7 +573,7 @@ async fn gift_aid_report_excludes_revoked_declarations() {
 
     let meeting = create_test_meeting(&services, &admin, "Sunday").await;
     let offering = create_test_offering(&services, &admin, meeting.id).await;
-    add_named_cheque_donation(&services, &admin, offering.id, donor.id, 5000).await;
+    add_named_cheque_donation(&services, &admin, offering.id(), donor.id, 5000).await;
 
     let stored = services
         .gift_aid
@@ -653,13 +653,13 @@ async fn gift_aid_report_respects_tax_year_boundary() {
     let o1 = create_test_offering(&services, &admin, meeting.id).await;
     services
         .offerings
-        .add_donation(&admin, o1.id, make_donation(o1.id, 5, 4, this_year - 1))
+        .add_donation(&admin, o1.id(), make_donation(o1.id(), 5, 4, this_year - 1))
         .await
         .unwrap();
     let o2 = create_test_offering(&services, &admin, meeting.id).await;
     services
         .offerings
-        .add_donation(&admin, o2.id, make_donation(o2.id, 6, 4, this_year))
+        .add_donation(&admin, o2.id(), make_donation(o2.id(), 6, 4, this_year))
         .await
         .unwrap();
 

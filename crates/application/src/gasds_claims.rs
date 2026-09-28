@@ -169,9 +169,9 @@ impl<'a> GasdsClaimService<'a> {
         };
 
         for offering in &offerings {
-            let result = GasdsCalculator::calculate_offering(offering, &declarations, &config);
+            let result = GasdsCalculator::calculate_offering(offering, &declarations, &config)?;
             let by_id: std::collections::HashMap<Uuid, &offering_domain::entities::Donation> =
-                offering.donations.iter().map(|d| (d.id, d)).collect();
+                offering.donations().iter().map(|d| (d.id, d)).collect();
             for eval in &result.evaluations {
                 let Some(donation) = by_id.get(&eval.donation_id) else {
                     continue;
@@ -230,8 +230,7 @@ impl<'a> GasdsClaimService<'a> {
                             ));
                             continue;
                         }
-                        readiness.gift_aid_amount =
-                            readiness.gift_aid_amount.saturating_add(&eval.amount);
+                        readiness.gift_aid_amount = readiness.gift_aid_amount.add(&eval.amount)?;
                         readiness.items.push(ClaimReadinessItem {
                             donation_id: eval.donation_id,
                             donation_date: donation
@@ -257,7 +256,7 @@ impl<'a> GasdsClaimService<'a> {
                         let mut claim_pence = eval.eligible_amount.pence();
                         let mut shortfall_pence = 0i64;
                         if is_cash {
-                            let remaining = deposited_cash.entry(offering.id).or_insert(0);
+                            let remaining = deposited_cash.entry(offering.id()).or_insert(0);
                             let banked_now = claim_pence.min(*remaining);
                             shortfall_pence = claim_pence - banked_now;
                             *remaining -= banked_now;
@@ -292,12 +291,11 @@ impl<'a> GasdsClaimService<'a> {
                             },
                         });
                         if banked {
-                            readiness.gasds_eligible_amount = readiness
-                                .gasds_eligible_amount
-                                .saturating_add(&claim_amount);
+                            readiness.gasds_eligible_amount =
+                                readiness.gasds_eligible_amount.add(&claim_amount)?;
                         } else if claim_pence > 0 {
                             readiness.unbanked_cash_amount =
-                                readiness.unbanked_cash_amount.saturating_add(&claim_amount);
+                                readiness.unbanked_cash_amount.add(&claim_amount)?;
                             readiness.warnings.push(format!(
                                 "{} of cash from unbanked offerings is excluded; deposit the cash before claiming",
                                 claim_amount.display()
@@ -308,14 +306,46 @@ impl<'a> GasdsClaimService<'a> {
                                 shortfall_pence,
                             );
                             readiness.unbanked_cash_amount =
-                                readiness.unbanked_cash_amount.saturating_add(&shortfall);
+                                readiness.unbanked_cash_amount.add(&shortfall)?;
                             readiness.warnings.push(format!(
                                 "{} of unbanked cash was recorded but not deposited and is excluded from the claim",
                                 shortfall.display()
                             ));
                         }
                     }
-                    TaxTreatment::Neither => {}
+                    TaxTreatment::Neither => {
+                        // Phase 3.9: a named donation covered only by an
+                        // INCOMPLETE declaration lands here (not GiftAid).
+                        // Surface why: it is excluded until the declaration
+                        // is completed — the same warning the GiftAid arm
+                        // emits for covered-but-incomplete gifts.
+                        if donation.classification
+                            == offering_domain::entities::donation::DonationClassification::Named
+                        {
+                            let covered_incomplete = donation.donor_id.is_some_and(|donor_id| {
+                                declarations
+                                    .iter()
+                                    .filter(|d| d.donor_id == donor_id)
+                                    .any(|d| {
+                                        !d.is_complete_for_claim()
+                                            && donation.date.and_hms_opt(0, 0, 0).is_some_and(
+                                                |midnight| {
+                                                    d.covers_donation(
+                                                        midnight.and_utc(),
+                                                        donation.id,
+                                                    )
+                                                },
+                                            )
+                                    })
+                            });
+                            if covered_incomplete {
+                                readiness.warnings.push(format!(
+                                    "donation {} is covered by an incomplete Gift Aid declaration and is excluded until the declaration is completed",
+                                    eval.donation_id
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -460,7 +490,7 @@ impl<'a> GasdsClaimService<'a> {
             crate::offerings::apply_approved_amendments(self.amendments, stored).await?;
         let mut by_donation: HashMap<Uuid, &offering_domain::entities::Offering> = HashMap::new();
         for o in &offerings {
-            for d in &o.donations {
+            for d in o.donations() {
                 by_donation.insert(d.id, o);
             }
         }
@@ -477,16 +507,16 @@ impl<'a> GasdsClaimService<'a> {
             let offering = by_donation
                 .get(&item.donation_id)
                 .ok_or_else(|| AppError::NotFound("claimed donation no longer exists".into()))?;
-            let meeting = by_meeting.get(&offering.meeting_id).ok_or_else(|| {
+            let meeting = by_meeting.get(&offering.meeting_id()).ok_or_else(|| {
                 AppError::Conflict(format!(
                     "offering {} has no meeting; link it before a community-buildings claim",
-                    offering.offering_number
+                    offering.offering_number()
                 ))
             })?;
             let building_id = meeting.community_building_id.ok_or_else(|| {
                 AppError::Conflict(format!(
                     "offering {} (meeting {}) is not linked to a community building; link it before a community-buildings claim",
-                    offering.offering_number, meeting.name
+                    offering.offering_number(), meeting.name
                 ))
             })?;
             let building = by_building.get(&building_id).ok_or_else(|| {
@@ -509,12 +539,12 @@ impl<'a> GasdsClaimService<'a> {
                 )));
             }
             building_ids.insert(building_id);
-            match offering.attendance {
+            match offering.attendance() {
                 Some(a) if a >= 10 => {}
                 _ => {
                     return Err(AppError::Conflict(format!(
                         "offering {} has recorded attendance below 10 and cannot be included in a community-buildings claim",
-                        offering.offering_number
+                        offering.offering_number()
                     )));
                 }
             }

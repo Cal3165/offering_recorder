@@ -34,48 +34,47 @@ pub fn row_to_amendment(row: &SqliteRow) -> Result<Amendment, RepoError> {
         .get::<Option<String>, _>("checker_signature")
         .map(|s| from_json(&s))
         .transpose()?;
-    Ok(Amendment {
-        id: row.get("id"),
-        offering_id: row.get("offering_id"),
-        reason: row.get("reason"),
+    // Private-field reconstruction (Phase 3.1) + approver attribution
+    // (Phase 3.7, nullable for pre-migration rows).
+    Amendment::reconstitute(
+        row.get("id"),
+        row.get("offering_id"),
+        row.get("reason"),
         changes,
-        created_by: row.get("created_by"),
-        created_at: row.get("created_at"),
+        row.get("created_by"),
+        row.get("created_at"),
         counter_signature,
         checker_signature,
         status,
-        updated_at: row.get("updated_at"),
-    })
+        row.get("approved_by"),
+        row.get("approved_at"),
+        row.get("updated_at"),
+    )
+    .map_err(|e| RepoError::InvalidData(e.to_string()))
 }
 
 #[async_trait]
 impl AmendmentRepository for SqliteAmendmentRepository {
     async fn create(&self, amendment: Amendment) -> RepoResult<Amendment> {
-        let changes = to_json(&amendment.changes)?;
-        let counter = amendment
-            .counter_signature
-            .as_ref()
-            .map(to_json)
-            .transpose()?;
-        let checker = amendment
-            .checker_signature
-            .as_ref()
-            .map(to_json)
-            .transpose()?;
+        let changes = to_json(&amendment.changes().to_vec())?;
+        let counter = amendment.counter_signature().map(to_json).transpose()?;
+        let checker = amendment.checker_signature().map(to_json).transpose()?;
         sqlx::query(
-            "INSERT INTO amendments (id, offering_id, reason, changes, created_by, created_at, counter_signature, checker_signature, status, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO amendments (id, offering_id, reason, changes, created_by, created_at, counter_signature, checker_signature, status, approved_by, approved_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(amendment.id)
-        .bind(amendment.offering_id)
-        .bind(&amendment.reason)
+        .bind(amendment.id())
+        .bind(amendment.offering_id())
+        .bind(amendment.reason())
         .bind(changes)
-        .bind(amendment.created_by)
-        .bind(amendment.created_at)
+        .bind(amendment.created_by())
+        .bind(amendment.created_at())
         .bind(&counter)
         .bind(&checker)
-        .bind(super::to_json(&amendment.status)?)
-        .bind(amendment.updated_at)
+        .bind(super::to_json(&amendment.status())?)
+        .bind(amendment.approved_by())
+        .bind(amendment.approved_at())
+        .bind(amendment.updated_at())
         .execute(&self.pool.get())
         .await
         .map_err(map_db_err)?;
@@ -122,29 +121,23 @@ impl AmendmentRepository for SqliteAmendmentRepository {
         amendment: Amendment,
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> RepoResult<Amendment> {
-        let changes = to_json(&amendment.changes)?;
-        let counter = amendment
-            .counter_signature
-            .as_ref()
-            .map(to_json)
-            .transpose()?;
-        let checker = amendment
-            .checker_signature
-            .as_ref()
-            .map(to_json)
-            .transpose()?;
+        let changes = to_json(&amendment.changes().to_vec())?;
+        let counter = amendment.counter_signature().map(to_json).transpose()?;
+        let checker = amendment.checker_signature().map(to_json).transpose()?;
         // Conditional on the loaded timestamp so a concurrent transition is
         // rejected instead of overwritten (review O27).
         let result = sqlx::query(
-            "UPDATE amendments SET reason = ?, changes = ?, counter_signature = ?, checker_signature = ?, status = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+            "UPDATE amendments SET reason = ?, changes = ?, counter_signature = ?, checker_signature = ?, status = ?, approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
-        .bind(&amendment.reason)
+        .bind(amendment.reason())
         .bind(changes)
         .bind(&counter)
         .bind(&checker)
-        .bind(super::to_json(&amendment.status)?)
-        .bind(amendment.updated_at)
-        .bind(amendment.id)
+        .bind(super::to_json(&amendment.status())?)
+        .bind(amendment.approved_by())
+        .bind(amendment.approved_at())
+        .bind(amendment.updated_at())
+        .bind(amendment.id())
         .bind(expected_updated_at)
         .execute(&self.pool.get())
         .await

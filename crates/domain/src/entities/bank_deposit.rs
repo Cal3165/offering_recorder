@@ -37,11 +37,15 @@ impl BankDepositItem {
         }
     }
 
-    #[must_use]
-    pub fn total(&self) -> Money {
+    /// Checked item total (Phase 3.2): overflow is a data error, never
+    /// silently saturated.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] on arithmetic overflow.
+    pub fn total(&self) -> DomainResult<Money> {
         self.cash_amount
-            .saturating_add(&self.cheque_amount)
-            .saturating_add(&self.other_amount)
+            .add(&self.cheque_amount)?
+            .add(&self.other_amount)
     }
 }
 
@@ -107,66 +111,97 @@ impl BankDeposit {
         Ok(())
     }
 
-    #[must_use]
-    pub fn expected_cash(&self) -> Money {
+    /// Checked expected-cash sum (Phase 3.2).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] on arithmetic overflow.
+    pub fn expected_cash(&self) -> DomainResult<Money> {
         Money::sum(self.items.iter().map(|i| i.cash_amount))
-            .unwrap_or_else(|_| Money::from_pence_unchecked(i64::MAX))
     }
 
-    #[must_use]
-    pub fn expected_cheques(&self) -> Money {
+    /// Checked expected-cheques sum (Phase 3.2).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] on arithmetic overflow.
+    pub fn expected_cheques(&self) -> DomainResult<Money> {
         Money::sum(self.items.iter().map(|i| i.cheque_amount))
-            .unwrap_or_else(|_| Money::from_pence_unchecked(i64::MAX))
     }
 
-    #[must_use]
-    pub fn expected_other(&self) -> Money {
+    /// Checked expected-other sum (Phase 3.2).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] on arithmetic overflow.
+    pub fn expected_other(&self) -> DomainResult<Money> {
         Money::sum(self.items.iter().map(|i| i.other_amount))
-            .unwrap_or_else(|_| Money::from_pence_unchecked(i64::MAX))
     }
 
-    #[must_use]
-    pub fn expected_total(&self) -> Money {
-        self.expected_cash()
-            .saturating_add(&self.expected_cheques())
-            .saturating_add(&self.expected_other())
+    /// Checked expected total (Phase 3.2).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] on arithmetic overflow.
+    pub fn expected_total(&self) -> DomainResult<Money> {
+        self.expected_cash()?
+            .add(&self.expected_cheques()?)?
+            .add(&self.expected_other()?)
     }
 
-    #[must_use]
-    pub fn actual_total(&self) -> Money {
+    /// Checked actual total (Phase 3.2).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] on arithmetic overflow.
+    pub fn actual_total(&self) -> DomainResult<Money> {
         self.actual_cash
-            .clone()
-            .saturating_add(&self.actual_cheques)
-            .saturating_add(&self.actual_other)
+            .add(&self.actual_cheques)?
+            .add(&self.actual_other)
     }
 
     /// Absolute difference between actual and expected cash. Returns the
     /// magnitude of the discrepancy in either direction (a shortfall was
     /// previously reported as £0.00, hiding missing cash — R4).
-    #[must_use]
-    pub fn cash_discrepancy(&self) -> Money {
-        let diff = self.actual_cash.pence() - self.expected_cash().pence();
+    /// Checked (Phase 3.2).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] on arithmetic overflow.
+    pub fn cash_discrepancy(&self) -> DomainResult<Money> {
+        let diff = self
+            .actual_cash
+            .pence()
+            .checked_sub(self.expected_cash()?.pence())
+            .ok_or(DomainError::ArithmeticUnderflow)?;
         // `saturating_abs` avoids wrapping on `i64::MIN`, unlike `unsigned_abs() as i64`.
-        Money::from_pence_unchecked(diff.saturating_abs())
+        Ok(Money::from_pence_unchecked(diff.saturating_abs()))
     }
 
     /// Direction of the cash discrepancy: [`DiscrepancyDirection::Shortfall`]
     /// when counted cash is missing, [`DiscrepancyDirection::Overage`] when
     /// there is more cash than recorded (review O5).
-    #[must_use]
-    pub fn cash_discrepancy_direction(&self) -> Option<DiscrepancyDirection> {
-        match self.actual_cash.pence() - self.expected_cash().pence() {
-            0 => None,
-            d if d < 0 => Some(DiscrepancyDirection::Shortfall),
-            _ => Some(DiscrepancyDirection::Overage),
-        }
+    /// Checked (Phase 3.2).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] on arithmetic overflow.
+    pub fn cash_discrepancy_direction(&self) -> DomainResult<Option<DiscrepancyDirection>> {
+        Ok(
+            match self
+                .actual_cash
+                .pence()
+                .checked_sub(self.expected_cash()?.pence())
+                .ok_or(DomainError::ArithmeticUnderflow)?
+            {
+                0 => None,
+                d if d < 0 => Some(DiscrepancyDirection::Shortfall),
+                _ => Some(DiscrepancyDirection::Overage),
+            },
+        )
     }
 
-    #[must_use]
-    pub fn has_discrepancy(&self) -> bool {
-        self.actual_cash.pence() != self.expected_cash().pence()
-            || self.actual_cheques.pence() != self.expected_cheques().pence()
-            || self.actual_other.pence() != self.expected_other().pence()
+    /// Checked (Phase 3.2).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] on arithmetic overflow.
+    pub fn has_discrepancy(&self) -> DomainResult<bool> {
+        Ok(self.actual_cash.pence() != self.expected_cash()?.pence()
+            || self.actual_cheques.pence() != self.expected_cheques()?.pence()
+            || self.actual_other.pence() != self.expected_other()?.pence())
     }
 }
 
@@ -180,8 +215,8 @@ mod tests {
         let date = Utc::now();
         let d = BankDeposit::create(banker_id, date, Some("REF001".to_string())).unwrap();
         assert!(d.items.is_empty());
-        assert!(d.expected_cash().is_zero());
-        assert!(d.expected_total().is_zero());
+        assert!(d.expected_cash().unwrap().is_zero());
+        assert!(d.expected_total().unwrap().is_zero());
     }
 
     #[test]
@@ -198,9 +233,9 @@ mod tests {
             donation_count: 15,
         };
         d.add_item(item).unwrap();
-        assert_eq!(d.expected_cash().pence(), 5000);
-        assert_eq!(d.expected_cheques().pence(), 2000);
-        assert_eq!(d.expected_total().pence(), 8000);
+        assert_eq!(d.expected_cash().unwrap().pence(), 5000);
+        assert_eq!(d.expected_cheques().unwrap().pence(), 2000);
+        assert_eq!(d.expected_total().unwrap().pence(), 8000);
     }
 
     #[test]
@@ -241,19 +276,19 @@ mod tests {
         d.add_item(item).unwrap();
         // Expected £50, recorded £0 so far: a shortfall.
         assert_eq!(
-            d.cash_discrepancy_direction(),
+            d.cash_discrepancy_direction().unwrap(),
             Some(DiscrepancyDirection::Shortfall)
         );
 
         d.actual_cash = Money::from_pence(4500).unwrap();
         assert_eq!(
-            d.cash_discrepancy_direction(),
+            d.cash_discrepancy_direction().unwrap(),
             Some(DiscrepancyDirection::Shortfall)
         );
 
         d.actual_cash = Money::from_pence(5500).unwrap();
         assert_eq!(
-            d.cash_discrepancy_direction(),
+            d.cash_discrepancy_direction().unwrap(),
             Some(DiscrepancyDirection::Overage)
         );
     }
@@ -274,7 +309,7 @@ mod tests {
             donation_count: 15,
         };
         d.add_item(item).unwrap();
-        assert!(d.has_discrepancy());
+        assert!(d.has_discrepancy().unwrap());
     }
 
     #[test]
@@ -291,6 +326,6 @@ mod tests {
         };
         d.add_item(item).unwrap();
         // A shortfall of £5.00 must be reported (it was previously £0.00).
-        assert_eq!(d.cash_discrepancy().pence(), 500);
+        assert_eq!(d.cash_discrepancy().unwrap().pence(), 500);
     }
 }

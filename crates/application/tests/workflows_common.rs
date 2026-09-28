@@ -38,8 +38,8 @@ async fn full_offering_workflow_end_to_end() {
 
     let offering =
         setup_full_offering_with_mixed_donations(&services, &admin, meeting.id, donor.id).await;
-    let locked = sign_verify_and_lock(&services, &counter, &checker, offering.id).await;
-    amend_attendance_and_bank(&services, &admin, &counter, &checker, locked.id).await;
+    let locked = sign_verify_and_lock(&services, &counter, &checker, offering.id()).await;
+    amend_attendance_and_bank(&services, &admin, &counter, &checker, locked.id()).await;
 }
 
 #[tokio::test]
@@ -75,7 +75,7 @@ async fn user_permissions_are_enforced() {
         .unwrap();
     services
         .offerings
-        .set_attendance(&counter, offering.id, 50)
+        .set_attendance(&counter, offering.id(), 50)
         .await
         .unwrap();
 
@@ -86,7 +86,7 @@ async fn user_permissions_are_enforced() {
     assert!(matches!(
         services
             .banking
-            .create_deposit(&counter, vec![offering.id], chrono::Utc::now(), None)
+            .create_deposit(&counter, vec![offering.id()], chrono::Utc::now(), None)
             .await,
         Err(AppError::Unauthorized(_))
     ));
@@ -113,7 +113,7 @@ async fn user_permissions_are_enforced() {
     assert!(matches!(
         services
             .offerings
-            .counter_sign(&bookkeeper, offering.id, None)
+            .counter_sign(&bookkeeper, offering.id(), None)
             .await,
         Err(AppError::Unauthorized(_))
     ));
@@ -189,14 +189,14 @@ async fn remove_donation_on_locked_offering_is_rejected() {
         .unwrap();
     services
         .offerings
-        .set_attendance(&admin, offering.id, 40)
+        .set_attendance(&admin, offering.id(), 40)
         .await
         .unwrap();
     let donation = services
         .offerings
         .add_donation(
             &admin,
-            offering.id,
+            offering.id(),
             AddDonationInput {
                 donor_id: None,
                 amount_pence: 2000,
@@ -210,26 +210,28 @@ async fn remove_donation_on_locked_offering_is_rejected() {
         )
         .await
         .unwrap()
-        .donations
-        .pop()
-        .unwrap();
+        .donations()
+        .iter()
+        .find(|d| d.amount.pence() == 2000)
+        .unwrap()
+        .id;
 
     // Draft: removal is allowed.
     let after_draft_remove = services
         .offerings
-        .remove_donation(&admin, offering.id, donation.id)
+        .remove_donation(&admin, offering.id(), donation)
         .await
         .unwrap();
     assert!(!after_draft_remove
-        .donations
+        .donations()
         .iter()
-        .any(|d| d.id == donation.id));
+        .any(|d| d.id == donation));
 
     services
         .offerings
         .add_donation(
             &admin,
-            offering.id,
+            offering.id(),
             AddDonationInput {
                 donor_id: None,
                 amount_pence: 2000,
@@ -244,22 +246,23 @@ async fn remove_donation_on_locked_offering_is_rejected() {
         .await
         .unwrap();
 
-    lock_offering(&services, &admin, offering.id).await;
+    lock_offering(&services, &admin, offering.id()).await;
 
     assert!(matches!(
         services
             .offerings
-            .remove_donation(&admin, offering.id, donation.id)
+            .remove_donation(&admin, offering.id(), donation)
             .await,
-        Err(AppError::Validation(_))
+        // Locked edits surface as Conflict via LockedError (Phase 3.10).
+        Err(AppError::Conflict(_))
     ));
     let locked = services
         .offerings
-        .get_offering(&admin, offering.id)
+        .get_offering(&admin, offering.id())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(locked.donations.len(), 1);
+    assert_eq!(locked.donations().len(), 1);
 }
 
 #[tokio::test]
@@ -414,70 +417,70 @@ async fn signature_withdrawal_returns_to_previous_state() {
         create_counter_and_checker(&services, &admin, "wd_counter", "wd_checker").await;
     let meeting = create_test_meeting(&services, &admin, "Withdraw").await;
     let offering = create_test_offering(&services, &admin, meeting.id).await;
-    add_anonymous_cheque_donation(&services, &admin, offering.id, 1000).await;
+    add_anonymous_cheque_donation(&services, &admin, offering.id(), 1000).await;
     services
         .offerings
-        .set_attendance(&admin, offering.id, 10)
+        .set_attendance(&admin, offering.id(), 10)
         .await
         .unwrap();
 
     services
         .offerings
-        .counter_sign(&counter, offering.id, None)
+        .counter_sign(&counter, offering.id(), None)
         .await
         .unwrap();
     let signed = services
         .offerings
-        .get_stored_offering(&admin, offering.id)
+        .get_stored_offering(&admin, offering.id())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(signed.status, OfferingStatus::CounterSigned);
+    assert_eq!(signed.status(), OfferingStatus::CounterSigned);
 
     services
         .offerings
-        .withdraw_signature(&counter, offering.id)
+        .withdraw_signature(&counter, offering.id(), "test correction")
         .await
         .unwrap();
     let draft = services
         .offerings
-        .get_stored_offering(&admin, offering.id)
+        .get_stored_offering(&admin, offering.id())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(draft.status, OfferingStatus::Draft);
-    assert!(draft.counter_signature.is_none());
+    assert_eq!(draft.status(), OfferingStatus::Draft);
+    assert!(draft.counter_signature().is_none());
 
     // The withdrawn signer may sign again.
     services
         .offerings
-        .counter_sign(&counter, offering.id, None)
+        .counter_sign(&counter, offering.id(), None)
         .await
         .unwrap();
     services
         .offerings
-        .checker_sign(&checker, offering.id, None)
+        .checker_sign(&checker, offering.id(), None)
         .await
         .unwrap();
     let verified = services
         .offerings
-        .get_stored_offering(&admin, offering.id)
+        .get_stored_offering(&admin, offering.id())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(verified.status, OfferingStatus::CheckerSigned);
+    assert_eq!(verified.status(), OfferingStatus::CheckerSigned);
     services
         .offerings
-        .withdraw_signature(&checker, offering.id)
+        .withdraw_signature(&checker, offering.id(), "test correction")
         .await
         .unwrap();
     let back = services
         .offerings
-        .get_stored_offering(&admin, offering.id)
+        .get_stored_offering(&admin, offering.id())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(back.status, OfferingStatus::CounterSigned);
+    assert_eq!(back.status(), OfferingStatus::CounterSigned);
 }
 
 #[tokio::test]
@@ -504,20 +507,20 @@ async fn nil_collection_can_be_signed_and_locked() {
         .unwrap();
     services
         .offerings
-        .set_attendance(&admin, offering.id, 12)
+        .set_attendance(&admin, offering.id(), 12)
         .await
         .unwrap();
 
-    lock_offering(&services, &admin, offering.id).await;
+    lock_offering(&services, &admin, offering.id()).await;
 
     let stored = services
         .offerings
-        .get_stored_offering(&admin, offering.id)
+        .get_stored_offering(&admin, offering.id())
         .await
         .unwrap()
         .unwrap();
     assert!(stored.is_locked());
-    assert!(stored.donations.is_empty());
+    assert!(stored.donations().is_empty());
 }
 
 #[tokio::test]

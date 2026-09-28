@@ -79,21 +79,21 @@ impl<'a> BankingService<'a> {
             // corrupt totals; overflow now fails the deposit loudly.
             let cash_donations = offering_domain::money::Money::sum(
                 offering
-                    .donations
+                    .donations()
                     .iter()
                     .filter(|d| d.payment_method == PaymentMethod::Cash)
                     .map(|d| d.amount),
             )?;
             let cheque_donations = offering_domain::money::Money::sum(
                 offering
-                    .donations
+                    .donations()
                     .iter()
                     .filter(|d| d.payment_method == PaymentMethod::Cheque)
                     .map(|d| d.amount),
             )?;
             let other_donations = offering_domain::money::Money::sum(
                 offering
-                    .donations
+                    .donations()
                     .iter()
                     .filter(|d| {
                         d.payment_method != PaymentMethod::Cash
@@ -105,16 +105,16 @@ impl<'a> BankingService<'a> {
             // absurdly large inputs.
             let donor_count = u32::try_from(
                 offering
-                    .donations
+                    .donations()
                     .iter()
                     .filter_map(|d| d.donor_id)
                     .collect::<std::collections::HashSet<_>>()
                     .len(),
             )
             .unwrap_or(u32::MAX);
-            let donation_count = u32::try_from(offering.donations.len()).unwrap_or(u32::MAX);
+            let donation_count = u32::try_from(offering.donations().len()).unwrap_or(u32::MAX);
             items.push(BankDepositItem {
-                offering_id: offering.id,
+                offering_id: offering.id(),
                 cash_amount: cash_donations,
                 cheque_amount: cheque_donations,
                 other_amount: other_donations,
@@ -205,7 +205,7 @@ impl<'a> BankingService<'a> {
         // Recorded actuals in ANY bucket are banking evidence (review O20:
         // actual_other was previously ignored, allowing deletion of a
         // reconciled non-cash deposit).
-        if !deposit.actual_total().is_zero() {
+        if !deposit.actual_total()?.is_zero() {
             return Err(crate::error::AppError::Validation(
                 "cannot delete a deposit that has recorded actuals".into(),
             ));
@@ -280,17 +280,17 @@ impl<'a> BankingService<'a> {
             if !offering.is_locked() {
                 continue;
             }
-            if deposited_ids.contains(&offering.id) {
+            if deposited_ids.contains(&offering.id()) {
                 continue;
             }
             let meeting_name = meetings
-                .get(&offering.meeting_id)
+                .get(&offering.meeting_id())
                 .cloned()
                 .unwrap_or_else(|| "Unknown".into());
             candidates.push(DepositCandidate {
-                offering_id: offering.id,
-                offering_number: offering.offering_number.to_string(),
-                date: offering.created_at,
+                offering_id: offering.id(),
+                offering_number: offering.offering_number().to_string(),
+                date: offering.created_at(),
                 meeting_name,
                 cash_total: offering.cash_total().pence(),
                 cheque_total: offering.cheque_total()?.pence(),

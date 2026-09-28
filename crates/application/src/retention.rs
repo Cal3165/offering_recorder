@@ -118,7 +118,7 @@ impl<'a> RetentionService<'a> {
 
         let offerings = self.offerings.list(None, None).await?;
         for offering in &offerings {
-            for donation in &offering.donations {
+            for donation in offering.donations() {
                 // Retention follows the donation RECEIVED date (plan Phase 6):
                 // a backdated donation across 5 April belongs to the earlier
                 // tax year's window, not the recording date's.
@@ -130,7 +130,9 @@ impl<'a> RetentionService<'a> {
                     record_id: donation.id,
                     detail: format!(
                         "{} {} {}",
-                        offering.offering_number, donation.donation_type, donation.payment_method
+                        offering.offering_number(),
+                        donation.donation_type,
+                        donation.payment_method
                     ),
                     record_date,
                     tax_year: TaxYear::from_date(record_date),

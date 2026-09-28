@@ -100,7 +100,7 @@ async fn retention_report_counts_records_and_never_expires_current() {
         .unwrap();
     services
         .offerings
-        .set_attendance(&admin, offering.id, 40)
+        .set_attendance(&admin, offering.id(), 40)
         .await
         .unwrap();
     let mut cash = CashTotal::new();
@@ -109,7 +109,7 @@ async fn retention_report_counts_records_and_never_expires_current() {
         .offerings
         .add_donation(
             &admin,
-            offering.id,
+            offering.id(),
             AddDonationInput {
                 donor_id: Some(donor.id),
                 amount_pence: 1000,
@@ -125,15 +125,15 @@ async fn retention_report_counts_records_and_never_expires_current() {
         .unwrap();
     services
         .offerings
-        .set_cash_denominations(&admin, offering.id, cash)
+        .set_cash_denominations(&admin, offering.id(), cash)
         .await
         .unwrap();
-    lock_offering(&services, &admin, offering.id).await;
+    lock_offering(&services, &admin, offering.id()).await;
     services
         .banking
         .create_deposit(
             &admin,
-            vec![offering.id],
+            vec![offering.id()],
             chrono::Utc::now(),
             Some("RET-DEP".into()),
         )
@@ -202,7 +202,7 @@ async fn deposit_report_respects_date_range() {
         .unwrap();
     services
         .offerings
-        .set_attendance(&admin, offering.id, 40)
+        .set_attendance(&admin, offering.id(), 40)
         .await
         .unwrap();
     let mut cash = CashTotal::new();
@@ -211,7 +211,7 @@ async fn deposit_report_respects_date_range() {
         .offerings
         .add_donation(
             &admin,
-            offering.id,
+            offering.id(),
             AddDonationInput {
                 donor_id: None,
                 amount_pence: 1000,
@@ -227,15 +227,15 @@ async fn deposit_report_respects_date_range() {
         .unwrap();
     services
         .offerings
-        .set_cash_denominations(&admin, offering.id, cash)
+        .set_cash_denominations(&admin, offering.id(), cash)
         .await
         .unwrap();
-    lock_offering(&services, &admin, offering.id).await;
+    lock_offering(&services, &admin, offering.id()).await;
     services
         .banking
         .create_deposit(
             &admin,
-            vec![offering.id],
+            vec![offering.id()],
             chrono::Utc::now(),
             Some("D1".into()),
         )
@@ -428,7 +428,7 @@ async fn banking_actuals_roundtrip_and_delete_guards() {
     let (services, admin) = bootstrap_admin().await;
     let meeting = create_test_meeting(&services, &admin, "BankTest").await;
     let offering = setup_banked_offering_with_mixed_payments(&services, &admin, meeting.id).await;
-    record_exact_actuals_and_assert_evidence(&services, &admin, offering.id).await;
+    record_exact_actuals_and_assert_evidence(&services, &admin, offering.id()).await;
     assert_unreconciled_deposit_deletable(&services, &admin, meeting.id).await;
 }
 
@@ -495,55 +495,55 @@ async fn stranger_cannot_withdraw_another_signers_signature() {
         .unwrap();
     let meeting = create_test_meeting(&services, &admin, "WithdrawGuard").await;
     let offering = create_test_offering(&services, &admin, meeting.id).await;
-    add_anonymous_cheque_donation(&services, &admin, offering.id, 1000).await;
+    add_anonymous_cheque_donation(&services, &admin, offering.id(), 1000).await;
     services
         .offerings
-        .set_attendance(&admin, offering.id, 10)
+        .set_attendance(&admin, offering.id(), 10)
         .await
         .unwrap();
     services
         .offerings
-        .counter_sign(&counter, offering.id, None)
+        .counter_sign(&counter, offering.id(), None)
         .await
         .unwrap();
 
     // A different signing-capable user is rejected with Conflict.
     let err = services
         .offerings
-        .withdraw_signature(&stranger, offering.id)
+        .withdraw_signature(&stranger, offering.id(), "test correction")
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
     // The checker (not the counter signer) is rejected too.
     let err = services
         .offerings
-        .withdraw_signature(&checker, offering.id)
+        .withdraw_signature(&checker, offering.id(), "test correction")
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
     // The original signer and an Admin may still withdraw.
     services
         .offerings
-        .withdraw_signature(&counter, offering.id)
+        .withdraw_signature(&counter, offering.id(), "test correction")
         .await
         .unwrap();
     services
         .offerings
-        .counter_sign(&counter, offering.id, None)
+        .counter_sign(&counter, offering.id(), None)
         .await
         .unwrap();
     services
         .offerings
-        .withdraw_signature(&admin, offering.id)
+        .withdraw_signature(&admin, offering.id(), "test correction")
         .await
         .unwrap();
     let draft = services
         .offerings
-        .get_stored_offering(&admin, offering.id)
+        .get_stored_offering(&admin, offering.id())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(draft.status, OfferingStatus::Draft);
+    assert_eq!(draft.status(), OfferingStatus::Draft);
 }
 
 #[tokio::test]
@@ -575,22 +575,22 @@ async fn same_operator_dual_guest_signing_is_rejected() {
         .unwrap();
     let meeting = create_test_meeting(&services, &admin, "DualGuest").await;
     let offering = create_test_offering(&services, &admin, meeting.id).await;
-    add_anonymous_cheque_donation(&services, &admin, offering.id, 1000).await;
+    add_anonymous_cheque_donation(&services, &admin, offering.id(), 1000).await;
     services
         .offerings
-        .set_attendance(&admin, offering.id, 10)
+        .set_attendance(&admin, offering.id(), 10)
         .await
         .unwrap();
     services
         .offerings
-        .counter_sign(&operator, offering.id, Some("Guest Counter".into()))
+        .counter_sign(&operator, offering.id(), Some("Guest Counter".into()))
         .await
         .unwrap();
 
     // Same operator, different guest name: rejected.
     let err = services
         .offerings
-        .checker_sign(&operator, offering.id, Some("Guest Checker".into()))
+        .checker_sign(&operator, offering.id(), Some("Guest Checker".into()))
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
@@ -598,38 +598,38 @@ async fn same_operator_dual_guest_signing_is_rejected() {
     // A different operator signing as guest is the legitimate case: allowed.
     services
         .offerings
-        .checker_sign(&other, offering.id, Some("Guest Checker".into()))
+        .checker_sign(&other, offering.id(), Some("Guest Checker".into()))
         .await
         .unwrap();
     // Lock succeeds for the two-operator pair.
     services
         .offerings
-        .lock_offering(&other, offering.id)
+        .lock_offering(&other, offering.id())
         .await
         .unwrap();
 
     // Admin explicit override: same-operator double-guest is permitted.
     let meeting2 = create_test_meeting(&services, &admin, "DualGuestAdmin").await;
     let offering2 = create_test_offering(&services, &admin, meeting2.id).await;
-    add_anonymous_cheque_donation(&services, &admin, offering2.id, 1000).await;
+    add_anonymous_cheque_donation(&services, &admin, offering2.id(), 1000).await;
     services
         .offerings
-        .set_attendance(&admin, offering2.id, 10)
+        .set_attendance(&admin, offering2.id(), 10)
         .await
         .unwrap();
     services
         .offerings
-        .counter_sign(&admin, offering2.id, Some("Guest Counter".into()))
+        .counter_sign(&admin, offering2.id(), Some("Guest Counter".into()))
         .await
         .unwrap();
     services
         .offerings
-        .checker_sign(&admin, offering2.id, Some("Guest Checker".into()))
+        .checker_sign(&admin, offering2.id(), Some("Guest Checker".into()))
         .await
         .unwrap();
     services
         .offerings
-        .lock_offering(&admin, offering2.id)
+        .lock_offering(&admin, offering2.id())
         .await
         .unwrap();
 }

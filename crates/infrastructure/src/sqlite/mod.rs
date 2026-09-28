@@ -128,9 +128,12 @@ pub fn from_json<T: DeserializeOwned>(value: &str) -> Result<T, RepoError> {
     serde_json::from_str(value).map_err(|e| RepoError::InvalidData(e.to_string()))
 }
 
-#[must_use]
-pub fn money_from_pence(pence: i64) -> Money {
-    Money::from_pence_unchecked(pence)
+/// Validated Money decode (Phase 3.2): negatives are corrupt storage.
+/// # Errors
+///
+/// Returns [`RepoError::InvalidData`] when `pence` is negative.
+pub fn money_from_pence(pence: i64) -> Result<Money, RepoError> {
+    Money::from_pence(pence).map_err(|e| RepoError::InvalidData(e.to_string()))
 }
 
 /// # Errors

@@ -1,14 +1,55 @@
 use crate::errors::{DomainError, DomainResult};
 use chrono::{Datelike, NaiveDate};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct TaxYear(i32);
 
+impl<'de> Deserialize<'de> for TaxYear {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let year = i32::deserialize(deserializer)?;
+        TaxYear::try_new(year).map_err(serde::de::Error::custom)
+    }
+}
+
 impl TaxYear {
+    /// Plausible range for a UK tax year start (1900–2100). Guards against
+    /// typos such as year 25 or 99999 flowing into deadlines/ceilings.
+    pub const MIN_START_YEAR: i32 = 1900;
+    /// Plausible range for a UK tax year start (1900–2100). Guards against
+    /// typos such as year 25 or 99999 flowing into deadlines/ceilings.
+    pub const MAX_START_YEAR: i32 = 2100;
+
+    /// Range-checked constructor (Phase 3.10).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
+    pub fn try_new(start_april: i32) -> DomainResult<Self> {
+        if !(Self::MIN_START_YEAR..=Self::MAX_START_YEAR).contains(&start_april) {
+            return Err(DomainError::Validation(format!(
+                "tax year start {start_april} out of range {}-{}",
+                Self::MIN_START_YEAR,
+                Self::MAX_START_YEAR
+            )));
+        }
+        Ok(TaxYear(start_april))
+    }
+
+    /// Historic infallible constructor kept for call-site stability.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `start_april` is outside 1900–2100; prefer `try_new` for
+    /// validated input.
     #[must_use]
     pub fn new(start_april: i32) -> Self {
-        TaxYear(start_april)
+        // Historic infallible constructor kept for call-site stability;
+        // out-of-range values panic loudly instead of silently producing
+        // absurd deadlines. Prefer `try_new` for validated input.
+        Self::try_new(start_april).expect("tax year start out of range")
     }
 
     #[must_use]
@@ -111,25 +152,39 @@ impl TaxYear {
     /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn parse(s: &str) -> DomainResult<Self> {
         let trimmed = s.trim();
-        let parts: Vec<&str> = trimmed.split(['.', '/']).collect();
+        let parts: Vec<&str> = trimmed.split(['.', '/', '-']).collect();
         if parts.len() == 1 {
             let year: i32 = trimmed
                 .parse()
                 .map_err(|_| DomainError::Validation("invalid tax year".into()))?;
-            Ok(TaxYear(year))
+            Self::try_new(year)
         } else if parts.len() == 2 {
             let start: i32 = parts[0]
                 .parse()
                 .map_err(|_| DomainError::Validation("invalid tax year start".into()))?;
-            let end: i32 = parts[1]
-                .parse()
-                .map_err(|_| DomainError::Validation("invalid tax year end".into()))?;
+            let end_raw = parts[1].trim();
+            // Accept both "2024/2025" and HMRC shorthand "2024/25": a
+            // two-digit end maps into the start's century.
+            let end: i32 = if end_raw.len() == 2 {
+                let two: i32 = end_raw
+                    .parse()
+                    .map_err(|_| DomainError::Validation("invalid tax year end".into()))?;
+                let mut end = (start / 100) * 100 + two;
+                if end <= start {
+                    end += 100;
+                }
+                end
+            } else {
+                end_raw
+                    .parse()
+                    .map_err(|_| DomainError::Validation("invalid tax year end".into()))?
+            };
             if end != start + 1 {
                 return Err(DomainError::Validation(
                     "tax year end must be start year + 1".into(),
                 ));
             }
-            Ok(TaxYear(start))
+            Self::try_new(start)
         } else {
             Err(DomainError::Validation("invalid tax year format".into()))
         }
@@ -258,6 +313,22 @@ mod tests {
     fn parse_year_dot_year() {
         let ty = TaxYear::parse("2024.2025").unwrap();
         assert_eq!(ty, TaxYear::new(2024));
+    }
+
+    #[test]
+    fn parse_accepts_hmrc_shorthand() {
+        // Phase 3.10: "2024/25" is the common HMRC shorthand.
+        let ty = TaxYear::parse("2024/25").unwrap();
+        assert_eq!(ty, TaxYear::new(2024));
+    }
+
+    #[test]
+    fn try_new_rejects_absurd_years() {
+        // Phase 3.10: range-checked construction, no silent absurd years.
+        assert!(TaxYear::try_new(2024).is_ok());
+        assert!(TaxYear::try_new(25).is_err());
+        assert!(TaxYear::try_new(99999).is_err());
+        assert!(TaxYear::parse("25").is_err());
     }
 
     #[test]

@@ -53,18 +53,120 @@ impl AmendmentChange {
     }
 }
 
+/// A proposed correction to a locked offering. Fields are private (Phase 3.1):
+/// all transitions go through the signing/approval methods so maker-approver
+/// separation and the append-only protocol cannot be bypassed by direct
+/// mutation. Serialisation shape is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Amendment {
-    pub id: Uuid,
-    pub offering_id: Uuid,
-    pub reason: String,
-    pub changes: Vec<AmendmentChange>,
-    pub created_by: Uuid,
-    pub created_at: DateTime<Utc>,
-    pub counter_signature: Option<Signature>,
-    pub checker_signature: Option<Signature>,
-    pub status: AmendmentStatus,
-    pub updated_at: DateTime<Utc>,
+    id: Uuid,
+    offering_id: Uuid,
+    reason: String,
+    changes: Vec<AmendmentChange>,
+    created_by: Uuid,
+    created_at: DateTime<Utc>,
+    counter_signature: Option<Signature>,
+    checker_signature: Option<Signature>,
+    status: AmendmentStatus,
+    approved_by: Option<Uuid>,
+    approved_at: Option<DateTime<Utc>>,
+    updated_at: DateTime<Utc>,
+}
+
+impl Amendment {
+    /// Rebuild from stored rows (persistence only).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the stored shape is incoherent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconstitute(
+        id: Uuid,
+        offering_id: Uuid,
+        reason: String,
+        changes: Vec<AmendmentChange>,
+        created_by: Uuid,
+        created_at: DateTime<Utc>,
+        counter_signature: Option<Signature>,
+        checker_signature: Option<Signature>,
+        status: AmendmentStatus,
+        approved_by: Option<Uuid>,
+        approved_at: Option<DateTime<Utc>>,
+        updated_at: DateTime<Utc>,
+    ) -> DomainResult<Self> {
+        if reason.trim().is_empty() {
+            return Err(DomainError::Validation(
+                "stored amendment has an empty reason".into(),
+            ));
+        }
+        if changes.is_empty() {
+            return Err(DomainError::Validation(
+                "stored amendment has no changes".into(),
+            ));
+        }
+        Ok(Amendment {
+            id,
+            offering_id,
+            reason,
+            changes,
+            created_by,
+            created_at,
+            counter_signature,
+            checker_signature,
+            status,
+            approved_by,
+            approved_at,
+            updated_at,
+        })
+    }
+
+    #[must_use]
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+    #[must_use]
+    pub fn offering_id(&self) -> Uuid {
+        self.offering_id
+    }
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+    #[must_use]
+    pub fn changes(&self) -> &[AmendmentChange] {
+        &self.changes
+    }
+    #[must_use]
+    pub fn created_by(&self) -> Uuid {
+        self.created_by
+    }
+    #[must_use]
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+    #[must_use]
+    pub fn counter_signature(&self) -> Option<&Signature> {
+        self.counter_signature.as_ref()
+    }
+    #[must_use]
+    pub fn checker_signature(&self) -> Option<&Signature> {
+        self.checker_signature.as_ref()
+    }
+    #[must_use]
+    pub fn status(&self) -> AmendmentStatus {
+        self.status
+    }
+    #[must_use]
+    pub fn approved_by(&self) -> Option<Uuid> {
+        self.approved_by
+    }
+    #[must_use]
+    pub fn approved_at(&self) -> Option<DateTime<Utc>> {
+        self.approved_at
+    }
+    #[must_use]
+    pub fn updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+    }
 }
 
 impl Amendment {
@@ -96,13 +198,15 @@ impl Amendment {
         Ok(Amendment {
             id: Uuid::new_v4(),
             offering_id,
-            reason: reason.to_string(),
+            reason: reason.trim().to_string(),
             changes,
             created_by,
             created_at: now,
             counter_signature: None,
             checker_signature: None,
             status: AmendmentStatus::Draft,
+            approved_by: None,
+            approved_at: None,
             updated_at: now,
         })
     }
@@ -194,10 +298,12 @@ impl Amendment {
         Ok(())
     }
 
+    /// Approve a fully-signed amendment, recording who approved and when
+    /// (Phase 3.7: approver attribution for the audit trail).
     /// # Errors
     ///
     /// Returns [`DomainError`] if the input violates a domain invariant.
-    pub fn approve(&mut self) -> DomainResult<()> {
+    pub fn approve(&mut self, actor: Uuid) -> DomainResult<()> {
         if !self.can_approve() {
             return Err(DomainError::InvalidTransition(format!(
                 "cannot approve: current status is {}",
@@ -205,6 +311,8 @@ impl Amendment {
             )));
         }
         self.status = AmendmentStatus::Approved;
+        self.approved_by = Some(actor);
+        self.approved_at = Some(Utc::now());
         self.updated_at = Utc::now();
         Ok(())
     }
@@ -218,34 +326,35 @@ impl Amendment {
 impl Offering {
     /// Apply a single change without validation. Package-internal building
     /// block; use [`Self::apply_amendment`], which enforces the amendment
-    /// protocol (approved, matching offering, removable donations exist).
+    /// protocol (approved, locked offering, matching offering, removable
+    /// donations exist, added donations belong to the offering).
     pub(crate) fn apply_change(&self, change: &AmendmentChange) -> Self {
         let mut clone = self.clone();
         match change {
             AmendmentChange::AddDonation(d) => {
-                clone.donations.push(d.clone());
+                clone.amendment_add_donation(d.clone());
             }
             AmendmentChange::RemoveDonation(id) => {
-                clone.donations.retain(|d| d.id != *id);
+                clone.amendment_remove_donation(*id);
             }
             AmendmentChange::SetCashDenominations(ct) => {
-                clone.cash_denominations = ct.clone();
+                clone.amendment_set_cash(ct.clone());
             }
             AmendmentChange::SetAttendance(n) => {
-                clone.attendance = Some(*n);
+                clone.amendment_set_attendance(*n);
             }
             AmendmentChange::SetDescription(desc) => {
-                clone.description.clone_from(desc);
+                clone.amendment_set_description(desc.clone());
             }
         }
-        clone.updated_at = Utc::now();
         clone
     }
 
     /// Apply an approved amendment belonging to this offering. Guards the
     /// append-only correction protocol: only approved amendments may be
-    /// applied, only to the offering they target, and a removal must name an
-    /// existing donation (a typo'd id must fail loudly, not silently no-op).
+    /// applied, only to locked offerings they target, and removals must name
+    /// an existing donation while added donations must belong to the offering
+    /// (a typo'd id must fail loudly, not silently no-op).
     /// # Errors
     ///
     /// Returns [`DomainError`] if the input violates a domain invariant.
@@ -253,25 +362,44 @@ impl Offering {
         if !amendment.is_approved() {
             return Err(DomainError::InvalidTransition(format!(
                 "cannot apply amendment in status {}",
-                amendment.status
+                amendment.status()
             )));
         }
-        if amendment.offering_id != self.id {
+        // Phase 3.3: amendments rewrite history — the target must already be
+        // locked (two-person verified), never a live draft.
+        if !self.is_locked() {
+            return Err(DomainError::InvalidTransition(
+                "amendments may only be applied to locked offerings".into(),
+            ));
+        }
+        if amendment.offering_id() != self.id() {
             return Err(DomainError::Validation(
                 "amendment targets a different offering".into(),
             ));
         }
-        for change in &amendment.changes {
-            if let AmendmentChange::RemoveDonation(id) = change {
-                if !self.donations.iter().any(|d| &d.id == id) {
+        for change in amendment.changes() {
+            match change {
+                AmendmentChange::RemoveDonation(id)
+                    if !self.donations().iter().any(|d| &d.id == id) =>
+                {
                     return Err(DomainError::Validation(format!(
                         "amendment removes donation {id} which does not exist"
                     )));
                 }
+                // Phase 3.3: mirror the RemoveDonation guard — an added
+                // donation carrying another offering's id is a mislink
+                // that would corrupt reconstruction.
+                AmendmentChange::AddDonation(d) if d.offering_id != self.id() => {
+                    return Err(DomainError::Validation(format!(
+                        "amendment adds donation {} for a different offering",
+                        d.id
+                    )));
+                }
+                _ => {}
             }
         }
         let mut result = self.clone();
-        for change in &amendment.changes {
+        for change in amendment.changes() {
             result = result.apply_change(change);
         }
         Ok(result)
@@ -299,7 +427,7 @@ impl OfferingReconstruction {
         for amendment in &amendments {
             current = current.apply_amendment(amendment)?;
             states.push(current.clone());
-            amendment_ids.push(amendment.id);
+            amendment_ids.push(amendment.id());
         }
 
         Ok(OfferingReconstruction {
@@ -345,17 +473,27 @@ mod tests {
         Offering::create(Uuid::new_v4(), num, None).unwrap()
     }
 
+    /// A two-person verified offering amendments may target (Phase 3.3:
+    /// `apply_amendment` requires the locked state).
+    fn locked_offering() -> Offering {
+        let mut o = make_offering();
+        o.counter_sign(counter_sig()).unwrap();
+        o.checker_sign(checker_sig()).unwrap();
+        o.lock().unwrap();
+        o
+    }
+
     #[test]
     fn amendment_create_draft() {
         let o = make_offering();
         let a = Amendment::create(
-            o.id,
+            o.id(),
             "Corrected donation amount",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
         )
         .unwrap();
-        assert_eq!(a.status, AmendmentStatus::Draft);
+        assert_eq!(a.status(), AmendmentStatus::Draft);
     }
 
     #[test]
@@ -363,7 +501,7 @@ mod tests {
         let o = make_offering();
         assert!(matches!(
             Amendment::create(
-                o.id,
+                o.id(),
                 "  ",
                 vec![AmendmentChange::SetAttendance(100)],
                 Uuid::new_v4()
@@ -376,7 +514,7 @@ mod tests {
     fn amendment_rejects_no_changes() {
         let o = make_offering();
         assert!(matches!(
-            Amendment::create(o.id, "reason", vec![], Uuid::new_v4()),
+            Amendment::create(o.id(), "reason", vec![], Uuid::new_v4()),
             Err(DomainError::Validation(_))
         ));
     }
@@ -393,7 +531,7 @@ mod tests {
         let inconsistent = Donation {
             id: Uuid::new_v4(),
             donor_id: Some(Uuid::new_v4()),
-            offering_id: o.id,
+            offering_id: o.id(),
             amount: Money::from_pence(9999).unwrap(),
             donation_type: DonationType::Offering,
             payment_method: PaymentMethod::Cash,
@@ -405,7 +543,7 @@ mod tests {
             date: chrono::Utc::now().date_naive(),
         };
         let result = Amendment::create(
-            o.id,
+            o.id(),
             "correct amount",
             vec![AmendmentChange::AddDonation(inconsistent)],
             Uuid::new_v4(),
@@ -427,7 +565,7 @@ mod tests {
         let mut a = Amendment::create(offering_id, "reason", changes, Uuid::new_v4()).unwrap();
         a.counter_sign(counter_sig()).unwrap();
         a.checker_sign(checker_sig()).unwrap();
-        a.approve().unwrap();
+        a.approve(Uuid::new_v4()).unwrap();
         a
     }
 
@@ -435,9 +573,9 @@ mod tests {
     fn apply_rejects_unapproved_amendment() {
         // Regression (review R2): a draft/unsigned amendment must not be
         // applicable to an offering.
-        let o = make_offering();
+        let o = locked_offering();
         let a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
@@ -450,10 +588,44 @@ mod tests {
     }
 
     #[test]
-    fn apply_rejects_amendment_for_different_offering() {
+    fn apply_rejects_unlocked_offering() {
+        // Phase 3.3: even an approved amendment must not rewrite a live
+        // (unlocked) offering — amendments are post-lock corrections.
         let o = make_offering();
-        let other = make_offering();
-        let a = approved_amendment(other.id, vec![AmendmentChange::SetAttendance(100)]);
+        let a = approved_amendment(o.id(), vec![AmendmentChange::SetAttendance(100)]);
+        assert!(matches!(
+            o.apply_amendment(&a),
+            Err(DomainError::InvalidTransition(_))
+        ));
+    }
+
+    #[test]
+    fn apply_rejects_amendment_for_different_offering() {
+        let o = locked_offering();
+        let other = locked_offering();
+        let a = approved_amendment(other.id(), vec![AmendmentChange::SetAttendance(100)]);
+        assert!(matches!(
+            o.apply_amendment(&a),
+            Err(DomainError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn apply_rejects_foreign_offering_id_on_add() {
+        // Phase 3.3: an added donation carrying another offering's id is a
+        // mislink, mirroring the RemoveDonation guard.
+        let o = locked_offering();
+        let foreign = Donation::named(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Money::from_pence(500).unwrap(),
+            DonationType::Tithe,
+            PaymentMethod::Cheque,
+            None,
+            None,
+        )
+        .unwrap();
+        let a = approved_amendment(o.id(), vec![AmendmentChange::AddDonation(foreign)]);
         assert!(matches!(
             o.apply_amendment(&a),
             Err(DomainError::Validation(_))
@@ -466,7 +638,7 @@ mod tests {
         // silently no-oping.
         let mut o = make_offering();
         let keep = Donation::named(
-            o.id,
+            o.id(),
             Uuid::new_v4(),
             Money::from_pence(500).unwrap(),
             DonationType::Tithe,
@@ -476,7 +648,13 @@ mod tests {
         )
         .unwrap();
         o.add_donation(keep).unwrap();
-        let a = approved_amendment(o.id, vec![AmendmentChange::RemoveDonation(Uuid::new_v4())]);
+        o.counter_sign(counter_sig()).unwrap();
+        o.checker_sign(checker_sig()).unwrap();
+        o.lock().unwrap();
+        let a = approved_amendment(
+            o.id(),
+            vec![AmendmentChange::RemoveDonation(Uuid::new_v4())],
+        );
         assert!(matches!(
             o.apply_amendment(&a),
             Err(DomainError::Validation(_))
@@ -487,21 +665,21 @@ mod tests {
     fn amendment_counter_sign() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
         )
         .unwrap();
         a.counter_sign(counter_sig()).unwrap();
-        assert_eq!(a.status, AmendmentStatus::CounterSigned);
+        assert_eq!(a.status(), AmendmentStatus::CounterSigned);
     }
 
     #[test]
     fn amendment_checker_sign() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
@@ -509,14 +687,14 @@ mod tests {
         .unwrap();
         a.counter_sign(counter_sig()).unwrap();
         a.checker_sign(checker_sig()).unwrap();
-        assert_eq!(a.status, AmendmentStatus::CheckerSigned);
+        assert_eq!(a.status(), AmendmentStatus::CheckerSigned);
     }
 
     #[test]
     fn amendment_approve() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
@@ -524,15 +702,19 @@ mod tests {
         .unwrap();
         a.counter_sign(counter_sig()).unwrap();
         a.checker_sign(checker_sig()).unwrap();
-        a.approve().unwrap();
-        assert_eq!(a.status, AmendmentStatus::Approved);
+        let approver = Uuid::new_v4();
+        a.approve(approver).unwrap();
+        assert_eq!(a.status(), AmendmentStatus::Approved);
+        // Phase 3.7: approver attribution is stored.
+        assert_eq!(a.approved_by(), Some(approver));
+        assert!(a.approved_at().is_some());
     }
 
     #[test]
     fn cannot_counter_sign_twice() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
@@ -546,7 +728,7 @@ mod tests {
     fn cannot_checker_sign_before_counter() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
@@ -559,7 +741,7 @@ mod tests {
     fn cannot_same_user_counter_and_checker() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
@@ -575,7 +757,7 @@ mod tests {
         // Original = £100
         let mut original = make_offering();
         let donation = Donation::named(
-            original.id,
+            original.id(),
             Uuid::new_v4(),
             Money::from_pence(10000).unwrap(), // £100
             DonationType::Tithe,
@@ -586,11 +768,15 @@ mod tests {
         .unwrap();
         original.add_donation(donation).unwrap();
         assert_eq!(original.donation_total().unwrap().pence(), 10000);
+        // Amendments target locked offerings (Phase 3.3).
+        original.counter_sign(counter_sig()).unwrap();
+        original.checker_sign(checker_sig()).unwrap();
+        original.lock().unwrap();
 
         // Amendment 1: replace £100 donation with £120 donation
-        let original_donations: Vec<Uuid> = original.donations.iter().map(|d| d.id).collect();
+        let original_donations: Vec<Uuid> = original.donations().iter().map(|d| d.id).collect();
         let new_donation = Donation::named(
-            original.id,
+            original.id(),
             Uuid::new_v4(),
             Money::from_pence(12000).unwrap(), // £120
             DonationType::Tithe,
@@ -605,7 +791,7 @@ mod tests {
             AmendmentChange::AddDonation(new_donation),
         ];
         let mut a1 = Amendment::create(
-            original.id,
+            original.id(),
             "Correct amount to £120",
             changes1,
             Uuid::new_v4(),
@@ -615,13 +801,14 @@ mod tests {
         // Amendments only take effect once fully signed and approved.
         a1.counter_sign(counter_sig()).unwrap();
         a1.checker_sign(checker_sig()).unwrap();
-        a1.approve().unwrap();
+        a1.approve(Uuid::new_v4()).unwrap();
 
         // Amendment 2: replace £120 donation with £115 donation
         let state_after_a1 = original.apply_amendment(&a1).unwrap();
-        let donation_after_a1: Vec<Uuid> = state_after_a1.donations.iter().map(|d| d.id).collect();
+        let donation_after_a1: Vec<Uuid> =
+            state_after_a1.donations().iter().map(|d| d.id).collect();
         let newer_donation = Donation::named(
-            original.id,
+            original.id(),
             Uuid::new_v4(),
             Money::from_pence(11500).unwrap(), // £115
             DonationType::Tithe,
@@ -635,7 +822,7 @@ mod tests {
             AmendmentChange::AddDonation(newer_donation),
         ];
         let mut a2 = Amendment::create(
-            original.id,
+            original.id(),
             "Correct amount to £115",
             changes2,
             Uuid::new_v4(),
@@ -643,7 +830,7 @@ mod tests {
         .unwrap();
         a2.counter_sign(counter_sig()).unwrap();
         a2.checker_sign(checker_sig()).unwrap();
-        a2.approve().unwrap();
+        a2.approve(Uuid::new_v4()).unwrap();
 
         // Reconstruct
         let reconstruction =
@@ -672,7 +859,7 @@ mod tests {
     fn apply_change_add_donation() {
         let o = make_offering();
         let donation = Donation::named(
-            o.id,
+            o.id(),
             Uuid::new_v4(),
             Money::from_pence(500).unwrap(),
             DonationType::Tithe,
@@ -683,7 +870,7 @@ mod tests {
         .unwrap();
         let change = AmendmentChange::AddDonation(donation);
         let new_offering = o.apply_change(&change);
-        assert_eq!(new_offering.donations.len(), 1);
+        assert_eq!(new_offering.donations().len(), 1);
         assert_eq!(new_offering.donation_total().unwrap().pence(), 500);
     }
 
@@ -691,7 +878,7 @@ mod tests {
     fn apply_change_remove_donation() {
         let mut o = make_offering();
         let donation = Donation::named(
-            o.id,
+            o.id(),
             Uuid::new_v4(),
             Money::from_pence(500).unwrap(),
             DonationType::Tithe,
@@ -703,7 +890,7 @@ mod tests {
         o.add_donation(donation.clone()).unwrap();
         let change = AmendmentChange::RemoveDonation(donation.id);
         let new_offering = o.apply_change(&change);
-        assert_eq!(new_offering.donations.len(), 0);
+        assert_eq!(new_offering.donations().len(), 0);
         assert!(new_offering.donation_total().unwrap().is_zero());
     }
 
@@ -711,7 +898,7 @@ mod tests {
     fn withdraw_amendment_checker_signature() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
@@ -720,16 +907,16 @@ mod tests {
         a.counter_sign(counter_sig()).unwrap();
         a.checker_sign(checker_sig()).unwrap();
         a.withdraw_signature().unwrap();
-        assert_eq!(a.status, AmendmentStatus::CounterSigned);
-        assert!(a.checker_signature.is_none());
-        assert!(a.counter_signature.is_some());
+        assert_eq!(a.status(), AmendmentStatus::CounterSigned);
+        assert!(a.checker_signature().is_none());
+        assert!(a.counter_signature().is_some());
     }
 
     #[test]
     fn withdraw_amendment_counter_signature() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
@@ -737,15 +924,15 @@ mod tests {
         .unwrap();
         a.counter_sign(counter_sig()).unwrap();
         a.withdraw_signature().unwrap();
-        assert_eq!(a.status, AmendmentStatus::Draft);
-        assert!(a.counter_signature.is_none());
+        assert_eq!(a.status(), AmendmentStatus::Draft);
+        assert!(a.counter_signature().is_none());
     }
 
     #[test]
     fn cannot_withdraw_approved_amendment() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),
@@ -753,7 +940,7 @@ mod tests {
         .unwrap();
         a.counter_sign(counter_sig()).unwrap();
         a.checker_sign(checker_sig()).unwrap();
-        a.approve().unwrap();
+        a.approve(Uuid::new_v4()).unwrap();
         assert!(a.withdraw_signature().is_err());
     }
 
@@ -761,7 +948,7 @@ mod tests {
     fn cannot_withdraw_draft_amendment() {
         let o = make_offering();
         let mut a = Amendment::create(
-            o.id,
+            o.id(),
             "reason",
             vec![AmendmentChange::SetAttendance(100)],
             Uuid::new_v4(),

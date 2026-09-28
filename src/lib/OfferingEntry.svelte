@@ -313,8 +313,14 @@
 
   async function withdrawSig() {
     error = "";
+    const reason = prompt("Reason for withdrawing this signature (recorded in the audit trail):");
+    if (reason === null) return;
+    if (!reason.trim()) {
+      error = "Enter a reason";
+      return;
+    }
     try {
-      await withdrawSignature(offeringId!);
+      await withdrawSignature(offeringId!, reason);
       await refresh();
     } catch (e) {
       error = String(e);

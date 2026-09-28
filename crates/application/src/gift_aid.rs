@@ -640,6 +640,7 @@ impl<'a> GiftAidService<'a> {
         let declarations = self.gift_aid.list_by_donor(donor_id, None, None).await?;
         Ok(DomainGiftAidService::is_gift_aid_eligible(
             &declarations,
+            donor_id,
             date,
         ))
     }

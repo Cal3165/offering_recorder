@@ -42,20 +42,179 @@ impl OfferingStatus {
     }
 }
 
+/// An offering count: cash counted, donations recorded, dual-signed then
+/// locked. Fields are private (Phase 3.1) so the append-only correction
+/// protocol cannot be bypassed by direct mutation — all changes go through
+/// the methods below, which enforce status guards and audit timestamps.
+/// Serialisation shape is unchanged (same field names, kept stable for the
+/// stored rows and IPC DTOs — hence the `offering_number` field name).
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offering {
-    pub id: Uuid,
-    pub meeting_id: Uuid,
-    pub offering_number: OfferingNumber,
-    pub description: Option<String>,
-    pub cash_denominations: CashTotal,
-    pub attendance: Option<u32>,
-    pub donations: Vec<Donation>,
-    pub counter_signature: Option<Signature>,
-    pub checker_signature: Option<Signature>,
-    pub status: OfferingStatus,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    id: Uuid,
+    meeting_id: Uuid,
+    offering_number: OfferingNumber,
+    description: Option<String>,
+    cash_denominations: CashTotal,
+    attendance: Option<u32>,
+    donations: Vec<Donation>,
+    counter_signature: Option<Signature>,
+    checker_signature: Option<Signature>,
+    status: OfferingStatus,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl Offering {
+    /// Rebuild an offering from stored rows (persistence only). Validates the
+    /// status/signature shape; monetary validation happens at the Money
+    /// decode layer.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the stored shape is incoherent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconstitute(
+        id: Uuid,
+        meeting_id: Uuid,
+        offering_number: OfferingNumber,
+        description: Option<String>,
+        cash_denominations: CashTotal,
+        attendance: Option<u32>,
+        donations: Vec<Donation>,
+        counter_signature: Option<Signature>,
+        checker_signature: Option<Signature>,
+        status: OfferingStatus,
+        created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    ) -> DomainResult<Self> {
+        if matches!(
+            status,
+            OfferingStatus::CounterSigned | OfferingStatus::CheckerSigned | OfferingStatus::Locked
+        ) && counter_signature.is_none()
+        {
+            return Err(DomainError::Validation(
+                "stored offering is signed but has no counter signature".into(),
+            ));
+        }
+        if matches!(
+            status,
+            OfferingStatus::CheckerSigned | OfferingStatus::Locked
+        ) && checker_signature.is_none()
+        {
+            return Err(DomainError::Validation(
+                "stored offering is checker-signed but has no checker signature".into(),
+            ));
+        }
+        Ok(Offering {
+            id,
+            meeting_id,
+            offering_number,
+            description,
+            cash_denominations,
+            attendance,
+            donations,
+            counter_signature,
+            checker_signature,
+            status,
+            created_at,
+            updated_at,
+        })
+    }
+
+    #[must_use]
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+    #[must_use]
+    pub fn meeting_id(&self) -> Uuid {
+        self.meeting_id
+    }
+    #[must_use]
+    pub fn offering_number(&self) -> &OfferingNumber {
+        &self.offering_number
+    }
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    #[must_use]
+    pub fn cash_denominations(&self) -> &CashTotal {
+        &self.cash_denominations
+    }
+    #[must_use]
+    pub fn attendance(&self) -> Option<u32> {
+        self.attendance
+    }
+    #[must_use]
+    pub fn donations(&self) -> &[Donation] {
+        &self.donations
+    }
+    #[must_use]
+    pub fn counter_signature(&self) -> Option<&Signature> {
+        self.counter_signature.as_ref()
+    }
+    #[must_use]
+    pub fn checker_signature(&self) -> Option<&Signature> {
+        self.checker_signature.as_ref()
+    }
+    #[must_use]
+    pub fn status(&self) -> OfferingStatus {
+        self.status
+    }
+    #[must_use]
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+    #[must_use]
+    pub fn updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+    }
+
+    /// Persistence-only: assign the atomically allocated offering number.
+    pub fn set_offering_number(&mut self, number: OfferingNumber) {
+        self.offering_number = number;
+    }
+
+    /// Remove a donation while editable (checked: must exist).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
+    pub fn remove_donation(&mut self, donation_id: Uuid) -> DomainResult<()> {
+        self.require_editable()?;
+        if !self.donations.iter().any(|d| d.id == donation_id) {
+            return Err(DomainError::Validation(
+                "donation not found in offering".into(),
+            ));
+        }
+        self.donations.retain(|d| d.id != donation_id);
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Amendment-application hooks: crate-internal so only the audited
+    /// amendment protocol (approved + locked, see `apply_amendment`) can
+    /// rewrite a locked offering's contents. Never callable from outside
+    /// the domain crate.
+    pub(crate) fn amendment_add_donation(&mut self, donation: Donation) {
+        self.donations.push(donation);
+        self.updated_at = Utc::now();
+    }
+    pub(crate) fn amendment_remove_donation(&mut self, donation_id: Uuid) {
+        self.donations.retain(|d| d.id != donation_id);
+        self.updated_at = Utc::now();
+    }
+    pub(crate) fn amendment_set_cash(&mut self, cash: CashTotal) {
+        self.cash_denominations = cash;
+        self.updated_at = Utc::now();
+    }
+    pub(crate) fn amendment_set_attendance(&mut self, attendance: u32) {
+        self.attendance = Some(attendance);
+        self.updated_at = Utc::now();
+    }
+    pub(crate) fn amendment_set_description(&mut self, description: Option<String>) {
+        self.description = description;
+        self.updated_at = Utc::now();
+    }
 }
 
 impl Offering {
@@ -102,6 +261,8 @@ impl Offering {
     pub fn require_editable(&self) -> DomainResult<()> {
         if self.can_edit() {
             Ok(())
+        } else if self.is_locked() {
+            Err(DomainError::LockedError)
         } else {
             Err(DomainError::InvalidTransition(
                 "offering must be in draft status to edit".into(),
@@ -206,10 +367,20 @@ impl Offering {
     /// Withdraw the most recent signature, returning the offering to the
     /// previous state so the data can be corrected before re-signing.
     /// Only applies to signed-but-not-locked offerings.
+    ///
+    /// Phase 3.8: withdrawal is an audited two-party act — the authorising
+    /// actor and a non-empty reason are required (the reason is recorded by
+    /// the application audit event; the domain enforces its presence).
     /// # Errors
     ///
     /// Returns [`DomainError`] if the input violates a domain invariant.
-    pub fn withdraw_signature(&mut self) -> DomainResult<()> {
+    pub fn withdraw_signature(&mut self, actor: Uuid, reason: &str) -> DomainResult<()> {
+        if reason.trim().is_empty() {
+            return Err(DomainError::Validation(
+                "a reason is required to withdraw a signature".into(),
+            ));
+        }
+        let _ = actor;
         match self.status {
             OfferingStatus::CheckerSigned => {
                 if self.checker_signature.is_none() {
@@ -517,7 +688,7 @@ mod tests {
         let mut o = make_offering();
         o.counter_sign(counter_sig()).unwrap();
         o.checker_sign(checker_sig()).unwrap();
-        o.withdraw_signature().unwrap();
+        o.withdraw_signature(Uuid::new_v4(), "correction").unwrap();
         assert_eq!(o.status, OfferingStatus::CounterSigned);
         assert!(o.checker_signature.is_none());
         assert!(o.counter_signature.is_some());
@@ -527,7 +698,7 @@ mod tests {
     fn withdraw_counter_returns_to_draft() {
         let mut o = make_offering();
         o.counter_sign(counter_sig()).unwrap();
-        o.withdraw_signature().unwrap();
+        o.withdraw_signature(Uuid::new_v4(), "correction").unwrap();
         assert_eq!(o.status, OfferingStatus::Draft);
         assert!(o.counter_signature.is_none());
         assert!(o.can_edit());
@@ -541,8 +712,8 @@ mod tests {
         let mut o = make_offering();
         o.counter_sign(counter_sig()).unwrap();
         o.checker_sign(checker_sig()).unwrap();
-        o.withdraw_signature().unwrap();
-        o.withdraw_signature().unwrap();
+        o.withdraw_signature(Uuid::new_v4(), "correction").unwrap();
+        o.withdraw_signature(Uuid::new_v4(), "correction").unwrap();
         assert_eq!(o.status, OfferingStatus::Draft);
         o.set_attendance(50).unwrap();
         assert_eq!(o.attendance, Some(50));
@@ -554,12 +725,37 @@ mod tests {
         o.counter_sign(counter_sig()).unwrap();
         o.checker_sign(checker_sig()).unwrap();
         o.lock().unwrap();
-        assert!(o.withdraw_signature().is_err());
+        assert!(o.withdraw_signature(Uuid::new_v4(), "correction").is_err());
     }
 
     #[test]
     fn cannot_withdraw_unsigned_draft() {
         let mut o = make_offering();
-        assert!(o.withdraw_signature().is_err());
+        assert!(o.withdraw_signature(Uuid::new_v4(), "correction").is_err());
+    }
+
+    #[test]
+    fn withdraw_requires_reason() {
+        // Phase 3.8: an audited withdrawal needs a reason.
+        let mut o = make_offering();
+        o.counter_sign(counter_sig()).unwrap();
+        assert!(matches!(
+            o.withdraw_signature(Uuid::new_v4(), "   "),
+            Err(DomainError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn locked_edit_attempt_is_locked_error() {
+        // Phase 3.10: `LockedError` is constructed (not dead) for edits to
+        // locked offerings.
+        let mut o = make_offering();
+        o.counter_sign(counter_sig()).unwrap();
+        o.checker_sign(checker_sig()).unwrap();
+        o.lock().unwrap();
+        assert!(matches!(
+            o.require_editable(),
+            Err(DomainError::LockedError)
+        ));
     }
 }

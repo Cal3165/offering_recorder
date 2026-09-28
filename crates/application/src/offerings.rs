@@ -34,7 +34,7 @@ pub async fn apply_approved_amendments(
     let mut out = Vec::with_capacity(stored.len());
     for offering in stored {
         let approved = amendments
-            .approved_amendments_for_offering(offering.id)
+            .approved_amendments_for_offering(offering.id())
             .await?;
         if approved.is_empty() {
             out.push(offering);
@@ -132,7 +132,7 @@ impl<'a> OfferingService<'a> {
                 actor,
                 offering_domain::entities::audit_event::AuditAction::OfferingCreated,
                 "Offering",
-                Some(offering.id),
+                Some(offering.id()),
                 None,
                 crate::audit::state_json(&offering),
                 Some("offering created".into()),
@@ -269,7 +269,7 @@ impl<'a> OfferingService<'a> {
         }
         let mut offering = self.require_stored(offering_id).await?;
         // Snapshot for optimistic-concurrency check at save time (review R4).
-        let expected_updated_at = offering.updated_at;
+        let expected_updated_at = offering.updated_at();
         offering.set_attendance(attendance)?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
@@ -277,7 +277,7 @@ impl<'a> OfferingService<'a> {
                 actor,
                 offering_domain::entities::audit_event::AuditAction::DonationChanged,
                 "Offering",
-                Some(updated.id),
+                Some(updated.id()),
                 None,
                 crate::audit::state_json(&updated),
                 Some(format!("set attendance = {attendance}")),
@@ -300,7 +300,7 @@ impl<'a> OfferingService<'a> {
         }
         let mut offering = self.require_stored(offering_id).await?;
         // Snapshot for optimistic-concurrency check at save time (review R4).
-        let expected_updated_at = offering.updated_at;
+        let expected_updated_at = offering.updated_at();
         offering.set_cash_denominations(denominations)?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
@@ -308,7 +308,7 @@ impl<'a> OfferingService<'a> {
                 actor,
                 offering_domain::entities::audit_event::AuditAction::DonationChanged,
                 "Offering",
-                Some(updated.id),
+                Some(updated.id()),
                 None,
                 crate::audit::state_json(&updated),
                 Some("cash denominations updated".into()),
@@ -331,7 +331,7 @@ impl<'a> OfferingService<'a> {
         }
         let mut offering = self.require_stored(offering_id).await?;
         // Snapshot for optimistic-concurrency check at save time (review R4).
-        let expected_updated_at = offering.updated_at;
+        let expected_updated_at = offering.updated_at();
         let amount = Money::from_pence(input.amount_pence)?;
         let breakdown = input.cash_denominations.clone();
         if input.payment_method == PaymentMethod::Cash {
@@ -388,7 +388,7 @@ impl<'a> OfferingService<'a> {
         let donation = donation.with_date(
             input
                 .date
-                .unwrap_or_else(|| offering.created_at.date_naive()),
+                .unwrap_or_else(|| offering.created_at().date_naive()),
         );
         offering.add_donation(donation.clone())?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
@@ -420,14 +420,14 @@ impl<'a> OfferingService<'a> {
         }
         let mut offering = self.require_stored(offering_id).await?;
         // Snapshot for optimistic-concurrency check at save time (review R4).
-        let expected_updated_at = offering.updated_at;
+        let expected_updated_at = offering.updated_at();
         offering.require_editable()?;
-        if !offering.donations.iter().any(|d| d.id == donation_id) {
+        if !offering.donations().iter().any(|d| d.id == donation_id) {
             return Err(crate::error::AppError::NotFound(
                 "donation not found in offering".into(),
             ));
         }
-        offering.donations.retain(|d| d.id != donation_id);
+        offering.remove_donation(donation_id)?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
@@ -498,7 +498,7 @@ impl<'a> OfferingService<'a> {
         }
         let mut offering = self.require_stored(offering_id).await?;
         // Snapshot for optimistic-concurrency check at save time (review R4).
-        let expected_updated_at = offering.updated_at;
+        let expected_updated_at = offering.updated_at();
         let issues = ValidationService::validate(&offering);
         // Only blocking issues stop signing; informational ones (e.g. a nil
         // collection) are surfaced to the reviewer instead (review O19).
@@ -520,7 +520,7 @@ impl<'a> OfferingService<'a> {
                 actor,
                 offering_domain::entities::audit_event::AuditAction::OfferingSigned,
                 "Offering",
-                Some(updated.id),
+                Some(updated.id()),
                 None,
                 crate::audit::state_json(&updated),
                 Some("counter signed".into()),
@@ -543,7 +543,7 @@ impl<'a> OfferingService<'a> {
         }
         let mut offering = self.require_stored(offering_id).await?;
         // Snapshot for optimistic-concurrency check at save time (review R4).
-        let expected_updated_at = offering.updated_at;
+        let expected_updated_at = offering.updated_at();
         let issues = ValidationService::validate(&offering);
         // Only blocking issues stop signing; informational ones (e.g. a nil
         // collection) are surfaced to the reviewer instead (review O19).
@@ -559,7 +559,7 @@ impl<'a> OfferingService<'a> {
             )));
         }
         let checker_sig = Self::signature_for(actor, guest_name);
-        if let Some(counter_sig) = offering.counter_signature.as_ref() {
+        if let Some(counter_sig) = offering.counter_signature().as_ref() {
             Self::reject_same_user_double_sign(actor, counter_sig, &checker_sig)?;
         }
         offering.checker_sign(checker_sig)?;
@@ -569,7 +569,7 @@ impl<'a> OfferingService<'a> {
                 actor,
                 offering_domain::entities::audit_event::AuditAction::OfferingSigned,
                 "Offering",
-                Some(updated.id),
+                Some(updated.id()),
                 None,
                 crate::audit::state_json(&updated),
                 Some("checker signed".into()),
@@ -580,12 +580,26 @@ impl<'a> OfferingService<'a> {
 
     /// Withdraw the most recent signature, returning a signed-but-not-locked
     /// offering to the previous state so its data can be corrected.
+    ///
+    /// Phase 3.8: withdrawal requires the authorising actor (enforced via the
+    /// withdraw-by-signer rule below) AND a non-empty reason, both recorded
+    /// in the audit event.
     /// # Errors
     ///
     /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
-    pub async fn withdraw_signature(&self, actor: &User, offering_id: Uuid) -> AppResult<Offering> {
+    pub async fn withdraw_signature(
+        &self,
+        actor: &User,
+        offering_id: Uuid,
+        reason: &str,
+    ) -> AppResult<Offering> {
         if !can_sign_offering(actor) {
             return Err(unauthorized("sign offering"));
+        }
+        if reason.trim().is_empty() {
+            return Err(crate::error::AppError::Validation(
+                "a reason is required to withdraw a signature".into(),
+            ));
         }
         let mut offering = self.require_stored(offering_id).await?;
         // Withdraw-by-signer rule (plan Phase 6.2): only the original signer
@@ -593,9 +607,9 @@ impl<'a> OfferingService<'a> {
         // override. A stranger with signing rights withdrawing someone else's
         // signature would break the audit trail. Guest signatures carry the
         // operator id (`guest_for`), so the id comparison covers them too.
-        let current = match offering.status {
-            OfferingStatus::CheckerSigned => offering.checker_signature.as_ref(),
-            OfferingStatus::CounterSigned => offering.counter_signature.as_ref(),
+        let current = match offering.status() {
+            OfferingStatus::CheckerSigned => offering.checker_signature(),
+            OfferingStatus::CounterSigned => offering.counter_signature(),
             _ => None,
         };
         if let Some(sig) = current {
@@ -606,21 +620,22 @@ impl<'a> OfferingService<'a> {
             }
         }
         // Snapshot for optimistic-concurrency check at save time (review R4).
-        let expected_updated_at = offering.updated_at;
+        let expected_updated_at = offering.updated_at();
         let old = crate::audit::state_json(&offering);
-        offering.withdraw_signature()?;
+        offering.withdraw_signature(actor.id, reason)?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
                 offering_domain::entities::audit_event::AuditAction::OfferingSignatureWithdrawn,
                 "Offering",
-                Some(updated.id),
+                Some(updated.id()),
                 old,
                 crate::audit::state_json(&updated),
                 Some(format!(
-                    "signature withdrawn, status now {}",
-                    updated.status
+                    "signature withdrawn by {} for reason: {reason} (status now {})",
+                    actor.display_name,
+                    updated.status()
                 )),
             )
             .await?;
@@ -636,7 +651,7 @@ impl<'a> OfferingService<'a> {
         }
         let mut offering = self.require_stored(offering_id).await?;
         // Snapshot for optimistic-concurrency check at save time (review R4).
-        let expected_updated_at = offering.updated_at;
+        let expected_updated_at = offering.updated_at();
         let issues = ValidationService::validate(&offering);
         // Only blocking issues stop locking (review O19).
         let blocking: Vec<_> = issues.iter().filter(|i| i.blocking).collect();
@@ -654,8 +669,8 @@ impl<'a> OfferingService<'a> {
         // bypassed) the checker-sign guard, including same-user non-guest
         // double-signs (plan Phase 1.3).
         if let (Some(counter_sig), Some(checker_sig)) = (
-            offering.counter_signature.as_ref(),
-            offering.checker_signature.as_ref(),
+            offering.counter_signature().as_ref(),
+            offering.checker_signature().as_ref(),
         ) {
             Self::reject_same_user_double_sign(actor, counter_sig, checker_sig)?;
         }
@@ -666,7 +681,7 @@ impl<'a> OfferingService<'a> {
                 actor,
                 offering_domain::entities::audit_event::AuditAction::OfferingLocked,
                 "Offering",
-                Some(updated.id),
+                Some(updated.id()),
                 None,
                 crate::audit::state_json(&updated),
                 Some("offering locked".into()),
@@ -711,7 +726,7 @@ impl<'a> OfferingService<'a> {
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("offering not found".into()))?;
         let tax_year =
-            offering_domain::tax_year::TaxYear::from_date(offering.created_at.date_naive());
+            offering_domain::tax_year::TaxYear::from_date(offering.created_at().date_naive());
         let existing_claims = self.gasds_claims.list_by_tax_year(tax_year.clone()).await?;
         let claimed_ga: Money = existing_claims
             .iter()
@@ -722,12 +737,15 @@ impl<'a> OfferingService<'a> {
             .try_fold(Money::zero(), |acc, ga| acc.add(&ga))?;
         let mut config_with_claimed = config.clone();
         config_with_claimed.gift_aid_claimed = claimed_ga;
+        // Phase 3.6: the ceiling derives from the offering's tax year, never
+        // from a hardcoded modern default carried by the caller's config.
+        config_with_claimed.annual_limit = GasdsConfig::for_tax_year(&tax_year).annual_limit;
         let declarations = self.gift_aid.list_by_tax_year(tax_year, None, None).await?;
         Ok(GasdsCalculator::calculate_offering(
             &offering,
             &declarations,
             &config_with_claimed,
-        ))
+        )?)
     }
 
     /// # Errors
@@ -753,9 +771,9 @@ impl<'a> OfferingService<'a> {
                 .current()
                 .clone()
         };
-        let meeting = self.meetings.get(current.meeting_id).await?;
+        let meeting = self.meetings.get(current.meeting_id()).await?;
         let meeting_name = meeting.map_or_else(|| "Unknown".into(), |m| m.name);
-        let meeting_date = current.created_at.format("%Y-%m-%d").to_string();
+        let meeting_date = current.created_at().format("%Y-%m-%d").to_string();
         Ok(Some(OfferingReport {
             offering: current,
             meeting_name,
@@ -798,7 +816,7 @@ mod tests {
 
     fn cash_donation(o: &Offering, breakdown: &[(Denomination, u32)]) -> Donation {
         let bd = cash(breakdown);
-        Donation::loose_cash(o.id, bd).unwrap()
+        Donation::loose_cash(o.id(), bd).unwrap()
     }
 
     #[test]
@@ -843,7 +861,7 @@ mod tests {
         o.set_cash_denominations(counted).unwrap();
         o.add_donation(
             Donation::anonymous(
-                o.id,
+                o.id(),
                 Money::from_pence(2000).unwrap(),
                 DonationType::Offering,
                 PaymentMethod::Cash,

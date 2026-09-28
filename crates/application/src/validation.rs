@@ -24,11 +24,36 @@ impl ValidationService {
         issues.extend(Self::validate_cash_totals(offering));
         issues.extend(Self::validate_denomination_breakdowns(offering));
         issues.extend(Self::validate_has_donations(offering));
+        issues.extend(Self::validate_donation_dates(offering));
         issues
     }
 
+    /// Date-skew warning (Phase 3.10): a donation dated far from the
+    /// offering's recording date is usually a backdate/postdate typo. Advisory
+    /// only — backdating across 5 April is legitimate and handled per-received-date.
+    fn validate_donation_dates(offering: &Offering) -> Vec<ValidationIssue> {
+        const SKEW_DAYS: i64 = 30;
+        let recorded = offering.created_at().date_naive();
+        let skewed = offering
+            .donations()
+            .iter()
+            .filter(|d| (d.date - recorded).num_days().abs() > SKEW_DAYS)
+            .count();
+        if skewed == 0 {
+            Vec::new()
+        } else {
+            vec![ValidationIssue {
+                code: "donation_date_skew".into(),
+                message: format!(
+                    "{skewed} donation(s) are dated more than {SKEW_DAYS} days from the offering date; check for backdate/postdate typos"
+                ),
+                blocking: false,
+            }]
+        }
+    }
+
     fn validate_attendance(offering: &Offering) -> Vec<ValidationIssue> {
-        if offering.attendance.is_none() {
+        if offering.attendance().is_none() {
             vec![ValidationIssue {
                 code: "attendance_missing".into(),
                 message: "Attendance has not been recorded".into(),
@@ -44,7 +69,7 @@ impl ValidationService {
         // corrupt totals; overflow becomes a blocking issue instead.
         let cash_donations = Money::sum(
             offering
-                .donations
+                .donations()
                 .iter()
                 .filter(|d| d.payment_method == PaymentMethod::Cash)
                 .map(|d| d.amount),
@@ -80,7 +105,7 @@ impl ValidationService {
         let mut donation_breakdown = CashTotal::new();
         let mut missing_breakdowns = 0usize;
         for d in offering
-            .donations
+            .donations()
             .iter()
             .filter(|d| d.payment_method == PaymentMethod::Cash)
         {
@@ -94,14 +119,14 @@ impl ValidationService {
             }
         }
         for (denom, count) in donation_breakdown.iter() {
-            if offering.cash_denominations.get(denom) != *count {
+            if offering.cash_denominations().get(denom) != *count {
                 issues.push(ValidationIssue {
                     code: "cash_denomination_mismatch".into(),
                     blocking: true,
                     message: format!(
                         "{} counted {} but recorded cash donations sum to {}",
                         denom.display(),
-                        offering.cash_denominations.get(denom),
+                        offering.cash_denominations().get(denom),
                         count
                     ),
                 });
@@ -120,7 +145,7 @@ impl ValidationService {
     }
 
     fn validate_has_donations(offering: &Offering) -> Vec<ValidationIssue> {
-        if offering.donations.is_empty() && offering.cash_total().is_zero() {
+        if offering.donations().is_empty() && offering.cash_total().is_zero() {
             // A genuinely nil collection (e.g. an attendance-only service)
             // must be signable and lockable; surface it as informational so
             // the reviewer confirms it knowingly (review O19).

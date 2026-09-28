@@ -32,11 +32,16 @@ pub fn row_to_donation(row: &SqliteRow) -> Result<Donation, RepoError> {
     let payment_method: PaymentMethod = from_json(&row.get::<String, _>("payment_method"))?;
     let classification: DonationClassification =
         from_json(&row.get::<String, _>("classification"))?;
+    let amount_pence: i64 = row.get("amount_pence");
+    // Validated decode (Phase 3.2): a negative in storage is corrupt data,
+    // surfaced as InvalidData — never an unchecked negative Money.
+    let amount =
+        Money::from_pence(amount_pence).map_err(|e| RepoError::InvalidData(e.to_string()))?;
     Ok(Donation {
         id: row.get("id"),
         donor_id: row.get("donor_id"),
         offering_id: row.get("offering_id"),
-        amount: Money::from_pence_unchecked(row.get("amount_pence")),
+        amount,
         donation_type,
         payment_method,
         classification,

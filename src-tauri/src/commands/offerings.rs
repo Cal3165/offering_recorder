@@ -293,13 +293,16 @@ pub async fn lock_offering(
 pub async fn withdraw_signature(
     state: State<'_, AppState>,
     offering_id: String,
+    reason: Option<String>,
 ) -> Result<Offering, AppErrorDto> {
     let actor = with_actor!(state);
     let id = parse_uuid(&offering_id)?;
+    // Phase 3.8: withdrawal requires a reason (command name unchanged).
+    let reason = reason.unwrap_or_default();
     state
         .services
         .offerings
-        .withdraw_signature(&actor, id)
+        .withdraw_signature(&actor, id, &reason)
         .await
         .map_err(AppErrorDto::from)
 }

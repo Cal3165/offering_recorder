@@ -16,16 +16,16 @@ async fn gasds_claim_workflow_and_readiness() {
     let offering = create_test_offering(&services, &admin, meeting.id).await;
     services
         .offerings
-        .set_attendance(&admin, offering.id, 100)
+        .set_attendance(&admin, offering.id(), 100)
         .await
         .unwrap();
-    add_named_cheque_donation(&services, &admin, offering.id, donor.id, 5000).await;
+    add_named_cheque_donation(&services, &admin, offering.id(), donor.id, 5000).await;
     let loose = cash_total(Denomination::Note1000p, 2);
     services
         .offerings
         .add_donation(
             &admin,
-            offering.id,
+            offering.id(),
             AddDonationInput {
                 donor_id: None,
                 amount_pence: 2000,
@@ -41,10 +41,10 @@ async fn gasds_claim_workflow_and_readiness() {
         .unwrap();
     services
         .offerings
-        .set_cash_denominations(&admin, offering.id, loose)
+        .set_cash_denominations(&admin, offering.id(), loose)
         .await
         .unwrap();
-    lock_and_bank(&services, &admin, offering.id, "DEP1").await;
+    lock_and_bank(&services, &admin, offering.id(), "DEP1").await;
 
     // A second offering with unbanked loose cash: it should be excluded.
     let offering2 = setup_offering_with_loose_cash(
@@ -57,7 +57,7 @@ async fn gasds_claim_workflow_and_readiness() {
         1,
     )
     .await;
-    lock_offering(&services, &admin, offering2.id).await;
+    lock_offering(&services, &admin, offering2.id()).await;
 
     let tax_year = current_tax_year();
     let readiness = services
@@ -120,7 +120,7 @@ async fn gasds_claim_reject_requires_reason_and_is_terminal() {
         1,
     )
     .await;
-    lock_and_bank(&services, &admin, offering.id, "DEP1").await;
+    lock_and_bank(&services, &admin, offering.id(), "DEP1").await;
 
     let tax_year = current_tax_year();
     let claim = services
@@ -197,7 +197,7 @@ async fn community_buildings_claim_requires_building_thresholds() {
     for weeks_ago in [35, 28, 21, 14, 7, 0] {
         let date = today - chrono::Duration::days(weeks_ago);
         let offering = create_dated_loose_offering(&services, &admin, meeting.id, 80, date).await;
-        offering_ids.push(offering.id);
+        offering_ids.push(offering.id());
     }
     services
         .banking
@@ -239,7 +239,7 @@ async fn community_buildings_claim_requires_building_thresholds() {
         .banking
         .create_deposit(
             &admin,
-            vec![extra.id],
+            vec![extra.id()],
             chrono::Utc::now(),
             Some("DEP2".into()),
         )
@@ -288,18 +288,18 @@ async fn gift_aid_single_incomplete_and_shortfall_excluded() {
     let offering = create_test_offering(&services, &admin, meeting.id).await;
     services
         .offerings
-        .set_attendance(&admin, offering.id, 50)
+        .set_attendance(&admin, offering.id(), 50)
         .await
         .unwrap();
     // £50 named cheque (donor1) + £20 named cheque (donor2).
     for (donor, pence) in [(donor1.id, 5000), (donor2.id, 2000)] {
-        add_named_cheque_donation(&services, &admin, offering.id, donor, pence).await;
+        add_named_cheque_donation(&services, &admin, offering.id(), donor, pence).await;
     }
     // £10 loose cash banked in full.
     add_loose_cash_donation(
         &services,
         &admin,
-        offering.id,
+        offering.id(),
         1000,
         Denomination::Note500p,
         2,
@@ -307,8 +307,8 @@ async fn gift_aid_single_incomplete_and_shortfall_excluded() {
     )
     .await;
 
-    let gift_id = get_donation_id_by_amount(&services, &admin, offering.id, 5000).await;
-    let other_gift_id = get_donation_id_by_amount(&services, &admin, offering.id, 2000).await;
+    let gift_id = get_donation_id_by_amount(&services, &admin, offering.id(), 5000).await;
+    let other_gift_id = get_donation_id_by_amount(&services, &admin, offering.id(), 2000).await;
 
     // Single without a linked gift is rejected ...
     let no_link = single_declaration_details("Single Linked", "1 Gift Rd", "AA1 1AA", None);
@@ -357,21 +357,21 @@ async fn gift_aid_single_incomplete_and_shortfall_excluded() {
         .await
         .unwrap();
 
-    lock_and_bank(&services, &admin, offering.id, "DEP1").await;
+    lock_and_bank(&services, &admin, offering.id(), "DEP1").await;
 
     // Post-deposit amendment adds £5 loose cash: deposited £10 < recorded £15,
     // so the £5 shortfall must be excluded from the claim.
-    let tag = &offering.id.to_string()[0..8];
+    let tag = &offering.id().to_string()[0..8];
     let loose3 = cash_total(Denomination::Note500p, 3);
     let extra = offering_domain::entities::donation::Donation::loose_cash(
-        offering.id,
+        offering.id(),
         cash_total(Denomination::Note500p, 1),
     )
     .unwrap();
     approve_offering_amendment(
         &services,
         &admin,
-        offering.id,
+        offering.id(),
         "Late £5 note found",
         vec![
             offering_domain::entities::amendment::AmendmentChange::AddDonation(extra),
@@ -421,7 +421,7 @@ async fn prepare_claim_fails_without_banked_gasds_donations() {
         .unwrap();
     services
         .offerings
-        .set_attendance(&admin, offering.id, 30)
+        .set_attendance(&admin, offering.id(), 30)
         .await
         .unwrap();
     let mut loose = CashTotal::new();
@@ -430,7 +430,7 @@ async fn prepare_claim_fails_without_banked_gasds_donations() {
         .offerings
         .add_donation(
             &admin,
-            offering.id,
+            offering.id(),
             AddDonationInput {
                 donor_id: None,
                 amount_pence: 500,
@@ -446,10 +446,10 @@ async fn prepare_claim_fails_without_banked_gasds_donations() {
         .unwrap();
     services
         .offerings
-        .set_cash_denominations(&admin, offering.id, loose)
+        .set_cash_denominations(&admin, offering.id(), loose)
         .await
         .unwrap();
-    lock_offering(&services, &admin, offering.id).await;
+    lock_offering(&services, &admin, offering.id()).await;
 
     let tax_year = current_tax_year();
     let readiness = services

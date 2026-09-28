@@ -173,9 +173,12 @@ impl Donor {
         let now = Utc::now();
         Ok(Donor {
             id: Uuid::new_v4(),
-            first_name: first_name.to_string(),
-            last_name: last_name.to_string(),
-            preferred_name: preferred_name.map(std::string::ToString::to_string),
+            first_name: first_name.trim().to_string(),
+            last_name: last_name.trim().to_string(),
+            preferred_name: preferred_name
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(std::string::ToString::to_string),
             donor_type: DonorType::Unknown,
             address,
             email: email.map(std::string::ToString::to_string),
@@ -269,9 +272,12 @@ impl Donor {
                 validate_phone(p)?;
             }
         }
-        self.first_name = first_name.to_string();
-        self.last_name = last_name.to_string();
-        self.preferred_name = preferred_name.map(std::string::ToString::to_string);
+        self.first_name = first_name.trim().to_string();
+        self.last_name = last_name.trim().to_string();
+        self.preferred_name = preferred_name
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string);
         self.address = address;
         self.email = email.map(std::string::ToString::to_string);
         self.phone = phone.map(std::string::ToString::to_string);
@@ -367,6 +373,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(d.phone.as_deref(), Some("+44 (0)20 7946-0958"));
+    }
+
+    #[test]
+    fn names_are_trimmed_on_store() {
+        // Phase 3.10: surrounding whitespace is trimmed, never stored.
+        let d = Donor::create("  John ", " Smith\t", Some(" Johnny "), None, None, None).unwrap();
+        assert_eq!(d.first_name, "John");
+        assert_eq!(d.last_name, "Smith");
+        assert_eq!(d.preferred_name.as_deref(), Some("Johnny"));
     }
 
     #[test]

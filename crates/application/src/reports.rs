@@ -233,7 +233,10 @@ impl<'a> ReportService<'a> {
             Vec<offering_domain::entities::Offering>,
         > = std::collections::HashMap::new();
         for o in &offerings {
-            by_meeting.entry(o.meeting_id).or_default().push(o.clone());
+            by_meeting
+                .entry(o.meeting_id())
+                .or_default()
+                .push(o.clone());
         }
 
         let mut entries = Vec::new();
@@ -242,13 +245,13 @@ impl<'a> ReportService<'a> {
                 &meeting_offerings,
                 &by_donor,
                 &GasdsConfig::default(),
-            );
+            )?;
             // Attendance is the LARGEST single collection in the range (plan
             // Phase 5.1): summing headcounts across weeks is meaningless for
             // HMRC's per-collection test. The frontend labels this accordingly.
             let attendance: u32 = meeting_offerings
                 .iter()
-                .filter_map(|o| o.attendance)
+                .filter_map(offering_domain::entities::offering::Offering::attendance)
                 .max()
                 .unwrap_or(0);
             let meeting_name = self

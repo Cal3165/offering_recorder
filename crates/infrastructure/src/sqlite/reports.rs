@@ -6,7 +6,6 @@ use offering_domain::donation_type::DonationType;
 use offering_domain::entities::amendment::Amendment;
 use offering_domain::entities::audit_event::AuditEvent;
 use offering_domain::entities::gift_aid::GiftAidDeclaration;
-use offering_domain::money::Money;
 use offering_domain::offering_number::OfferingNumber;
 use offering_domain::tax_year::TaxYear;
 /// Exclusive upper bound for a date range: the start of the day *after* `end`.
@@ -91,6 +90,47 @@ fn declaration_covers_donation_sql() -> &'static str {
     )"
 }
 
+/// Subject-access helper: union all entity ids relating to a donor (events
+/// are keyed by the entity acted on, not just the donor id).
+fn related_entity_ids(
+    donor_id: Uuid,
+    donations: &[GdprDonation],
+    gift_aid_declarations: &[GiftAidDeclaration],
+    amendments: &[Amendment],
+    declaration_amendments: &[offering_domain::entities::declaration_amendment::DeclarationAmendment],
+) -> Vec<Uuid> {
+    let mut related_ids: Vec<Uuid> = vec![donor_id];
+    related_ids.extend(donations.iter().map(|g| g.donation.id));
+    related_ids.extend(gift_aid_declarations.iter().map(|d| d.id));
+    related_ids.extend(
+        amendments
+            .iter()
+            .map(offering_domain::entities::amendment::Amendment::id),
+    );
+    related_ids.extend(declaration_amendments.iter().map(|a| a.id));
+    related_ids
+}
+
+/// Subject-access helper: amendments for a set of offerings (empty in → empty out).
+async fn load_amendments_for_offerings(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    offering_ids: &[Uuid],
+) -> Result<Vec<Amendment>, offering_persistence::RepoError> {
+    if offering_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = super::in_placeholders(offering_ids.len());
+    let query = format!(
+        "SELECT * FROM amendments WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
+    );
+    let mut q = sqlx::query(&query);
+    for id in offering_ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(pool).await.map_err(map_db_err)?;
+    rows.iter().map(row_to_amendment).collect()
+}
+
 #[async_trait]
 impl ReportRepository for SqliteReportRepository {
     async fn bookkeeping_report(
@@ -127,7 +167,7 @@ impl ReportRepository for SqliteReportRepository {
             let donation_type: DonationType = from_json(&row.get::<String, _>("donation_type"))?;
             entries.push(BookkeepingEntry {
                 donation_type,
-                total: Money::from_pence_unchecked(row.get::<i64, _>("total")),
+                total: super::money_from_pence(row.get::<i64, _>("total"))?,
                 count: u32::try_from(row.get::<i64, _>("count")).unwrap_or(u32::MAX),
             });
         }
@@ -171,7 +211,7 @@ impl ReportRepository for SqliteReportRepository {
                 donor_id: row.get("id"),
                 donor_name: donor_name(&first, &last, preferred.as_deref()),
                 address: row_to_address(&row),
-                total_donations: Money::from_pence_unchecked(row.get::<i64, _>("total_pence")),
+                total_donations: super::money_from_pence(row.get::<i64, _>("total_pence"))?,
                 donation_count: u32::try_from(row.get::<i64, _>("donation_count"))
                     .unwrap_or(u32::MAX),
                 most_recent_donation: row
@@ -292,7 +332,7 @@ impl ReportRepository for SqliteReportRepository {
                 donor_name,
                 donor_address: row_to_address(&row),
                 donation_date,
-                amount: Money::from_pence_unchecked(row.get("amount_pence")),
+                amount: super::money_from_pence(row.get("amount_pence"))?,
                 tax_year: tax_year.clone(),
             });
         }
@@ -347,23 +387,7 @@ impl ReportRepository for SqliteReportRepository {
             .collect::<Result<_, _>>()?;
 
         let offering_ids: Vec<Uuid> = donations.iter().map(|g| g.donation.offering_id).collect();
-        let mut amendments: Vec<Amendment> = Vec::new();
-        if !offering_ids.is_empty() {
-            let placeholders = super::in_placeholders(offering_ids.len());
-            let query = format!(
-                "SELECT * FROM amendments WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
-            );
-            let mut q = sqlx::query(&query);
-            for id in &offering_ids {
-                q = q.bind(id);
-            }
-            let rows = q.fetch_all(&self.pool.get()).await.map_err(map_db_err)?;
-            amendments.extend(
-                rows.iter()
-                    .map(row_to_amendment)
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
-        }
+        let amendments = load_amendments_for_offerings(&self.pool.get(), &offering_ids).await?;
 
         // Declaration amendments reference the donor via their declaration
         // (review O21).
@@ -383,11 +407,13 @@ impl ReportRepository for SqliteReportRepository {
         // entity they acted on (donation/declaration/amendment ids), not just
         // the donor id, so union all ids relating to this donor. A donor-only
         // filter returns a partial log.
-        let mut related_ids: Vec<Uuid> = vec![donor_id];
-        related_ids.extend(donations.iter().map(|g| g.donation.id));
-        related_ids.extend(gift_aid_declarations.iter().map(|d| d.id));
-        related_ids.extend(amendments.iter().map(|a| a.id));
-        related_ids.extend(declaration_amendments.iter().map(|a| a.id));
+        let related_ids = related_entity_ids(
+            donor_id,
+            &donations,
+            &gift_aid_declarations,
+            &amendments,
+            &declaration_amendments,
+        );
         let placeholders = super::in_placeholders(related_ids.len());
         let audit_sql = format!(
             "SELECT * FROM audit_events WHERE entity_id IN ({placeholders}) ORDER BY timestamp"

@@ -1,10 +1,36 @@
 use crate::errors::{DomainError, DomainResult};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::ops::{Add, Sub};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Money {
     pence: i64,
+}
+
+impl<'de> Deserialize<'de> for Money {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct MoneyHelper {
+            pence: i64,
+        }
+        // Accept both the struct form {"pence": N} and a bare integer N
+        // (persistence/IPC layers historically use both).
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum MoneyRepr {
+            Struct(MoneyHelper),
+            Bare(i64),
+        }
+        let repr = MoneyRepr::deserialize(deserializer)?;
+        let pence = match repr {
+            MoneyRepr::Struct(h) => h.pence,
+            MoneyRepr::Bare(p) => p,
+        };
+        Money::from_pence(pence).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Money {
@@ -25,11 +51,17 @@ impl Money {
 
     /// Trusted-construction path for internal decoders (e.g. reading INTEGER
     /// pence columns that the schema CHECKs constrain to be non-negative).
-    /// Application/domain logic must use [`Money::from_pence`], which
-    /// rejects negatives (review O7).
+    /// Validates in ALL builds (not just debug): a negative is a data bug and
+    /// panics loudly instead of constructing an impossible value. Application/
+    /// domain logic must use [`Money::from_pence`], which rejects negatives
+    /// with an error (review O7).
+    ///
+    /// # Panics
+    ///
+    /// Panics when `pence` is negative.
     #[must_use]
     pub fn from_pence_unchecked(pence: i64) -> Self {
-        debug_assert!(pence >= 0, "from_pence_unchecked with negative value");
+        assert!(pence >= 0, "from_pence_unchecked with negative value");
         Money { pence }
     }
 
@@ -89,6 +121,9 @@ impl Money {
         self.to_string()
     }
 
+    /// Saturating addition for non-accounting display ergonomics ONLY.
+    /// Deprecated for accounting paths: use checked [`Money::add`] /
+    /// [`Money::sum`], which return errors on overflow (Phase 3.2).
     #[must_use]
     pub fn saturating_add(&self, other: &Money) -> Self {
         Money {
@@ -107,22 +142,13 @@ impl Money {
         Ok(Money { pence: result })
     }
 
+    /// Single checked subtraction path (Phase 3.10): `checked_subtract` is
+    /// kept as a thin alias so both historic names collapse onto one
+    /// implementation.
     /// # Errors
     ///
     /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn subtract(&self, other: &Money) -> DomainResult<Self> {
-        if other.pence > self.pence {
-            return Err(DomainError::NegativeValue);
-        }
-        Ok(Money {
-            pence: self.pence - other.pence,
-        })
-    }
-
-    /// # Errors
-    ///
-    /// Returns [`DomainError`] if the input violates a domain invariant.
-    pub fn checked_subtract(&self, other: &Money) -> DomainResult<Self> {
         let result = self
             .pence
             .checked_sub(other.pence)
@@ -131,6 +157,14 @@ impl Money {
             return Err(DomainError::NegativeValue);
         }
         Ok(Money { pence: result })
+    }
+
+    /// Alias of [`Money::subtract`] (single implementation, Phase 3.10).
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
+    pub fn checked_subtract(&self, other: &Money) -> DomainResult<Self> {
+        self.subtract(other)
     }
 
     /// # Errors
@@ -410,6 +444,30 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let deserialized: Money = serde_json::from_str(&json).unwrap();
         assert_eq!(m, deserialized);
+    }
+
+    #[test]
+    fn deserialize_rejects_negative() {
+        // Phase 3.2: custom Deserialize routes through `from_pence`, so a
+        // negative on the wire fails instead of constructing bad money.
+        assert!(serde_json::from_str::<Money>(r#"{"pence":-1}"#).is_err());
+        assert!(serde_json::from_str::<Money>("-5").is_err());
+    }
+
+    #[test]
+    fn checked_add_rejects_overflow() {
+        // Phase 3.2: accounting paths use checked `add`/`sum`, never
+        // saturating arithmetic. (UFCS: `Add` is in scope via the parent.)
+        let a = Money::from_pence(i64::MAX).unwrap();
+        let b = Money::from_pence(1).unwrap();
+        assert!(matches!(
+            Money::add(&a, &b),
+            Err(DomainError::ArithmeticOverflow)
+        ));
+        assert!(matches!(
+            Money::sum(vec![a, b]),
+            Err(DomainError::ArithmeticOverflow)
+        ));
     }
 
     #[test]

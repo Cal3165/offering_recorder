@@ -122,6 +122,15 @@ pub struct GasdsClaim {
 }
 
 impl GasdsClaim {
+    /// Annual ceiling derived from the tax year (Phase 3.6): £5,000 before
+    /// the April 2016 change, £8,000 after. Pass an explicit override only
+    /// when legislation changes — never a hardcoded modern default for old
+    /// years.
+    #[must_use]
+    pub fn annual_limit_for_tax_year(tax_year: &TaxYear) -> Money {
+        Money::from_pence_unchecked(crate::gasds::annual_ceiling_pence(tax_year.start_year()))
+    }
+
     /// # Errors
     ///
     /// Returns [`DomainError`] if the input violates a domain invariant.
@@ -134,10 +143,39 @@ impl GasdsClaim {
         annual_limit: Money,
         created_by: Uuid,
     ) -> DomainResult<Self> {
+        Self::create_with_time(
+            tax_year,
+            method,
+            items,
+            gift_aid_claimed,
+            Some(annual_limit),
+            created_by,
+            Utc::now(),
+        )
+    }
+
+    /// Year-aware constructor (Phase 3.6): pass `None` to derive the ceiling
+    /// from the tax year; `Some` is an explicit override only.
+    /// `now` is a clock parameter (Phase 3.10) so tests need not depend on
+    /// the wall clock.
+    /// # Errors
+    ///
+    /// Returns [`DomainError`] if the input violates a domain invariant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_time(
+        tax_year: TaxYear,
+        method: GasdsClaimMethod,
+        items: Vec<GasdsClaimItem>,
+        gift_aid_claimed: Money,
+        annual_limit_override: Option<Money>,
+        created_by: Uuid,
+        now: DateTime<Utc>,
+    ) -> DomainResult<Self> {
         // HMRC deadlines are enforced at creation, not just displayed: a claim
         // prepared after the GASDS deadline (2 years after the tax-year end)
-        // is late and must be rejected (plan Phase 4.5).
-        let today = Utc::now().date_naive();
+        // is late and must be rejected (plan Phase 4.5). `now` (not the wall
+        // clock) decides, so tests can pin the instant.
+        let today = now.date_naive();
         if today > tax_year.gasds_claim_deadline() {
             return Err(DomainError::Validation(format!(
                 "tax year {} is past the GASDS claim deadline ({})",
@@ -156,10 +194,11 @@ impl GasdsClaim {
                 )));
             }
         }
+        let annual_limit =
+            annual_limit_override.unwrap_or_else(|| Self::annual_limit_for_tax_year(&tax_year));
         let total = Money::sum(items.iter().map(|i| i.amount))?;
         let matching = matching_limit(&gift_aid_claimed, &annual_limit, &tax_year);
-        let claimable = Money::from_pence_unchecked(total.pence().min(matching.pence()));
-        let now = Utc::now();
+        let claimable = Money::from_pence(total.pence().min(matching.pence()))?;
         Ok(GasdsClaim {
             id: Uuid::new_v4(),
             tax_year,
@@ -220,12 +259,21 @@ impl GasdsClaim {
     }
 
     /// Approve a claim that is in review.
+    ///
+    /// Phase 3.7 (`SoD`, mirroring offerings/amendments): the approver must
+    /// differ from the preparer — the preparer cannot approve their own
+    /// claim. The application layer may allow an Admin override with audit.
     /// # Errors
     ///
     /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn approve(&mut self, actor: Uuid) -> DomainResult<()> {
         if self.status != GasdsClaimStatus::InReview {
             return Err(GasdsClaim::transition_error(self.status));
+        }
+        if self.prepared_by == Some(actor) {
+            return Err(DomainError::Validation(
+                "the preparer cannot approve their own claim; a second person must approve".into(),
+            ));
         }
         self.status = GasdsClaimStatus::Approved;
         self.approved_by = Some(actor);
@@ -277,6 +325,7 @@ pub fn matching_limit(gift_aid_claimed: &Money, annual_limit: &Money, tax_year: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gasds::GasdsConfig;
 
     fn item(amount_pence: i64) -> GasdsClaimItem {
         item_dated(amount_pence, ymd(2024, 6, 1))
@@ -421,6 +470,7 @@ mod tests {
     #[test]
     fn full_workflow_prepare_review_approve() {
         let actor = Uuid::new_v4();
+        let approver = Uuid::new_v4();
         let mut claim = GasdsClaim::create(
             TaxYear::new(2024),
             GasdsClaimMethod::Nationwide,
@@ -435,10 +485,53 @@ mod tests {
         assert_eq!(claim.prepared_by, Some(actor));
         claim.submit_for_review().unwrap();
         assert_eq!(claim.status, GasdsClaimStatus::InReview);
-        claim.approve(actor).unwrap();
+        // Phase 3.7: approver must differ from preparer.
+        claim.approve(approver).unwrap();
         assert_eq!(claim.status, GasdsClaimStatus::Approved);
+        assert_eq!(claim.approved_by, Some(approver));
+        assert!(claim.approved_at.is_some());
         assert!(claim.status.is_terminal());
         assert!(claim.status.is_approved());
+    }
+
+    #[test]
+    fn preparer_cannot_approve_own_claim() {
+        // Phase 3.7 SoD: prepare + approve by the same actor is rejected.
+        let actor = Uuid::new_v4();
+        let mut claim = GasdsClaim::create(
+            TaxYear::new(2024),
+            GasdsClaimMethod::Nationwide,
+            vec![item(1000)],
+            Money::from_pence(1000).unwrap(),
+            annual_limit(),
+            actor,
+        )
+        .unwrap();
+        claim.prepare(actor).unwrap();
+        claim.submit_for_review().unwrap();
+        assert!(matches!(
+            claim.approve(actor),
+            Err(DomainError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn ceiling_derives_from_tax_year() {
+        // Phase 3.6: pre-2016 years cap at £5,000, not the modern £8,000.
+        assert_eq!(
+            GasdsClaim::annual_limit_for_tax_year(&TaxYear::new(2015)).pence(),
+            500_000
+        );
+        assert_eq!(
+            GasdsClaim::annual_limit_for_tax_year(&TaxYear::new(2024)).pence(),
+            800_000
+        );
+        assert_eq!(
+            GasdsConfig::for_tax_year(&TaxYear::new(2015))
+                .annual_limit
+                .pence(),
+            500_000
+        );
     }
 
     #[test]
@@ -512,7 +605,7 @@ mod tests {
         .unwrap();
         claim.prepare(actor).unwrap();
         claim.submit_for_review().unwrap();
-        claim.approve(actor).unwrap();
+        claim.approve(Uuid::new_v4()).unwrap();
         assert!(claim.prepare(actor).is_err());
         assert!(claim.approve(actor).is_err());
     }

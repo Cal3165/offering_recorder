@@ -20,30 +20,36 @@ impl SqliteBankDepositRepository {
     }
 }
 
-fn row_to_item(row: &SqliteRow) -> BankDepositItem {
-    BankDepositItem {
-        offering_id: row.get("offering_id"),
-        cash_amount: Money::from_pence_unchecked(row.get("cash_amount_pence")),
-        cheque_amount: Money::from_pence_unchecked(row.get("cheque_amount_pence")),
-        other_amount: Money::from_pence_unchecked(row.get("other_amount_pence")),
-        donor_count: row.get("donor_count"),
-        donation_count: row.get("donation_count"),
-    }
+fn money_row(row: &SqliteRow, col: &str) -> Result<Money, RepoError> {
+    let pence: i64 = row.get(col);
+    // Validated decode (Phase 3.2): negatives are corrupt storage.
+    Money::from_pence(pence).map_err(|e| RepoError::InvalidData(e.to_string()))
 }
 
-fn row_to_deposit_base(row: &SqliteRow) -> BankDeposit {
-    BankDeposit {
+fn row_to_item(row: &SqliteRow) -> Result<BankDepositItem, RepoError> {
+    Ok(BankDepositItem {
+        offering_id: row.get("offering_id"),
+        cash_amount: money_row(row, "cash_amount_pence")?,
+        cheque_amount: money_row(row, "cheque_amount_pence")?,
+        other_amount: money_row(row, "other_amount_pence")?,
+        donor_count: row.get("donor_count"),
+        donation_count: row.get("donation_count"),
+    })
+}
+
+fn row_to_deposit_base(row: &SqliteRow) -> Result<BankDeposit, RepoError> {
+    Ok(BankDeposit {
         id: row.get("id"),
         deposit_date: row.get("deposit_date"),
         banker_id: row.get("banker_id"),
         items: Vec::new(),
-        actual_cash: Money::from_pence_unchecked(row.get("actual_cash_pence")),
-        actual_cheques: Money::from_pence_unchecked(row.get("actual_cheques_pence")),
-        actual_other: Money::from_pence_unchecked(row.get("actual_other_pence")),
+        actual_cash: money_row(row, "actual_cash_pence")?,
+        actual_cheques: money_row(row, "actual_cheques_pence")?,
+        actual_other: money_row(row, "actual_other_pence")?,
         reference: row.get("reference"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
-    }
+    })
 }
 
 async fn load_items(pool: &Pool<Sqlite>, deposit_id: Uuid) -> RepoResult<Vec<BankDepositItem>> {
@@ -52,7 +58,7 @@ async fn load_items(pool: &Pool<Sqlite>, deposit_id: Uuid) -> RepoResult<Vec<Ban
         .fetch_all(pool)
         .await
         .map_err(map_db_err)?;
-    Ok(rows.iter().map(row_to_item).collect())
+    rows.iter().map(row_to_item).collect()
 }
 
 /// Batch load items for multiple deposits (avoids N+1).
@@ -76,7 +82,7 @@ async fn load_items_batch(
         std::collections::HashMap::new();
     for row in rows {
         let did: Uuid = row.get("deposit_id");
-        map.entry(did).or_default().push(row_to_item(&row));
+        map.entry(did).or_default().push(row_to_item(&row)?);
     }
     Ok(map)
 }
@@ -131,7 +137,7 @@ impl BankDepositRepository for SqliteBankDepositRepository {
             .map_err(map_db_err)?;
         match row {
             Some(row) => {
-                let mut deposit = row_to_deposit_base(&row);
+                let mut deposit = row_to_deposit_base(&row)?;
                 deposit.items = load_items(&self.pool.get(), id).await?;
                 Ok(Some(deposit))
             }
@@ -149,7 +155,7 @@ impl BankDepositRepository for SqliteBankDepositRepository {
         let mut deposits = Vec::new();
         for row in rows {
             let id: Uuid = row.get("id");
-            let mut deposit = row_to_deposit_base(&row);
+            let mut deposit = row_to_deposit_base(&row)?;
             deposit.items = items_by_deposit.get(&id).cloned().unwrap_or_default();
             deposits.push(deposit);
         }
@@ -228,7 +234,7 @@ impl BankDepositRepository for SqliteBankDepositRepository {
         let mut deposits = Vec::new();
         for row in rows {
             let id: Uuid = row.get("id");
-            let mut deposit = row_to_deposit_base(&row);
+            let mut deposit = row_to_deposit_base(&row)?;
             deposit.items = load_items(&self.pool.get(), id).await?;
             deposits.push(deposit);
         }
@@ -307,7 +313,7 @@ mod tests {
             1500,
             "update() must not zero out item other_amount (review C2)"
         );
-        assert_eq!(reloaded.expected_other().pence(), 1500);
+        assert_eq!(reloaded.expected_other().unwrap().pence(), 1500);
     }
 
     #[tokio::test]

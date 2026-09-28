@@ -312,7 +312,9 @@ impl GiftAidDeclaration {
     /// Returns [`DomainError`] if the input violates a domain invariant.
     pub fn end_with_reason(&mut self, at: DateTime<Utc>, reason: Option<&str>) -> DomainResult<()> {
         self.end(at)?;
-        self.cancelled_at = Some(at);
+        // `cancelled_at` records WHEN the cancellation was processed (now);
+        // the effective end of coverage stays in `effective_until` (Phase 3.10).
+        self.cancelled_at = Some(Utc::now());
         self.cancellation_reason = reason.map(std::string::ToString::to_string);
         self.updated_at = Utc::now();
         Ok(())
@@ -347,7 +349,8 @@ impl GiftAidDeclaration {
         reason: Option<&str>,
     ) -> DomainResult<()> {
         self.revoke(at)?;
-        self.cancelled_at = Some(at);
+        // See `end_with_reason`: audit instant is now, coverage end is `at`.
+        self.cancelled_at = Some(Utc::now());
         self.cancellation_reason = reason.map(std::string::ToString::to_string);
         self.updated_at = Utc::now();
         Ok(())

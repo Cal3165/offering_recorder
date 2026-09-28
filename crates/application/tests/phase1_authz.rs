@@ -41,10 +41,10 @@ async fn signable_offering(
 ) -> offering_domain::entities::offering::Offering {
     let meeting = create_test_meeting(services, admin, meeting_name).await;
     let offering = create_test_offering(services, admin, meeting.id).await;
-    add_anonymous_cheque_donation(services, admin, offering.id, 1000).await;
+    add_anonymous_cheque_donation(services, admin, offering.id(), 1000).await;
     services
         .offerings
-        .set_attendance(admin, offering.id, 10)
+        .set_attendance(admin, offering.id(), 10)
         .await
         .unwrap();
     offering
@@ -116,12 +116,12 @@ async fn same_user_non_guest_double_sign_is_rejected() {
     let offering = signable_offering(&services, &admin, "SoD").await;
     services
         .offerings
-        .counter_sign(&dual, offering.id, None)
+        .counter_sign(&dual, offering.id(), None)
         .await
         .unwrap();
     let err = services
         .offerings
-        .checker_sign(&dual, offering.id, None)
+        .checker_sign(&dual, offering.id(), None)
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
@@ -136,24 +136,24 @@ async fn lock_recheck_rejects_non_admin_override_lock() {
     let offering = signable_offering(&services, &admin, "SoDLock").await;
     services
         .offerings
-        .counter_sign(&admin, offering.id, Some("Guest Counter".into()))
+        .counter_sign(&admin, offering.id(), Some("Guest Counter".into()))
         .await
         .unwrap();
     services
         .offerings
-        .checker_sign(&admin, offering.id, Some("Guest Checker".into()))
+        .checker_sign(&admin, offering.id(), Some("Guest Checker".into()))
         .await
         .unwrap();
     let err = services
         .offerings
-        .lock_offering(&other, offering.id)
+        .lock_offering(&other, offering.id())
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
     // The Admin override still completes the lock.
     services
         .offerings
-        .lock_offering(&admin, offering.id)
+        .lock_offering(&admin, offering.id())
         .await
         .unwrap();
 }
@@ -164,7 +164,7 @@ async fn locked_offering_for_amendment(
     meeting_name: &str,
 ) -> offering_domain::entities::offering::Offering {
     let offering = signable_offering(services, admin, meeting_name).await;
-    lock_offering(services, admin, offering.id).await;
+    lock_offering(services, admin, offering.id()).await;
     offering
 }
 
@@ -187,25 +187,25 @@ async fn amendment_same_operator_double_sign_is_rejected() {
     .await;
     let amendment = services
         .amendments
-        .create_amendment(&admin, offering.id, "fix", attendance_change(11))
+        .create_amendment(&admin, offering.id(), "fix", attendance_change(11))
         .await
         .unwrap();
     services
         .amendments
-        .sign_amendment_counter(&dual, amendment.id, None)
+        .sign_amendment_counter(&dual, amendment.id(), None)
         .await
         .unwrap();
     // Same user, real signatures.
     let err = services
         .amendments
-        .sign_amendment_checker(&dual, amendment.id, None)
+        .sign_amendment_checker(&dual, amendment.id(), None)
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
     // Same operator, different guest names.
     let err = services
         .amendments
-        .sign_amendment_checker(&dual, amendment.id, Some("Guest Checker".into()))
+        .sign_amendment_checker(&dual, amendment.id(), Some("Guest Checker".into()))
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
@@ -223,24 +223,24 @@ async fn amendment_maker_cannot_self_approve() {
 
     let amendment = services
         .amendments
-        .create_amendment(&maker, offering.id, "fix", attendance_change(12))
+        .create_amendment(&maker, offering.id(), "fix", attendance_change(12))
         .await
         .unwrap();
     services
         .amendments
-        .sign_amendment_counter(&seconder, amendment.id, None)
+        .sign_amendment_counter(&seconder, amendment.id(), None)
         .await
         .unwrap();
     services
         .amendments
-        .sign_amendment_checker(&checker, amendment.id, None)
+        .sign_amendment_checker(&checker, amendment.id(), None)
         .await
         .unwrap();
 
     // Maker self-approval is rejected.
     let err = services
         .amendments
-        .approve_amendment(&maker, amendment.id)
+        .approve_amendment(&maker, amendment.id())
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
@@ -248,7 +248,7 @@ async fn amendment_maker_cannot_self_approve() {
     // A different non-admin approver succeeds.
     let approved = services
         .amendments
-        .approve_amendment(&seconder, amendment.id)
+        .approve_amendment(&seconder, amendment.id())
         .await
         .unwrap();
     assert!(approved.is_approved());
@@ -258,22 +258,22 @@ async fn amendment_maker_cannot_self_approve() {
     let offering2 = locked_offering_for_amendment(&services, &admin, "AmMakerAdmin").await;
     let own = services
         .amendments
-        .create_amendment(&admin, offering2.id, "fix", attendance_change(13))
+        .create_amendment(&admin, offering2.id(), "fix", attendance_change(13))
         .await
         .unwrap();
     services
         .amendments
-        .sign_amendment_counter(&seconder, own.id, None)
+        .sign_amendment_counter(&seconder, own.id(), None)
         .await
         .unwrap();
     services
         .amendments
-        .sign_amendment_checker(&checker, own.id, None)
+        .sign_amendment_checker(&checker, own.id(), None)
         .await
         .unwrap();
     let approved = services
         .amendments
-        .approve_amendment(&admin, own.id)
+        .approve_amendment(&admin, own.id())
         .await
         .unwrap();
     assert!(approved.is_approved());
