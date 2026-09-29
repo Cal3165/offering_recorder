@@ -236,7 +236,7 @@ mod tests {
         // Phase 2.9: missing required columns are InvalidData without raw
         // SQLite internals.
         let pool = connect_in_memory().await.unwrap();
-        let err = sqlx::query("INSERT INTO meetings (id) VALUES ('m1')")
+        let err = sqlx::query("INSERT INTO meetings (id, meeting_seq) VALUES ('m1', 1)")
             .execute(&pool)
             .await
             .map_err(map_db_err)
@@ -274,11 +274,11 @@ mod tests {
     async fn unique_violations_stay_conflicts_without_internals() {
         // Unchanged behavior, pinned: Conflict with no table/constraint names.
         let pool = connect_in_memory().await.unwrap();
-        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES ('m1', 'A', 0, '10:00', 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
+        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, meeting_seq, created_at, updated_at) VALUES ('m1', 'A', 0, '10:00', 1, 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
             .execute(&pool)
             .await
             .unwrap();
-        let err = sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES ('m1', 'B', 1, '11:00', 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
+        let err = sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, meeting_seq, created_at, updated_at) VALUES ('m1', 'B', 1, '11:00', 1, 2, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
             .execute(&pool)
             .await
             .map_err(map_db_err)

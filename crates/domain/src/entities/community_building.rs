@@ -11,6 +11,9 @@ pub struct CommunityBuilding {
     pub address: Option<Address>,
     pub local_authority: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// Optimistic-concurrency token (plan Phase 8.1): repository updates are
+    /// conditional on this stamp; bumped by every mutation below.
+    pub updated_at: DateTime<Utc>,
 }
 
 impl CommunityBuilding {
@@ -34,12 +37,14 @@ impl CommunityBuilding {
                 "community building name cannot be empty".into(),
             ));
         }
+        let now = Utc::now();
         Ok(CommunityBuilding {
             id: Uuid::new_v4(),
             name: name.to_string(),
             address,
             local_authority,
-            created_at: Utc::now(),
+            created_at: now,
+            updated_at: now,
         })
     }
 }

@@ -590,8 +590,11 @@ impl<'a> GasdsClaimService<'a> {
         Self::require_claim_permission(actor)?;
         let mut claim = self.get_claim(actor, claim_id).await?;
         let old = crate::audit::state_json(&claim);
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): `prepare` bumps `updated_at`, so capture first.
+        let expected_updated_at = claim.updated_at;
         claim.prepare(actor.id)?;
-        let claim = self.claims.update(claim).await?;
+        let claim = self.claims.update(claim, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -613,8 +616,11 @@ impl<'a> GasdsClaimService<'a> {
         Self::require_claim_permission(actor)?;
         let mut claim = self.get_claim(actor, claim_id).await?;
         let old = crate::audit::state_json(&claim);
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): `submit_for_review` bumps `updated_at`, so capture first.
+        let expected_updated_at = claim.updated_at;
         claim.submit_for_review()?;
-        let claim = self.claims.update(claim).await?;
+        let claim = self.claims.update(claim, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -636,8 +642,11 @@ impl<'a> GasdsClaimService<'a> {
         Self::require_claim_permission(actor)?;
         let mut claim = self.get_claim(actor, claim_id).await?;
         let old = crate::audit::state_json(&claim);
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): `approve` bumps `updated_at`, so capture first.
+        let expected_updated_at = claim.updated_at;
         claim.approve(actor.id)?;
-        let claim = self.claims.update(claim).await?;
+        let claim = self.claims.update(claim, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -664,8 +673,11 @@ impl<'a> GasdsClaimService<'a> {
         Self::require_claim_permission(actor)?;
         let mut claim = self.get_claim(actor, claim_id).await?;
         let old = crate::audit::state_json(&claim);
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): `reject` bumps `updated_at`, so capture first.
+        let expected_updated_at = claim.updated_at;
         claim.reject(actor.id, reason)?;
-        let claim = self.claims.update(claim).await?;
+        let claim = self.claims.update(claim, expected_updated_at).await?;
         self.audit
             .record(
                 actor,

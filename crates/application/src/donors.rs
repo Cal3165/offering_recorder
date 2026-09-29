@@ -385,6 +385,9 @@ impl<'a> DonorService<'a> {
             .ok_or_else(|| crate::error::AppError::NotFound("donor not found".into()))?;
         let old_snapshot = crate::audit::donor_audit_snapshot(&donor);
         let old_donor = donor.clone();
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): `update_profile` bumps `updated_at`, so capture first.
+        let expected_updated_at = donor.updated_at;
         let address = input.to_address()?;
         donor.update_profile(
             &input.first_name,
@@ -410,7 +413,7 @@ impl<'a> DonorService<'a> {
         // Phase 5.5: audit the field-level diff (names of changed fields, not
         // values) alongside minimized before/after snapshots — no PII.
         let changed_fields = crate::audit::donor_audit_diff(&old_donor, &donor);
-        let updated = self.donors.update(donor).await?;
+        let updated = self.donors.update(donor, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -445,12 +448,15 @@ impl<'a> DonorService<'a> {
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("donor not found".into()))?;
         let old_snapshot = crate::audit::donor_audit_snapshot(&donor);
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): activate/deactivate bump `updated_at`, so capture first.
+        let expected_updated_at = donor.updated_at;
         if active {
             donor.activate();
         } else {
             donor.deactivate();
         }
-        let updated = self.donors.update(donor).await?;
+        let updated = self.donors.update(donor, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -535,6 +541,9 @@ impl<'a> DonorService<'a> {
         }
 
         let old_snapshot = crate::audit::donor_audit_snapshot(&donor);
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): redaction rewrites the row, so capture the stamp first.
+        let expected_updated_at = donor.updated_at;
         donor.first_name = "Redacted".to_string();
         donor.last_name = format!("donor-{}", &donor.id.to_string()[..8]);
         donor.preferred_name = None;
@@ -544,7 +553,7 @@ impl<'a> DonorService<'a> {
         donor.deactivate();
         // The lawful-basis history is kept: it records WHY data was held and
         // is itself part of the accountability trail, not identifying data.
-        let updated = self.donors.update(donor).await?;
+        let updated = self.donors.update(donor, expected_updated_at).await?;
         self.audit
             .record(
                 actor,

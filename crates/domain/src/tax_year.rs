@@ -368,4 +368,15 @@ mod tests {
         let back: TaxYear = serde_json::from_str(&json).unwrap();
         assert_eq!(ty, back);
     }
+
+    #[test]
+    fn ipc_wire_rejects_out_of_range_years() {
+        // Phase 8.3: Tauri commands take `TaxYear` straight from the renderer
+        // JSON, so deserialization itself must range-check — an out-of-range
+        // start year on the wire is rejected, never constructed.
+        assert!(serde_json::from_str::<TaxYear>("2024").is_ok());
+        assert!(serde_json::from_str::<TaxYear>("25").is_err());
+        assert!(serde_json::from_str::<TaxYear>("99999").is_err());
+        assert!(serde_json::from_str::<TaxYear>("1800").is_err());
+    }
 }

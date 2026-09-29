@@ -150,7 +150,7 @@ impl GiftAidRepository for SqliteGiftAidRepository {
     ) -> RepoResult<Vec<GiftAidDeclaration>> {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
-            "SELECT * FROM gift_aid_declarations WHERE donor_id = ? ORDER BY effective_from, version LIMIT ? OFFSET ?",
+            "SELECT * FROM gift_aid_declarations WHERE donor_id = ? ORDER BY effective_from, version, id LIMIT ? OFFSET ?",
         )
         .bind(donor_id)
         .bind(limit)
@@ -169,7 +169,7 @@ impl GiftAidRepository for SqliteGiftAidRepository {
     ) -> RepoResult<Vec<GiftAidDeclaration>> {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
-            "SELECT * FROM gift_aid_declarations WHERE donor_id = ? AND status = ? ORDER BY effective_from, version LIMIT ? OFFSET ?",
+            "SELECT * FROM gift_aid_declarations WHERE donor_id = ? AND status = ? ORDER BY effective_from, version, id LIMIT ? OFFSET ?",
         )
         .bind(donor_id)
         .bind(to_json(&DeclarationStatus::Active)?)
@@ -188,7 +188,7 @@ impl GiftAidRepository for SqliteGiftAidRepository {
     ) -> RepoResult<Vec<GiftAidDeclaration>> {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
-            "SELECT * FROM gift_aid_declarations ORDER BY effective_from, version LIMIT ? OFFSET ?",
+            "SELECT * FROM gift_aid_declarations ORDER BY effective_from, version, id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)
@@ -264,21 +264,27 @@ impl GiftAidRepository for SqliteGiftAidRepository {
         offset: Option<u32>,
     ) -> RepoResult<Vec<GiftAidDeclaration>> {
         let (limit, offset) = super::page_binds(limit, offset);
+        // Exclusive upper bound (plan Phase 8.2): the range is
+        // `[start, day-after-end)` at midnight UTC, so an `effective_from`
+        // landing exactly on the boundary instant belongs to exactly one tax
+        // year and Apr-5/Apr-6 fixtures agree across reports.
         let start = tax_year
             .start_date()
             .and_hms_opt(0, 0, 0)
             .unwrap()
             .and_utc();
-        let end = tax_year
+        let end_exclusive = tax_year
             .end_date()
-            .and_hms_opt(23, 59, 59)
+            .succ_opt()
+            .unwrap_or(chrono::NaiveDate::MAX)
+            .and_hms_opt(0, 0, 0)
             .unwrap()
             .and_utc();
         let rows = sqlx::query(
-            "SELECT * FROM gift_aid_declarations WHERE effective_from >= ? AND effective_from <= ? ORDER BY effective_from, version LIMIT ? OFFSET ?",
+            "SELECT * FROM gift_aid_declarations WHERE effective_from >= ? AND effective_from < ? ORDER BY effective_from, version, id LIMIT ? OFFSET ?",
         )
         .bind(start)
-        .bind(end)
+        .bind(end_exclusive)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool.get())

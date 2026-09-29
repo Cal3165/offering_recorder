@@ -106,11 +106,12 @@ impl<'a> GiftAidService<'a> {
             ));
         }
 
-        let existing = self
-            .gift_aid
-            .list_active_by_donor(donor_id, None, None)
-            .await?;
-        if let Some(latest) = existing.iter().max_by_key(|d| d.version) {
+        let existing = self.gift_aid.list_by_donor(donor_id, None, None).await?;
+        if let Some(latest) = existing
+            .iter()
+            .filter(|d| d.status == DeclarationStatus::Active)
+            .max_by_key(|d| d.version)
+        {
             if latest.covers_date(Utc::now()) {
                 return Err(AppError::Conflict(
                     "donor already has an active Gift Aid declaration".into(),
@@ -121,7 +122,8 @@ impl<'a> GiftAidService<'a> {
         // the partial unique index on active declarations
         // (`20240120_declaration_active_unique`) backstops it — the loser gets
         // Conflict from the insert below. Likewise the `(donor_id, version)`
-        // index turns a version-allocation race into a retryable Conflict.
+        // index turns a version-allocation race into a retryable Conflict,
+        // retried below with a fresh MAX (plan Phase 8.2).
 
         // A Single declaration must point at a real gift of this donor (plan
         // Phase 4.3): linking prevents an open-ended window masquerading as a
@@ -159,7 +161,9 @@ impl<'a> GiftAidService<'a> {
             actor.id,
             version,
         )?;
-        let declaration = self.gift_aid.create(declaration).await?;
+        let declaration = self
+            .insert_with_version_retry(donor_id, declaration)
+            .await?;
         self.audit
             .record(
                 actor,
@@ -172,6 +176,48 @@ impl<'a> GiftAidService<'a> {
             )
             .await?;
         Ok(declaration)
+    }
+
+    /// Insert a declaration, retrying version allocation on races (plan Phase
+    /// 8.2): two concurrent creates can compute the same MAX(version)+1 and
+    /// collide on the composite index. The loser reloads the version ceiling
+    /// and retries (bounded) instead of failing the operator's save. The
+    /// version is allocated over ALL rows, not just active ones, so creating
+    /// a successor after its predecessor was ended never reuses version 1.
+    async fn insert_with_version_retry(
+        &self,
+        donor_id: Uuid,
+        declaration: GiftAidDeclaration,
+    ) -> AppResult<GiftAidDeclaration> {
+        const MAX_VERSION_ATTEMPTS: u32 = 3;
+        let mut attempt = 0_u32;
+        loop {
+            attempt += 1;
+            let version = if attempt == 1 {
+                declaration.version
+            } else {
+                self.gift_aid
+                    .list_by_donor(donor_id, None, None)
+                    .await?
+                    .iter()
+                    .map(|d| d.version)
+                    .max()
+                    .unwrap_or(0)
+                    + 1
+            };
+            let mut candidate = declaration.clone();
+            candidate.version = version;
+            match self.gift_aid.create(candidate).await {
+                Ok(created) => return Ok(created),
+                Err(offering_persistence::RepoError::Conflict(msg))
+                    if attempt < MAX_VERSION_ATTEMPTS
+                        && (msg.contains("concurrently") || msg.contains("retry")) =>
+                {
+                    // Lost the version race: loop and reallocate from a fresh MAX.
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 
     /// # Errors

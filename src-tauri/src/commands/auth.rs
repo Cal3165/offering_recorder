@@ -1,7 +1,7 @@
 use tauri::State;
 
-use crate::commands::parse_uuid;
 use crate::commands::AppState;
+use crate::commands::{check_byte_len, parse_uuid, MAX_PASSWORD_BYTES};
 use offering_application::error::AppErrorDto;
 use offering_domain::entities::role::RoleSet;
 use offering_domain::entities::user::User;
@@ -33,6 +33,7 @@ pub async fn bootstrap(
     password: String,
     display_name: String,
 ) -> Result<User, AppErrorDto> {
+    check_byte_len(&password, MAX_PASSWORD_BYTES, "password").map_err(AppErrorDto::from)?;
     let user = state
         .services
         .auth
@@ -55,6 +56,7 @@ pub async fn login(
     username: String,
     password: String,
 ) -> Result<User, AppErrorDto> {
+    check_byte_len(&password, MAX_PASSWORD_BYTES, "password").map_err(AppErrorDto::from)?;
     let user = state
         .services
         .auth
@@ -117,6 +119,7 @@ pub async fn create_user(
     email: Option<String>,
     roles: RoleSet,
 ) -> Result<User, AppErrorDto> {
+    check_byte_len(&password, MAX_PASSWORD_BYTES, "password").map_err(AppErrorDto::from)?;
     let actor = with_actor!(state);
     state
         .services
@@ -142,6 +145,7 @@ pub async fn set_password(
     user_id: String,
     new_password: String,
 ) -> Result<User, AppErrorDto> {
+    check_byte_len(&new_password, MAX_PASSWORD_BYTES, "password").map_err(AppErrorDto::from)?;
     let actor = with_actor!(state);
     let id = parse_uuid(&user_id)?;
     state

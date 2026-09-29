@@ -69,7 +69,10 @@ impl UserRepository for SqliteUserRepository {
     }
 
     async fn get_by_username(&self, username: &str) -> RepoResult<Option<User>> {
-        let row = sqlx::query("SELECT * FROM users WHERE username = ?")
+        // Case-insensitive login (plan Phase 8.2): `Admin` and `admin` are the
+        // same operator. Uniqueness is still enforced by the application
+        // pre-check plus the underlying unique index.
+        let row = sqlx::query("SELECT * FROM users WHERE username = ? COLLATE NOCASE")
             .bind(username)
             .fetch_optional(&self.pool.get())
             .await
@@ -78,7 +81,7 @@ impl UserRepository for SqliteUserRepository {
     }
 
     async fn list(&self) -> RepoResult<Vec<User>> {
-        let rows = sqlx::query("SELECT * FROM users ORDER BY display_name")
+        let rows = sqlx::query("SELECT * FROM users ORDER BY display_name, id")
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
@@ -119,5 +122,31 @@ impl UserRepository for SqliteUserRepository {
             .await
             .map_err(map_db_err)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect_in_memory;
+    use offering_domain::entities::role::{Role, RoleSet};
+
+    #[tokio::test]
+    async fn username_lookup_is_case_insensitive() {
+        // Phase 8.2: `Admin` and `admin` are the same operator at login.
+        let pool = connect_in_memory().await.unwrap();
+        let repo = SqliteUserRepository::new(SharedPool::new(pool));
+        let created = repo
+            .create(User::create("Admin", "Admin", None, RoleSet::new(vec![Role::Admin])).unwrap())
+            .await
+            .unwrap();
+        for variant in ["Admin", "admin", "ADMIN", "aDmIn"] {
+            let found = repo
+                .get_by_username(variant)
+                .await
+                .unwrap()
+                .expect("case variant must resolve");
+            assert_eq!(found.id, created.id, "variant {variant} must resolve");
+        }
     }
 }

@@ -256,8 +256,17 @@ impl BackupManager {
         if !backup_path.exists() {
             return Err(InfraError::Message("backup file not found".into()));
         }
+        // First-run restore (plan Phase 8.2): when no live database exists yet
+        // (fresh install restoring its first backup), create the parent
+        // directory and promote the staged copy directly — there is nothing to
+        // safety-copy. Otherwise the staged copy is validated first and the
+        // live database is preserved on any failure.
         if !db_path.exists() {
-            return Err(InfraError::Message("active database not found".into()));
+            if let Some(parent) = db_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fs::create_dir_all(parent)?;
+                }
+            }
         }
         let db_dir = db_path
             .parent()
@@ -397,13 +406,16 @@ fn promote_staged(
     safety_dir: &Path,
     db_dir: &Path,
 ) -> InfraResult<()> {
-    fs::create_dir_all(safety_dir)?;
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-    // uuid suffix like backup filenames (plan Phase 7.2): two restores in
-    // one second must not overwrite the first safety copy.
-    let suffix = &uuid::Uuid::new_v4().simple().to_string()[..6];
-    let safety_path = safety_dir.join(format!("pre_restore_{timestamp}_{suffix}.sqlite"));
-    fs::copy(db_path, &safety_path)?;
+    // No live database (first-run restore): nothing to safety-copy.
+    if db_path.exists() {
+        fs::create_dir_all(safety_dir)?;
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+        // uuid suffix like backup filenames (plan Phase 7.2): two restores in
+        // one second must not overwrite the first safety copy.
+        let suffix = &uuid::Uuid::new_v4().simple().to_string()[..6];
+        let safety_path = safety_dir.join(format!("pre_restore_{timestamp}_{suffix}.sqlite"));
+        fs::copy(db_path, &safety_path)?;
+    }
 
     let restoring = TempFileGuard::new(db_dir, ".restoring")?;
     fs::copy(staged, restoring.path())?;
@@ -572,6 +584,45 @@ mod tests {
         // explicit reopen (review O23).
         let remaining = store.users.list().await.expect("list after restore");
         assert_eq!(remaining.len(), 1);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn first_run_restore_creates_missing_database() {
+        // Phase 8.2: restoring onto a fresh install (no live database yet)
+        // creates the database file instead of failing with "active database
+        // not found".
+        let dir = temp_dir("first_run_restore");
+        let db_path = dir.join("app.sqlite");
+        let store = SqliteStore::open(db_path.to_str().unwrap()).await.unwrap();
+        let storage = SqliteBackupStorage::new(store.pool.clone());
+
+        let mk_user =
+            |name: &str| User::create(name, "U", None, RoleSet::new(vec![Role::Admin])).unwrap();
+        store.users.create(mk_user("alice")).await.unwrap();
+        let (backup_path, _) = storage.create_backup_file(&dir, "").await.unwrap();
+        drop(store);
+
+        // Simulate a fresh install: the live database is gone entirely.
+        fs::remove_file(&db_path).unwrap();
+        assert!(!db_path.exists());
+
+        BackupManager::restore_backup_files(
+            &db_path,
+            std::path::Path::new(&backup_path),
+            &dir.join("safety"),
+            "",
+        )
+        .await
+        .expect("first-run restore must create the database");
+        assert!(db_path.exists(), "restored database file must exist");
+
+        // The restored content reads back through a fresh pool.
+        let reopened = SqliteStore::open(db_path.to_str().unwrap()).await.unwrap();
+        let users = reopened.users.list().await.unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].username, "alice");
 
         fs::remove_dir_all(&dir).unwrap();
     }

@@ -8,6 +8,12 @@ use offering_domain::entities::user::User;
 pub struct AppState {
     pub services: Services<'static>,
     pub session: Mutex<Option<User>>,
+    /// Retained handle to the store (plan Phase 8.3: kept deliberately, not
+    /// dead weight). `services` borrows each repository's `SharedPool` clone,
+    /// so day-to-day commands never touch this field — but the pool-swap owner
+    /// (`SqliteBackupStorage::restore_backup_file` via `SharedPool`) and any
+    /// future maintenance command (vacuum, integrity re-check) need a path to
+    /// the live store without re-opening the database.
     pub store: Mutex<&'static offering_infrastructure::SqliteStore>,
     /// Set while a backup restore is in progress. In-flight requests that
     /// touch the database should bail out rather than race the pool swap.
@@ -92,6 +98,12 @@ pub fn parse_uuid(s: &str) -> Result<uuid::Uuid, String> {
 pub const MAX_CSV_BYTES: usize = 5 * 1024 * 1024;
 /// Passphrases are Argon2-hashed; cap well below any hashing `DoS` cliff.
 pub const MAX_PASSPHRASE_BYTES: usize = 1024;
+/// Login/user passwords are Argon2id-hashed (plan Phase 8.2): cap the input
+/// so an unbounded renderer string cannot become a hashing-DoS vector. Must
+/// stay in sync with `PasswordHasherService::MAX_PASSWORD_BYTES` (the hasher
+/// enforces the same bound as a second layer); oversize input is a
+/// `Validation` error here, before any hashing work starts.
+pub const MAX_PASSWORD_BYTES: usize = 256;
 /// Free-text audit-surfaced fields (amendment/claim/declaration reasons).
 pub const MAX_REASON_CHARS: usize = 2000;
 /// Offering descriptions (also audit-surfaced).
@@ -185,6 +197,17 @@ mod tests {
     fn passphrase_cap_is_1kib() {
         assert_eq!(MAX_PASSPHRASE_BYTES, 1024);
         assert!(check_byte_len(&"p".repeat(1025), MAX_PASSPHRASE_BYTES, "passphrase").is_err());
+    }
+
+    #[test]
+    fn password_cap_matches_hasher() {
+        // Phase 8.2: the Tauri-layer cap and the hasher cap must agree, or
+        // one of them is dead code and oversize input reaches Argon2id.
+        assert_eq!(
+            MAX_PASSWORD_BYTES,
+            offering_infrastructure::auth::MAX_PASSWORD_BYTES
+        );
+        assert!(check_byte_len(&"p".repeat(257), MAX_PASSWORD_BYTES, "password").is_err());
     }
 
     #[test]

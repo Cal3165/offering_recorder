@@ -174,7 +174,9 @@ impl BankDepositRepository for SqliteBankDepositRepository {
     }
 
     async fn list(&self) -> RepoResult<Vec<BankDeposit>> {
-        let rows = sqlx::query("SELECT * FROM bank_deposits ORDER BY deposit_date DESC")
+        // `, id` tiebreak (plan Phase 8.2): same-day deposits otherwise order
+        // nondeterministically across pages and runs.
+        let rows = sqlx::query("SELECT * FROM bank_deposits ORDER BY deposit_date DESC, id DESC")
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
@@ -311,7 +313,7 @@ mod tests {
         sqlx::query("INSERT INTO users (id, username, display_name, roles, is_active, created_at, updated_at) VALUES (?, ?, ?, '[]', 1, ?, ?)")
             .bind(banker).bind("banker").bind("Banker").bind(&now).bind(&now)
             .execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, ?, ?)")
+        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, meeting_seq, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, 1, ?, ?)")
             .bind(meeting).bind(&now).bind(&now)
             .execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO offerings (id, meeting_id, offering_number, status, created_at, updated_at) VALUES (?, ?, '1', 'Draft', ?, ?)")

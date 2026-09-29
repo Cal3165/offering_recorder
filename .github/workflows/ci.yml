@@ -1,5 +1,10 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly advisory re-check (supports the `audit` job below).
+    - cron: "0 6 * * 1"
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -18,3 +23,13 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run build
+  # Phase 8.3: fail CI on known-vulnerable dependencies (RustSec advisory DB).
+  # Runs on a schedule as well as per-push so a newly published advisory
+  # breaks the build even without a code change.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

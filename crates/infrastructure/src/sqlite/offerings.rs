@@ -253,7 +253,9 @@ impl OfferingRepository for SqliteOfferingRepository {
 
     async fn list(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Offering>> {
         let (limit, offset) = super::page_binds(limit, offset);
-        let rows = sqlx::query("SELECT * FROM offerings ORDER BY created_at LIMIT ? OFFSET ?")
+        // `, id` tiebreak (plan Phase 8.2): same-instant rows otherwise order
+        // nondeterministically across pages and runs.
+        let rows = sqlx::query("SELECT * FROM offerings ORDER BY created_at, id LIMIT ? OFFSET ?")
             .bind(limit)
             .bind(offset)
             .fetch_all(&self.pool.get())
@@ -270,7 +272,7 @@ impl OfferingRepository for SqliteOfferingRepository {
     ) -> RepoResult<Vec<Offering>> {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
-            "SELECT * FROM offerings WHERE meeting_id = ? ORDER BY created_at LIMIT ? OFFSET ?",
+            "SELECT * FROM offerings WHERE meeting_id = ? ORDER BY created_at, id LIMIT ? OFFSET ?",
         )
         .bind(meeting_id)
         .bind(limit)
@@ -295,7 +297,7 @@ impl OfferingRepository for SqliteOfferingRepository {
         let end_dt = end_exclusive.and_hms_opt(0, 0, 0).unwrap().and_utc();
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
-            "SELECT * FROM offerings WHERE created_at >= ? AND created_at < ? ORDER BY created_at LIMIT ? OFFSET ?",
+            "SELECT * FROM offerings WHERE created_at >= ? AND created_at < ? ORDER BY created_at, id LIMIT ? OFFSET ?",
         )
         .bind(start_dt)
         .bind(end_dt)
@@ -444,7 +446,7 @@ impl OfferingRepository for SqliteOfferingRepository {
         if status.is_some() {
             sql.push_str(" AND status = ?");
         }
-        sql.push_str(" ORDER BY created_at LIMIT ? OFFSET ?");
+        sql.push_str(" ORDER BY created_at, id LIMIT ? OFFSET ?");
 
         let (limit, offset) = super::page_binds(limit, offset);
 
@@ -474,7 +476,7 @@ impl OfferingRepository for SqliteOfferingRepository {
         let placeholders = super::in_placeholders(statuses.len());
         let (limit, _) = super::page_binds(limit, None);
         let sql = format!(
-            "SELECT * FROM offerings WHERE status IN ({placeholders}) ORDER BY created_at DESC LIMIT ?"
+            "SELECT * FROM offerings WHERE status IN ({placeholders}) ORDER BY created_at DESC, id DESC LIMIT ?"
         );
         let mut query = sqlx::query(&sql);
         for st in statuses {

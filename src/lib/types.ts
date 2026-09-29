@@ -555,6 +555,7 @@ export interface CommunityBuilding {
   address: Address | null;
   local_authority: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface CommunityBuildingInput {

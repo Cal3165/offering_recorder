@@ -23,10 +23,18 @@ pub trait DonorRepository: Send + Sync {
     ///
     /// Implementations return [`RepoError`] on storage failure.
     async fn list_active(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Donor>>;
+    /// Optimistic-concurrency update: the write applies only when the row's
+    /// `updated_at` still equals `expected_updated_at` (plan Phase 8.1).
+    /// A stale snapshot yields [`RepoError::Conflict`]; a missing row yields
+    /// [`RepoError::NotFound`].
     /// # Errors
     ///
     /// Implementations return [`RepoError`] on storage failure.
-    async fn update(&self, donor: Donor) -> RepoResult<Donor>;
+    async fn update(
+        &self,
+        donor: Donor,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<Donor>;
     /// # Errors
     ///
     /// Implementations return [`RepoError`] on storage failure.

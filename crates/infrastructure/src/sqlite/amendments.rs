@@ -92,7 +92,7 @@ impl AmendmentRepository for SqliteAmendmentRepository {
 
     async fn list_by_offering(&self, offering_id: Uuid) -> RepoResult<Vec<Amendment>> {
         let rows =
-            sqlx::query("SELECT * FROM amendments WHERE offering_id = ? ORDER BY created_at")
+            sqlx::query("SELECT * FROM amendments WHERE offering_id = ? ORDER BY created_at, id")
                 .bind(offering_id)
                 .fetch_all(&self.pool.get())
                 .await
@@ -208,7 +208,7 @@ mod tests {
         sqlx::query("INSERT INTO users (id, username, display_name, roles, is_active, created_at, updated_at) VALUES (?, ?, ?, '[]', 1, ?, ?)")
             .bind(user).bind("recorder").bind("Recorder").bind(&now).bind(&now)
             .execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, ?, ?)")
+        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, meeting_seq, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, 1, ?, ?)")
             .bind(meeting).bind(&now).bind(&now)
             .execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO offerings (id, meeting_id, offering_number, status, created_at, updated_at) VALUES (?, ?, '1', 'Locked', ?, ?)")

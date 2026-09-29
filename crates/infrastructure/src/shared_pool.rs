@@ -50,11 +50,4 @@ impl SharedPool {
         };
         old.close().await;
     }
-
-    /// # Panics
-    ///
-    /// Panics if the pool lock is poisoned; see [`SharedPool::get`].
-    pub fn replace(&self, pool: SqlitePool) {
-        *self.inner.write().expect("pool lock poisoned") = pool;
-    }
 }

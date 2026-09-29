@@ -207,20 +207,22 @@ impl DonationRepository for SqliteDonationRepository {
     }
 
     async fn list_by_offering(&self, offering_id: Uuid) -> RepoResult<Vec<Donation>> {
-        let rows = sqlx::query("SELECT * FROM donations WHERE offering_id = ? ORDER BY created_at")
-            .bind(offering_id)
-            .fetch_all(&self.pool.get())
-            .await
-            .map_err(map_db_err)?;
+        let rows =
+            sqlx::query("SELECT * FROM donations WHERE offering_id = ? ORDER BY created_at, id")
+                .bind(offering_id)
+                .fetch_all(&self.pool.get())
+                .await
+                .map_err(map_db_err)?;
         self.attach_breakdowns(rows).await
     }
 
     async fn list_by_donor(&self, donor_id: Uuid) -> RepoResult<Vec<Donation>> {
-        let rows = sqlx::query("SELECT * FROM donations WHERE donor_id = ? ORDER BY created_at")
-            .bind(donor_id)
-            .fetch_all(&self.pool.get())
-            .await
-            .map_err(map_db_err)?;
+        let rows =
+            sqlx::query("SELECT * FROM donations WHERE donor_id = ? ORDER BY created_at, id")
+                .bind(donor_id)
+                .fetch_all(&self.pool.get())
+                .await
+                .map_err(map_db_err)?;
         self.attach_breakdowns(rows).await
     }
 
@@ -265,7 +267,7 @@ mod tests {
         let pool = connect_in_memory().await.unwrap();
         let now = Utc::now().to_rfc3339();
         let meeting = Uuid::new_v4();
-        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, ?, ?)")
+        sqlx::query("INSERT INTO meetings (id, name, day_of_week, time_of_day, is_active, meeting_seq, created_at, updated_at) VALUES (?, 'Test', 0, '10:00', 1, 1, ?, ?)")
             .bind(meeting).bind(&now).bind(&now)
             .execute(&pool)
             .await

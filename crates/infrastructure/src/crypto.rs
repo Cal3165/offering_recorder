@@ -11,7 +11,7 @@
 //! A max file size limit prevents unbounded memory allocation during decryption (B4).
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
-use argon2::Argon2;
+use argon2::{Algorithm, Argon2, Params, Version};
 use rand_core::{OsRng, RngCore};
 use std::fs;
 use std::path::Path;
@@ -36,6 +36,12 @@ const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
 /// # Errors
 ///
 /// Returns [`RepoError`] if the database operation fails or stored data is invalid.
+///
+/// # Panics
+///
+/// Never panics in practice: the pinned Argon2 parameters are compile-time
+/// constants known to be valid, so the params-construction `expect` is
+/// infallible.
 pub fn derive_key(passphrase: &str, salt: &[u8]) -> InfraResult<[u8; 32]> {
     if passphrase.trim().is_empty() {
         return Err(InfraError::Message(
@@ -48,9 +54,16 @@ pub fn derive_key(passphrase: &str, salt: &[u8]) -> InfraResult<[u8; 32]> {
         )));
     }
     let mut key = [0u8; 32];
-    Argon2::default()
-        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
-        .map_err(|e| InfraError::Message(format!("key derivation failed: {e}")))?;
+    // Pinned Argon2id parameters (plan Phase 8.2, same rationale as the
+    // password hasher): key derivation must not drift with upstream defaults,
+    // or old backups would stop decrypting after an upgrade.
+    Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(19_456, 2, 1, Some(32)).expect("pinned Argon2 params are valid"),
+    )
+    .hash_password_into(passphrase.as_bytes(), salt, &mut key)
+    .map_err(|e| InfraError::Message(format!("key derivation failed: {e}")))?;
     Ok(key)
 }
 

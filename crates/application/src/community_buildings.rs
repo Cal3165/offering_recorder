@@ -117,11 +117,15 @@ impl<'a> CommunityBuildingService<'a> {
         let current = self.buildings.get(id).await?.ok_or_else(|| {
             crate::error::AppError::NotFound("community building not found".into())
         })?;
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): the rebuilt row carries a fresh `updated_at`, so capture the
+        // loaded stamp first. Identity and creation time are preserved.
+        let expected_updated_at = current.updated_at;
         let mut building = input.build()?;
         building.id = current.id;
         building.created_at = current.created_at;
         let old = crate::audit::state_json(&current);
-        let updated = self.buildings.update(building).await?;
+        let updated = self.buildings.update(building, expected_updated_at).await?;
         self.audit
             .record(
                 actor,

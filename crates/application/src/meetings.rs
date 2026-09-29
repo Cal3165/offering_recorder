@@ -90,8 +90,11 @@ impl<'a> MeetingService<'a> {
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("meeting not found".into()))?;
         let old = crate::audit::state_json(&meeting);
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): `update_schedule` bumps `updated_at`, so capture first.
+        let expected_updated_at = meeting.updated_at;
         meeting.update_schedule(name, day_of_week, time_of_day)?;
-        let updated = self.meetings.update(meeting).await?;
+        let updated = self.meetings.update(meeting, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -124,12 +127,15 @@ impl<'a> MeetingService<'a> {
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("meeting not found".into()))?;
         let old = crate::audit::state_json(&meeting);
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): activate/deactivate bump `updated_at`, so capture first.
+        let expected_updated_at = meeting.updated_at;
         if active {
             meeting.activate();
         } else {
             meeting.deactivate();
         }
-        let updated = self.meetings.update(meeting).await?;
+        let updated = self.meetings.update(meeting, expected_updated_at).await?;
         self.audit
             .record(
                 actor,
@@ -167,10 +173,13 @@ impl<'a> MeetingService<'a> {
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("meeting not found".into()))?;
         let old = crate::audit::state_json(&meeting);
+        // Snapshot for the optimistic-concurrency check at save time (Phase
+        // 8.1): the setters bump `updated_at`, so capture first.
+        let expected_updated_at = meeting.updated_at;
         meeting.set_community_building(community_building_id);
         meeting.set_event_type(event_type);
         meeting.set_estimated_attendance(estimated_attendance);
-        let updated = self.meetings.update(meeting).await?;
+        let updated = self.meetings.update(meeting, expected_updated_at).await?;
         self.audit
             .record(
                 actor,

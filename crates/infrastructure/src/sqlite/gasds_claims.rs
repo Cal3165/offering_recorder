@@ -94,25 +94,34 @@ impl GasdsClaimRepository for SqliteGasdsClaimRepository {
     }
 
     async fn list_by_tax_year(&self, tax_year: TaxYear) -> RepoResult<Vec<GasdsClaim>> {
-        let rows = sqlx::query("SELECT * FROM gasds_claims WHERE tax_year = ? ORDER BY created_at")
-            .bind(to_json(&tax_year)?)
-            .fetch_all(&self.pool.get())
-            .await
-            .map_err(map_db_err)?;
+        let rows =
+            sqlx::query("SELECT * FROM gasds_claims WHERE tax_year = ? ORDER BY created_at, id")
+                .bind(to_json(&tax_year)?)
+                .fetch_all(&self.pool.get())
+                .await
+                .map_err(map_db_err)?;
         rows.iter().map(row_to_gasds_claim).collect()
     }
 
     async fn list(&self) -> RepoResult<Vec<GasdsClaim>> {
-        let rows = sqlx::query("SELECT * FROM gasds_claims ORDER BY created_at")
+        let rows = sqlx::query("SELECT * FROM gasds_claims ORDER BY created_at, id")
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
         rows.iter().map(row_to_gasds_claim).collect()
     }
 
-    async fn update(&self, claim: GasdsClaim) -> RepoResult<GasdsClaim> {
-        sqlx::query(
-            "UPDATE gasds_claims SET tax_year = ?, method = ?, items = ?, total_amount_pence = ?, gift_aid_claimed_pence = ?, matching_limit_pence = ?, annual_limit_pence = ?, claimable_amount_pence = ?, status = ?, prepared_by = ?, prepared_at = ?, submitted_at = ?, approved_by = ?, approved_at = ?, rejected_by = ?, rejected_at = ?, rejection_reason = ?, updated_at = ? WHERE id = ?",
+    async fn update(
+        &self,
+        claim: GasdsClaim,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<GasdsClaim> {
+        // Optimistic concurrency (plan Phase 8.1): claim transitions
+        // (prepare/submit/approve/reject) are conditional on the stamp the
+        // caller loaded, so two operators racing a transition conflict on
+        // retry instead of last-writer-wins.
+        let result = sqlx::query(
+            "UPDATE gasds_claims SET tax_year = ?, method = ?, items = ?, total_amount_pence = ?, gift_aid_claimed_pence = ?, matching_limit_pence = ?, annual_limit_pence = ?, claimable_amount_pence = ?, status = ?, prepared_by = ?, prepared_at = ?, submitted_at = ?, approved_by = ?, approved_at = ?, rejected_by = ?, rejected_at = ?, rejection_reason = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(to_json(&claim.tax_year)?)
         .bind(to_json(&claim.method)?)
@@ -133,9 +142,23 @@ impl GasdsClaimRepository for SqliteGasdsClaimRepository {
         .bind(&claim.rejection_reason)
         .bind(claim.updated_at)
         .bind(claim.id)
+        .bind(expected_updated_at)
         .execute(&self.pool.get())
         .await
         .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            let exists = sqlx::query("SELECT 1 AS one FROM gasds_claims WHERE id = ?")
+                .bind(claim.id)
+                .fetch_optional(&self.pool.get())
+                .await
+                .map_err(map_db_err)?;
+            if exists.is_some() {
+                return Err(RepoError::Conflict(
+                    "claim was modified by another operation; reload and retry".into(),
+                ));
+            }
+            return Err(RepoError::NotFound);
+        }
         Ok(claim)
     }
 
@@ -154,5 +177,83 @@ impl GasdsClaimRepository for SqliteGasdsClaimRepository {
             .await
             .map_err(map_db_err)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::connect_in_memory;
+    use offering_domain::entities::gasds_claim::{GasdsClaim, GasdsClaimItem, GasdsClaimMethod};
+    use offering_domain::money::Money;
+    use offering_domain::tax_year::TaxYear;
+
+    fn test_claim() -> GasdsClaim {
+        let tax_year = TaxYear::from_date(chrono::Utc::now().date_naive());
+        let item = GasdsClaimItem::new(
+            Uuid::new_v4(),
+            chrono::Utc::now(),
+            Money::from_pence(1000).unwrap(),
+            tax_year.clone(),
+        );
+        GasdsClaim::create(
+            tax_year,
+            GasdsClaimMethod::Nationwide,
+            vec![item],
+            Money::from_pence(1000).unwrap(),
+            Money::from_pence_unchecked(800_000),
+            Uuid::new_v4(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stale_claim_transition_conflicts_instead_of_losing_writes() {
+        // Phase 8.1: two operators racing a claim transition conflict on
+        // retry; a transition against a deleted claim is NotFound.
+        use offering_domain::entities::role::{Role, RoleSet};
+        use offering_domain::entities::user::User;
+        use offering_persistence::UserRepository;
+
+        let pool = connect_in_memory().await.unwrap();
+        let store = crate::SqliteStore::from_pool(pool);
+        let operator = store
+            .users
+            .create(User::create("op", "Operator", None, RoleSet::new(vec![Role::Admin])).unwrap())
+            .await
+            .unwrap();
+        let repo = store.gasds_claims.clone();
+        let mut claim = test_claim();
+        claim.created_by = operator.id;
+        let created = repo.create(claim).await.unwrap();
+
+        let first = repo.get(created.id).await.unwrap().unwrap();
+        let mut winner = repo.get(created.id).await.unwrap().unwrap();
+        let winner_expected = winner.updated_at;
+        winner.prepare(operator.id).unwrap();
+        repo.update(winner, winner_expected).await.unwrap();
+
+        let loser_expected = first.updated_at;
+        let mut loser = first;
+        loser.prepare(operator.id).unwrap();
+        let err = repo
+            .update(loser, loser_expected)
+            .await
+            .expect_err("stale transition must conflict");
+        assert!(
+            matches!(err, RepoError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+
+        let mut ghost = test_claim();
+        ghost.created_by = operator.id;
+        let err = repo
+            .update(ghost.clone(), ghost.updated_at)
+            .await
+            .expect_err("missing row must be NotFound");
+        assert!(
+            matches!(err, RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
     }
 }

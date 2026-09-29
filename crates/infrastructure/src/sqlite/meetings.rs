@@ -89,7 +89,7 @@ impl MeetingRepository for SqliteMeetingRepository {
     }
 
     async fn list(&self) -> RepoResult<Vec<Meeting>> {
-        let rows = sqlx::query("SELECT * FROM meetings ORDER BY day_of_week, time_of_day")
+        let rows = sqlx::query("SELECT * FROM meetings ORDER BY day_of_week, time_of_day, id")
             .fetch_all(&self.pool.get())
             .await
             .map_err(map_db_err)?;
@@ -98,7 +98,7 @@ impl MeetingRepository for SqliteMeetingRepository {
 
     async fn list_active(&self) -> RepoResult<Vec<Meeting>> {
         let rows = sqlx::query(
-            "SELECT * FROM meetings WHERE is_active = 1 ORDER BY day_of_week, time_of_day",
+            "SELECT * FROM meetings WHERE is_active = 1 ORDER BY day_of_week, time_of_day, id",
         )
         .fetch_all(&self.pool.get())
         .await
@@ -106,9 +106,15 @@ impl MeetingRepository for SqliteMeetingRepository {
         rows.iter().map(row_to_meeting).collect()
     }
 
-    async fn update(&self, meeting: Meeting) -> RepoResult<Meeting> {
-        sqlx::query(
-            "UPDATE meetings SET name = ?, day_of_week = ?, time_of_day = ?, is_active = ?, community_building_id = ?, event_type = ?, estimated_attendance = ?, updated_at = ? WHERE id = ?",
+    async fn update(
+        &self,
+        meeting: Meeting,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<Meeting> {
+        // Optimistic concurrency (plan Phase 8.1): a save based on a stale
+        // read is rejected instead of silently overwriting the newer state.
+        let result = sqlx::query(
+            "UPDATE meetings SET name = ?, day_of_week = ?, time_of_day = ?, is_active = ?, community_building_id = ?, event_type = ?, estimated_attendance = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(&meeting.name)
         .bind(meeting.day_of_week)
@@ -119,9 +125,23 @@ impl MeetingRepository for SqliteMeetingRepository {
         .bind(meeting.estimated_attendance)
         .bind(meeting.updated_at)
         .bind(meeting.id)
+        .bind(expected_updated_at)
         .execute(&self.pool.get())
         .await
         .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            let exists = sqlx::query("SELECT 1 AS one FROM meetings WHERE id = ?")
+                .bind(meeting.id)
+                .fetch_optional(&self.pool.get())
+                .await
+                .map_err(map_db_err)?;
+            if exists.is_some() {
+                return Err(RepoError::Conflict(
+                    "meeting was modified by another operation; reload and retry".into(),
+                ));
+            }
+            return Err(RepoError::NotFound);
+        }
         Ok(meeting)
     }
 
@@ -189,5 +209,48 @@ mod tests {
         // Continuation from the survivor's seq (which of the racers won is
         // timing-dependent): the next ordinal is MAX+1, never a reuse.
         assert_eq!(seqs, vec![seq_of_b, seq_of_b + 1]);
+    }
+
+    #[tokio::test]
+    async fn stale_meeting_update_conflicts_instead_of_losing_writes() {
+        // Phase 8.1: a save based on a stale read must be rejected with
+        // Conflict rather than silently overwriting the newer state; a save
+        // against a deleted row is NotFound.
+        let pool = connect_in_memory().await.unwrap();
+        let repo = SqliteMeetingRepository::new(SharedPool::new(pool));
+        let created = repo
+            .create(Meeting::create("Sunday", 0, "10:00").unwrap())
+            .await
+            .unwrap();
+
+        let first = repo.get(created.id).await.unwrap().unwrap();
+        let mut winner = repo.get(created.id).await.unwrap().unwrap();
+        let winner_expected = winner.updated_at;
+        winner
+            .update_schedule("Sunday Morning", 0, "10:30")
+            .unwrap();
+        repo.update(winner, winner_expected).await.unwrap();
+
+        let loser_expected = first.updated_at;
+        let mut loser = first;
+        loser.update_schedule("Stale Name", 0, "09:00").unwrap();
+        let err = repo
+            .update(loser, loser_expected)
+            .await
+            .expect_err("stale write must conflict");
+        assert!(
+            matches!(err, RepoError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+
+        let ghost = Meeting::create("Ghost", 1, "11:00").unwrap();
+        let err = repo
+            .update(ghost.clone(), ghost.updated_at)
+            .await
+            .expect_err("missing row must be NotFound");
+        assert!(
+            matches!(err, RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
     }
 }

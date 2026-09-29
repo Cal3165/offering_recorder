@@ -62,6 +62,14 @@ fn tax_year_bounds(year: &TaxYear) -> (NaiveDate, NaiveDate) {
 /// here — a Revoked declaration with `effective_until >= d.date` still covers
 /// the donation (review R1).
 ///
+/// `d.date` is the collection calendar date as the operator recorded it
+/// (local wall-clock), while `effective_from`/`effective_until` are stored UTC
+/// instants — so the window edges are compared in LOCAL time
+/// (`date(..., 'localtime')`, plan Phase 8.2). Comparing in UTC would shift a
+/// declaration made at 00:30 BST onto the previous UTC date and wrongly
+/// uncover an Apr-6 donation. For this single-user desktop app the database
+/// host IS the operator's machine, so `localtime` is the operator's timezone.
+///
 /// A `Single` declaration covers only its linked gift (`single_donation_id`,
 /// plan Phase 4.3): without the link check it would behave like an
 /// open-ended `MultipleDonations` declaration. `donors`/`d` are the caller
@@ -76,8 +84,8 @@ fn declaration_covers_donation_sql() -> &'static str {
     "EXISTS (
         SELECT 1 FROM gift_aid_declarations ga
         WHERE ga.donor_id = donors.id
-          AND date(ga.effective_from) <= d.date
-          AND (ga.effective_until IS NULL OR date(ga.effective_until) >= d.date)
+          AND date(ga.effective_from, 'localtime') <= d.date
+          AND (ga.effective_until IS NULL OR date(ga.effective_until, 'localtime') >= d.date)
           AND ga.donor_full_name IS NOT NULL AND ga.donor_full_name != ''
           AND ga.donor_address_line1 IS NOT NULL AND ga.donor_address_line1 != ''
           AND (

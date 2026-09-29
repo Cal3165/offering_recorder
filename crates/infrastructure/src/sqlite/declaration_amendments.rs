@@ -100,7 +100,7 @@ impl DeclarationAmendmentRepository for SqliteDeclarationAmendmentRepository {
         declaration_id: Uuid,
     ) -> RepoResult<Vec<DeclarationAmendment>> {
         let rows = sqlx::query(
-            "SELECT * FROM declaration_amendments WHERE declaration_id = ? ORDER BY created_at",
+            "SELECT * FROM declaration_amendments WHERE declaration_id = ? ORDER BY created_at, id",
         )
         .bind(declaration_id)
         .fetch_all(&self.pool.get())
@@ -111,7 +111,7 @@ impl DeclarationAmendmentRepository for SqliteDeclarationAmendmentRepository {
 
     async fn list_by_donor(&self, donor_id: Uuid) -> RepoResult<Vec<DeclarationAmendment>> {
         let rows = sqlx::query(
-            "SELECT * FROM declaration_amendments WHERE donor_id = ? ORDER BY created_at DESC",
+            "SELECT * FROM declaration_amendments WHERE donor_id = ? ORDER BY created_at DESC, id DESC",
         )
         .bind(donor_id)
         .fetch_all(&self.pool.get())

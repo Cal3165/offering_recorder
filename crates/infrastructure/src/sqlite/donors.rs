@@ -118,7 +118,7 @@ impl DonorRepository for SqliteDonorRepository {
     async fn list(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Donor>> {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows =
-            sqlx::query("SELECT * FROM donors ORDER BY last_name, first_name LIMIT ? OFFSET ?")
+            sqlx::query("SELECT * FROM donors ORDER BY last_name, first_name, id LIMIT ? OFFSET ?")
                 .bind(limit)
                 .bind(offset)
                 .fetch_all(&self.pool.get())
@@ -130,7 +130,7 @@ impl DonorRepository for SqliteDonorRepository {
     async fn list_active(&self, limit: Option<u32>, offset: Option<u32>) -> RepoResult<Vec<Donor>> {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = sqlx::query(
-            "SELECT * FROM donors WHERE is_active = 1 ORDER BY last_name, first_name LIMIT ? OFFSET ?",
+            "SELECT * FROM donors WHERE is_active = 1 ORDER BY last_name, first_name, id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset)
@@ -140,9 +140,15 @@ impl DonorRepository for SqliteDonorRepository {
         rows.iter().map(row_to_donor).collect()
     }
 
-    async fn update(&self, donor: Donor) -> RepoResult<Donor> {
-        sqlx::query(
-            "UPDATE donors SET first_name = ?, last_name = ?, preferred_name = ?, donor_type = ?, address_line1 = ?, address_line2 = ?, address_line3 = ?, postcode = ?, email = ?, phone = ?, lawful_basis = ?, privacy_notice_version = ?, is_active = ?, updated_at = ? WHERE id = ?",
+    async fn update(
+        &self,
+        donor: Donor,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> RepoResult<Donor> {
+        // Optimistic concurrency (plan Phase 8.1): a save based on a stale
+        // read is rejected instead of silently overwriting the newer state.
+        let result = sqlx::query(
+            "UPDATE donors SET first_name = ?, last_name = ?, preferred_name = ?, donor_type = ?, address_line1 = ?, address_line2 = ?, address_line3 = ?, postcode = ?, email = ?, phone = ?, lawful_basis = ?, privacy_notice_version = ?, is_active = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(&donor.first_name)
         .bind(&donor.last_name)
@@ -159,9 +165,23 @@ impl DonorRepository for SqliteDonorRepository {
         .bind(donor.is_active)
         .bind(donor.updated_at)
         .bind(donor.id)
+        .bind(expected_updated_at)
         .execute(&self.pool.get())
         .await
         .map_err(map_db_err)?;
+        if result.rows_affected() == 0 {
+            let exists = sqlx::query("SELECT 1 AS one FROM donors WHERE id = ?")
+                .bind(donor.id)
+                .fetch_optional(&self.pool.get())
+                .await
+                .map_err(map_db_err)?;
+            if exists.is_some() {
+                return Err(RepoError::Conflict(
+                    "donor was modified by another operation; reload and retry".into(),
+                ));
+            }
+            return Err(RepoError::NotFound);
+        }
         Ok(donor)
     }
 
@@ -192,7 +212,7 @@ impl DonorRepository for SqliteDonorRepository {
         let (limit, offset) = super::page_binds(limit, offset);
         let rows = if include_inactive {
             sqlx::query(
-                "SELECT * FROM donors WHERE first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\\' ORDER BY last_name, first_name LIMIT ? OFFSET ?",
+                "SELECT * FROM donors WHERE first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\\' ORDER BY last_name, first_name, id LIMIT ? OFFSET ?",
             )
             .bind(&like)
             .bind(&like)
@@ -210,7 +230,7 @@ impl DonorRepository for SqliteDonorRepository {
             .map_err(map_db_err)?
         } else {
             sqlx::query(
-                "SELECT * FROM donors WHERE is_active = 1 AND (first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\\') ORDER BY last_name, first_name LIMIT ? OFFSET ?",
+                "SELECT * FROM donors WHERE is_active = 1 AND (first_name LIKE ? OR last_name LIKE ? OR preferred_name LIKE ? OR email LIKE ? OR phone LIKE ? OR address_line1 LIKE ? OR address_line2 LIKE ? OR address_line3 LIKE ? OR postcode LIKE ? ESCAPE '\\') ORDER BY last_name, first_name, id LIMIT ? OFFSET ?",
             )
             .bind(&like)
             .bind(&like)
@@ -243,6 +263,7 @@ impl DonorRepository for SqliteDonorRepository {
 mod tests {
     use super::*;
     use crate::db::connect_in_memory;
+    use offering_domain::entities::donor::Donor;
 
     #[tokio::test]
     async fn list_without_limit_returns_all_rows() {
@@ -274,5 +295,48 @@ mod tests {
 
         let paged = repo.list(Some(10), None).await.unwrap();
         assert_eq!(paged.len(), 10, "explicit limits must still be honored");
+    }
+
+    #[tokio::test]
+    async fn stale_donor_update_conflicts_instead_of_losing_writes() {
+        // Phase 8.1: a save based on a stale read must be rejected with
+        // Conflict rather than silently overwriting the newer state; a save
+        // against a deleted row is NotFound.
+        let pool = connect_in_memory().await.unwrap();
+        let repo = SqliteDonorRepository::new(SharedPool::new(pool));
+        let created = repo
+            .create(Donor::create("Jane", "Doe", None, None, None, None).unwrap())
+            .await
+            .unwrap();
+
+        let first = repo.get(created.id).await.unwrap().unwrap();
+        let mut winner = repo.get(created.id).await.unwrap().unwrap();
+        let winner_expected = winner.updated_at;
+        winner.first_name = "Janet".to_string();
+        winner.updated_at = chrono::Utc::now();
+        repo.update(winner, winner_expected).await.unwrap();
+
+        let loser_expected = first.updated_at;
+        let mut loser = first;
+        loser.first_name = "Stale".to_string();
+        loser.updated_at = chrono::Utc::now();
+        let err = repo
+            .update(loser, loser_expected)
+            .await
+            .expect_err("stale write must conflict");
+        assert!(
+            matches!(err, RepoError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+
+        let ghost = Donor::create("Ghost", "Row", None, None, None, None).unwrap();
+        let err = repo
+            .update(ghost.clone(), ghost.updated_at)
+            .await
+            .expect_err("missing row must be NotFound");
+        assert!(
+            matches!(err, RepoError::NotFound),
+            "expected NotFound, got {err:?}"
+        );
     }
 }
