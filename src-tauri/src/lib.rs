@@ -10,10 +10,10 @@ use tauri::Manager;
 ///
 /// # Panics
 ///
-/// Panics (aborting the process under the release profile) if the app-data
-/// directory, logging, database, or Tauri runtime cannot be initialized.
-/// Startup failure is fatal by design: there is no safe degraded mode without
-/// the database.
+/// Panics (unwinding under the release profile, `panic = "unwind"`) if the
+/// app-data directory, logging, database, or Tauri runtime cannot be
+/// initialized. Startup failure is fatal by design: there is no safe degraded
+/// mode without the database.
 #[allow(clippy::too_many_lines)]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -120,6 +120,7 @@ pub fn run() {
             commands::create_donor,
             commands::update_donor,
             commands::set_donor_active,
+            commands::redact_donor_pii,
             commands::create_gift_aid_declaration,
             commands::end_declaration,
             commands::revoke_declaration,
@@ -142,6 +143,7 @@ pub fn run() {
             commands::bookkeeping_report,
             commands::donor_report,
             commands::gift_aid_report,
+            commands::gift_aid_readiness,
             commands::gasds_report,
             commands::gdpr_report,
             commands::deposit_report,

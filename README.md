@@ -90,13 +90,21 @@ failures, details go to the log.
 - Audit events store PII snapshots indefinitely with the business records;
   retention is 7 years minimum, report-only — nothing auto-deletes. Review
   before any disposal; do not delete rows under HMRC enquiry/dispute.
+  Justification and the erasure path are documented in the DPIA note at the
+  top of `crates/application/src/audit.rs`.
+- Erasure (Article 17) is served by Admin-only PII redaction
+  (`redact_donor_pii`): identifying fields are erased while the row, donation
+  links and audit history are retained. Redaction is refused while any of the
+  donor's donations or declarations sits inside the 7-year HMRC window.
+- CSV imports take one explicit lawful basis per batch (or "Not recorded",
+  the default) and flag imported rows for per-donor review.
 
 ## Release profile
 
-`panic = "abort"` is intentional: this is a single-process desktop app where
-a half-completed operation is worse than a restart (state is SQLite +
-write-ahead, services reload cleanly). Business writes precede their audit
-writes by design (`AuditLog::record` docs in `crates/application/src/audit.rs`):
+`panic = "unwind"` is intentional (see `[profile.release]` in the workspace
+`Cargo.toml`): a panic in a Tauri command/task unwinds to a window error
+instead of killing the whole desktop process. Business writes precede their
+audit writes by design (`AuditLog::record` docs in `crates/application/src/audit.rs`):
 on audit failure the caller gets an error for an already-committed write —
 surface it, do not blind-retry.
 

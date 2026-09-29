@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::commands::parse_uuid;
 use crate::commands::AppState;
-use crate::commands::{check_char_len, MAX_SEARCH_QUERY_CHARS};
+use crate::commands::{check_char_len, MAX_REASON_CHARS, MAX_SEARCH_QUERY_CHARS};
 use offering_application::donors::CreateDonorInput;
 use offering_application::error::AppErrorDto;
 use offering_domain::entities::donor::Donor;
@@ -124,6 +124,28 @@ pub async fn set_donor_active(
         .services
         .donors
         .set_active(&actor, id, active)
+        .await
+        .map_err(AppErrorDto::from)
+}
+
+/// Erase a donor's identifying data (plan Phase 6.3, UK GDPR Art. 17).
+/// Admin-only; refused while HMRC retention duty applies.
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
+#[tauri::command]
+pub async fn redact_donor_pii(
+    state: State<'_, AppState>,
+    donor_id: String,
+    reason: String,
+) -> Result<Donor, AppErrorDto> {
+    let actor = with_actor!(state);
+    check_char_len(&reason, MAX_REASON_CHARS, "reason").map_err(AppErrorDto::from)?;
+    let id = parse_uuid(&donor_id)?;
+    state
+        .services
+        .donors
+        .redact_donor_pii(&actor, id, &reason)
         .await
         .map_err(AppErrorDto::from)
 }

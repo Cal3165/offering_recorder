@@ -367,6 +367,24 @@ impl<'a> GasdsClaimService<'a> {
         readiness.matching_limit = matching;
         readiness.claimable_amount = claimable;
 
+        // Past/near-deadline surfacing (plan Phase 6.1, mirroring the Gift
+        // Aid readiness): the deadlines above are display-only until
+        // `prepare_claim` rejects an expired year, so say so here while the
+        // claim can still be made in time.
+        let today = chrono::Utc::now().date_naive();
+        let gasds_days = tax_year.days_until_gasds_deadline(today);
+        if gasds_days < 0 {
+            readiness.warnings.push(format!(
+                "tax year {tax_year} is past the GASDS claim deadline ({}); a claim can no longer be prepared",
+                tax_year.gasds_claim_deadline()
+            ));
+        } else if gasds_days <= offering_domain::tax_year::TaxYear::CLAIM_DEADLINE_WARNING_DAYS {
+            readiness.warnings.push(format!(
+                "{gasds_days} day(s) left to claim GASDS for tax year {tax_year} (deadline {})",
+                tax_year.gasds_claim_deadline()
+            ));
+        }
+
         // HMRC requires donor name and address on a MultipleDonations
         // declaration; surface declarations that cannot support a claim
         // (review O6).

@@ -3,12 +3,15 @@ use offering_domain::entities::audit_event::AuditAction;
 use offering_domain::entities::donor::{Donor, DonorType, LawfulBasis};
 use offering_domain::entities::user::User;
 use offering_domain::postcode::Postcode;
-use offering_persistence::{AuditRepository, DonorRepository};
+use offering_domain::retention::retention_deadline;
+use offering_persistence::{
+    AuditRepository, DonationRepository, DonorRepository, GiftAidRepository,
+};
 use uuid::Uuid;
 
 use crate::audit::AuditLog;
 use crate::error::{unauthorized, AppResult};
-use crate::permissions::can_manage_donors;
+use crate::permissions::{can_manage_donors, can_redact_donor_pii};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CreateDonorInput {
@@ -59,13 +62,22 @@ impl CreateDonorInput {
 #[derive(Clone)]
 pub struct DonorService<'a> {
     donors: &'a dyn DonorRepository,
+    donations: &'a dyn DonationRepository,
+    gift_aid: &'a dyn GiftAidRepository,
     audit: AuditLog<'a>,
 }
 
 impl<'a> DonorService<'a> {
-    pub fn new(donors: &'a dyn DonorRepository, audit_repo: &'a dyn AuditRepository) -> Self {
+    pub fn new(
+        donors: &'a dyn DonorRepository,
+        donations: &'a dyn DonationRepository,
+        gift_aid: &'a dyn GiftAidRepository,
+        audit_repo: &'a dyn AuditRepository,
+    ) -> Self {
         DonorService {
             donors,
+            donations,
+            gift_aid,
             audit: AuditLog::new(audit_repo),
         }
     }
@@ -207,6 +219,34 @@ impl<'a> DonorService<'a> {
         input: CreateDonorInput,
         confirm_no_duplicate: bool,
     ) -> AppResult<Donor> {
+        self.create_donor_inner(actor, input, confirm_no_duplicate, true)
+            .await
+    }
+
+    /// Migration entry point (plan Phase 6.3): imported rows predate basis
+    /// recording, so `lawful_basis: None` ("Not recorded") is accepted here
+    /// and flagged for per-donor completion. Interactive creation still
+    /// requires a basis via [`create_donor`].
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn create_donor_migrated(
+        &self,
+        actor: &User,
+        input: CreateDonorInput,
+        confirm_no_duplicate: bool,
+    ) -> AppResult<Donor> {
+        self.create_donor_inner(actor, input, confirm_no_duplicate, false)
+            .await
+    }
+
+    async fn create_donor_inner(
+        &self,
+        actor: &User,
+        input: CreateDonorInput,
+        confirm_no_duplicate: bool,
+        require_basis: bool,
+    ) -> AppResult<Donor> {
         if !can_manage_donors(actor) {
             return Err(unauthorized("manage donors"));
         }
@@ -224,11 +264,18 @@ impl<'a> DonorService<'a> {
             }
         }
         let address = input.to_address()?;
-        let basis = input.lawful_basis.ok_or_else(|| {
-            crate::error::AppError::Validation(
-                "record the UK GDPR lawful basis for holding this donor's data".into(),
-            )
-        })?;
+        // Interactive creation must record the Article 6 basis up front;
+        // migrated rows may carry "Not recorded" (`None`) instead, surfaced
+        // in the UI for completion (plan Phase 6.3).
+        let basis = match (input.lawful_basis, require_basis) {
+            (Some(basis), _) => Some(basis),
+            (None, true) => {
+                return Err(crate::error::AppError::Validation(
+                    "record the UK GDPR lawful basis for holding this donor's data".into(),
+                ));
+            }
+            (None, false) => None,
+        };
         if let Some(v) = &input.privacy_notice_version {
             if v.trim().is_empty() {
                 return Err(crate::error::AppError::Validation(
@@ -245,7 +292,9 @@ impl<'a> DonorService<'a> {
             input.phone.as_deref(),
         )?;
         donor.donor_type = input.donor_type;
-        donor.set_lawful_basis(basis, input.privacy_notice_version.clone())?;
+        if let Some(basis) = basis {
+            donor.set_lawful_basis(basis, input.privacy_notice_version.clone())?;
+        }
         let donor = self.donors.create(donor).await?;
         // Phase 5.5: the audit trail records THAT a donor was created (plus
         // non-identifying metadata), never a second copy of the PII itself.
@@ -257,7 +306,13 @@ impl<'a> DonorService<'a> {
                 Some(donor.id),
                 None,
                 Some(crate::audit::donor_audit_snapshot(&donor)),
-                Some("donor created".into()),
+                Some(if donor.lawful_basis.is_some() {
+                    "donor created".into()
+                } else {
+                    // Plan Phase 6.3: an unrecorded basis must be visible so
+                    // it gets completed, never silently treated as consent.
+                    "donor created with lawful basis NOT RECORDED; complete per donor".into()
+                }),
             )
             .await?;
         Ok(donor)
@@ -405,6 +460,103 @@ impl<'a> DonorService<'a> {
                 Some(old_snapshot),
                 Some(crate::audit::donor_audit_snapshot(&updated)),
                 Some(format!("set active = {active}")),
+            )
+            .await?;
+        Ok(updated)
+    }
+
+    /// Erase a donor's identifying data on request (plan Phase 6.3, UK GDPR
+    /// Art. 17): names, address, email and phone are replaced with
+    /// non-identifying placeholders and the donor is deactivated. The row
+    /// itself is RETAINED (donations keep their `donor_id` link and the audit
+    /// trail keeps its 7-year history — see the DPIA note in [`crate::audit`]);
+    /// this is redaction, not deletion.
+    ///
+    /// The HMRC record-keeping duty overrides erasure: when any of the
+    /// donor's donations or declarations is still inside the 7-year retention
+    /// window, or an active declaration exists, redaction is refused with
+    /// `Conflict` naming the blocking records. Re-run once the window closes.
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn redact_donor_pii(
+        &self,
+        actor: &User,
+        donor_id: Uuid,
+        reason: &str,
+    ) -> AppResult<Donor> {
+        if !can_redact_donor_pii(actor) {
+            return Err(unauthorized("redact donor data"));
+        }
+        if reason.trim().is_empty() {
+            return Err(crate::error::AppError::Validation(
+                "a reason is required to redact donor data".into(),
+            ));
+        }
+        let mut donor = self
+            .donors
+            .get(donor_id)
+            .await?
+            .ok_or_else(|| crate::error::AppError::NotFound("donor not found".into()))?;
+        let today = chrono::Utc::now().date_naive();
+
+        let donations = self.donations.list_by_donor(donor_id).await?;
+        let blocking_donations = donations
+            .iter()
+            .filter(|d| retention_deadline(d.date) >= today)
+            .count();
+        if blocking_donations > 0 {
+            return Err(crate::error::AppError::Conflict(format!(
+                "{blocking_donations} donation(s) for this donor are still within the 7-year HMRC retention window; redaction is refused until the window closes"
+            )));
+        }
+        let declarations = self.gift_aid.list_by_donor(donor_id, None, None).await?;
+        if declarations
+            .iter()
+            .any(|d| d.status == offering_domain::entities::gift_aid::DeclarationStatus::Active)
+        {
+            return Err(crate::error::AppError::Conflict(
+                "this donor has an active Gift Aid declaration; end it first, then redact once no declaration is within the 7-year window".into(),
+            ));
+        }
+        let blocking_declarations = declarations
+            .iter()
+            .filter(|d| {
+                let anchor = d
+                    .received_at
+                    .map_or(d.effective_from, |received| received.min(d.effective_from));
+                retention_deadline(anchor.date_naive()) >= today
+            })
+            .count();
+        if blocking_declarations > 0 {
+            return Err(crate::error::AppError::Conflict(format!(
+                "{blocking_declarations} declaration(s) for this donor are still within the 7-year HMRC retention window; redaction is refused until the window closes"
+            )));
+        }
+
+        let old_snapshot = crate::audit::donor_audit_snapshot(&donor);
+        donor.first_name = "Redacted".to_string();
+        donor.last_name = format!("donor-{}", &donor.id.to_string()[..8]);
+        donor.preferred_name = None;
+        donor.address = None;
+        donor.email = None;
+        donor.phone = None;
+        donor.deactivate();
+        // The lawful-basis history is kept: it records WHY data was held and
+        // is itself part of the accountability trail, not identifying data.
+        let updated = self.donors.update(donor).await?;
+        self.audit
+            .record(
+                actor,
+                AuditAction::DonorChanged,
+                "Donor",
+                Some(updated.id),
+                Some(old_snapshot),
+                Some(crate::audit::donor_audit_snapshot(&updated)),
+                Some(format!(
+                    "donor PII redacted by {} for reason: {reason} (HMRC duty check passed; row retained)",
+                    actor.display_name
+                )),
             )
             .await?;
         Ok(updated)

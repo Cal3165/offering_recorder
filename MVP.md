@@ -30,8 +30,7 @@
 - Local authentication
 - SQLite storage
 - Offline operation
-- Automatic local backup
-- Manual backup / restore
+- Manual backup / restore (overdue nudge, no scheduler; no automatic backup)
 - Seven-year retention (visible, no auto-deletion)
 - Access-data migration where possible
 

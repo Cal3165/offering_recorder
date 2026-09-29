@@ -4,11 +4,13 @@ use offering_domain::entities::amendment::{Amendment, OfferingReconstruction};
 use offering_domain::entities::cash_denomination::CashTotal;
 use offering_domain::entities::donation::{Donation, DonationClassification};
 use offering_domain::entities::offering::{Offering, OfferingStatus};
+use offering_domain::entities::role::Role;
 use offering_domain::entities::user::User;
 use offering_domain::gasds::{GasdsCalculator, GasdsConfig, GasdsResult};
 use offering_domain::money::Money;
 use offering_domain::offering_number::OfferingNumber;
 use offering_domain::payment_method::PaymentMethod;
+use offering_domain::signature::SigningPolicy;
 use offering_persistence::{
     AmendmentRepository, AuditRepository, GasdsClaimRepository, GiftAidRepository,
     MeetingRepository, OfferingRepository,
@@ -77,6 +79,7 @@ pub struct OfferingService<'a> {
     gift_aid: &'a dyn GiftAidRepository,
     amendments: &'a dyn AmendmentRepository,
     gasds_claims: &'a dyn GasdsClaimRepository,
+    signing_policy: SigningPolicy,
     audit: AuditLog<'a>,
 }
 
@@ -96,8 +99,18 @@ impl<'a> OfferingService<'a> {
             gift_aid,
             amendments,
             gasds_claims,
+            signing_policy: SigningPolicy::default(),
             audit: AuditLog::new(audit_repo),
         }
+    }
+
+    /// Override the dual-control guest policy (plan Phase 6.2). The default
+    /// rejects single-operator guest locks; a parish operating single-handed
+    /// may opt in explicitly — record why alongside the call site.
+    #[must_use]
+    pub fn with_signing_policy(mut self, policy: SigningPolicy) -> Self {
+        self.signing_policy = policy;
+        self
     }
 
     /// # Errors
@@ -460,6 +473,14 @@ impl<'a> OfferingService<'a> {
         }
     }
 
+    /// Whether `actor` may sign off a single-operator pair (plan Phase 6.2):
+    /// Admins always may; Trustees may as the oversight role (a user holding
+    /// Trustee alongside a signing role exercises this at the count table).
+    /// Every exercised override is audited by the caller — never silent.
+    fn can_override_single_operator(actor: &User) -> bool {
+        actor.is_admin() || actor.roles.has(&Role::Trustee)
+    }
+
     /// Segregation-of-duties guard (plan Phases 1.3 + 6.2): the checker half
     /// must come from a different operator id than the counter half. This
     /// subsumes the dual-guest rule — both halves as guests of the same
@@ -469,24 +490,32 @@ impl<'a> OfferingService<'a> {
     ///
     /// Different operator ids (including two different operators signing as
     /// guests) pass. A nil operator id (legacy guest rows predating
-    /// operator-attributed signatures) cannot be attributed, so it passes;
-    /// current signatures always carry an id via `guest_for`. An Admin may
-    /// explicitly override; the override is audited with the lock.
+    /// operator-attributed signatures) cannot be attributed, so it passes.
+    /// Returns whether a trustee/Admin override was exercised, so the caller
+    /// can record the sign-off in the audit event.
+    ///
+    /// When [`SigningPolicy::allow_single_operator_guests`] is enabled the
+    /// pair passes without an override (the parish opted out of dual control
+    /// explicitly); otherwise an Admin or Trustee override is required and
+    /// reported back for audit.
     fn reject_same_user_double_sign(
+        &self,
         actor: &User,
         counter: &offering_domain::signature::Signature,
         checker: &offering_domain::signature::Signature,
-    ) -> AppResult<()> {
-        if offering_domain::signature::SAME_OPERATOR_DUAL_GUEST_FORBIDDEN
-            && !counter.user_id.is_nil()
-            && counter.user_id == checker.user_id
-            && !actor.is_admin()
-        {
-            return Err(crate::error::AppError::Conflict(
-                "counter and checker must be different people; a second person must countersign (Admin override only)".into(),
-            ));
+    ) -> AppResult<bool> {
+        if !SigningPolicy::is_single_operator_pair(counter, checker) {
+            return Ok(false);
         }
-        Ok(())
+        if self.signing_policy.allow_single_operator_guests {
+            return Ok(false);
+        }
+        if Self::can_override_single_operator(actor) {
+            return Ok(true);
+        }
+        Err(crate::error::AppError::Conflict(
+            "counter and checker must be different people; a second person must countersign (Admin or Trustee override only)".into(),
+        ))
     }
 
     /// # Errors
@@ -564,9 +593,11 @@ impl<'a> OfferingService<'a> {
             )));
         }
         let checker_sig = Self::signature_for(actor, guest_name);
-        if let Some(counter_sig) = offering.counter_signature().as_ref() {
-            Self::reject_same_user_double_sign(actor, counter_sig, &checker_sig)?;
-        }
+        let overrode = if let Some(counter_sig) = offering.counter_signature().as_ref() {
+            self.reject_same_user_double_sign(actor, counter_sig, &checker_sig)?
+        } else {
+            false
+        };
         offering.checker_sign(checker_sig)?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
@@ -577,7 +608,14 @@ impl<'a> OfferingService<'a> {
                 Some(updated.id()),
                 None,
                 crate::audit::state_json(&updated),
-                Some("checker signed".into()),
+                Some(if overrode {
+                    format!(
+                        "checker signed with single-operator override by {} (Admin/Trustee sign-off recorded)",
+                        actor.display_name
+                    )
+                } else {
+                    "checker signed".into()
+                }),
             )
             .await?;
         Ok(updated)
@@ -672,13 +710,16 @@ impl<'a> OfferingService<'a> {
         }
         // Lock-time recheck: catches a same-operator pair that predates (or
         // bypassed) the checker-sign guard, including same-user non-guest
-        // double-signs (plan Phase 1.3).
-        if let (Some(counter_sig), Some(checker_sig)) = (
+        // double-signs (plan Phase 1.3). An exercised override is recorded
+        // in the lock's audit event (plan Phase 6.2).
+        let overrode = if let (Some(counter_sig), Some(checker_sig)) = (
             offering.counter_signature().as_ref(),
             offering.checker_signature().as_ref(),
         ) {
-            Self::reject_same_user_double_sign(actor, counter_sig, checker_sig)?;
-        }
+            self.reject_same_user_double_sign(actor, counter_sig, checker_sig)?
+        } else {
+            false
+        };
         offering.lock()?;
         let updated = self.offerings.update(offering, expected_updated_at).await?;
         self.audit
@@ -689,7 +730,14 @@ impl<'a> OfferingService<'a> {
                 Some(updated.id()),
                 None,
                 crate::audit::state_json(&updated),
-                Some("offering locked".into()),
+                Some(if overrode {
+                    format!(
+                        "offering locked with single-operator override by {} (Admin/Trustee sign-off recorded)",
+                        actor.display_name
+                    )
+                } else {
+                    "offering locked".into()
+                }),
             )
             .await?;
         Ok(updated)

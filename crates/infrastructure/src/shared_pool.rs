@@ -22,8 +22,10 @@ impl SharedPool {
     /// # Panics
     ///
     /// Panics if the pool lock is poisoned (a prior holder panicked while
-    /// holding it). Poisoning is fatal by design under the `panic = "abort"`
-    /// release profile; the process cannot safely continue with a suspect pool.
+    /// holding it). Poisoning is fatal by design: under the release profile
+    /// (`panic = "unwind"`, see root `Cargo.toml`) the panic unwinds through
+    /// the Tauri command boundary and surfaces as a window error, and the
+    /// process cannot safely continue with a suspect pool.
     #[must_use]
     pub fn get(&self) -> SqlitePool {
         self.inner.read().expect("pool lock poisoned").clone()

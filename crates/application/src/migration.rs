@@ -1,3 +1,4 @@
+use offering_domain::entities::donor::LawfulBasis;
 use offering_domain::entities::user::User;
 
 use crate::donors::{CreateDonorInput, DonorService};
@@ -25,9 +26,10 @@ pub struct CsvImportSummary {
     pub duplicates: usize,
     pub errors: usize,
     pub rows: Vec<CsvImportRow>,
-    /// Transparency note (plan Phase 5.2): migrated donors predate basis
-    /// recording, so their lawful basis is recorded as Legitimate interest
-    /// and MUST be reviewed per donor. The UI surfaces this note.
+    /// Transparency note (plan Phases 5.2/6.3): the operator chooses ONE
+    /// lawful basis for the whole batch (or explicitly "Not recorded"); the
+    /// note records that choice and flags per-donor review. The UI surfaces
+    /// this note.
     pub basis_note: String,
 }
 
@@ -46,10 +48,20 @@ impl<'a> MigrationService<'a> {
     /// first-name and last-name columns (aliases such as "Forename"/"Surname"
     /// are recognised). Rows whose first/last name matches an existing donor
     /// are skipped as duplicates; invalid rows are reported per-row.
+    ///
+    /// `lawful_basis` is the operator's per-batch basis choice (plan Phase
+    /// 6.3): one basis for the whole batch, passed explicitly — there is no
+    /// silent default. `None` means "Not recorded": the rows import with no
+    /// basis and MUST be completed per donor (the summary note says so).
     /// # Errors
     ///
     /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
-    pub async fn import_donors_csv(&self, actor: &User, csv: &str) -> AppResult<CsvImportSummary> {
+    pub async fn import_donors_csv(
+        &self,
+        actor: &User,
+        csv: &str,
+        lawful_basis: Option<LawfulBasis>,
+    ) -> AppResult<CsvImportSummary> {
         if !can_manage_migration(actor) {
             return Err(unauthorized("manage migration"));
         }
@@ -68,10 +80,10 @@ impl<'a> MigrationService<'a> {
                 continue;
             }
             let row_no = i + 1;
-            match build_input(raw, &map) {
+            match build_input(raw, &map, lawful_basis) {
                 Ok(input) => {
                     let name = format!("{} {}", input.first_name, input.last_name);
-                    match self.donors.create_donor(actor, input, false).await {
+                    match self.donors.create_donor_migrated(actor, input, false).await {
                         Ok(d) => {
                             summary.created += 1;
                             summary.rows.push(CsvImportRow {
@@ -113,10 +125,16 @@ impl<'a> MigrationService<'a> {
             }
         }
         if summary.created > 0 {
-            summary.basis_note = format!(
-                "{} imported donor(s) had their lawful basis recorded as Legitimate interest because the source data predates basis recording — review each donor's basis and privacy notice.",
-                summary.created
-            );
+            summary.basis_note = match lawful_basis {
+                Some(basis) => format!(
+                    "{} imported donor(s) had their lawful basis recorded as {basis} per the batch choice — review each donor's basis and privacy notice.",
+                    summary.created
+                ),
+                None => format!(
+                    "{} imported donor(s) have NO lawful basis recorded — complete each donor's basis and privacy notice before using their data.",
+                    summary.created
+                ),
+            };
         }
         Ok(summary)
     }
@@ -305,7 +323,11 @@ fn opt_cell(raw: &[String], idx: Option<usize>) -> Option<String> {
     }
 }
 
-fn build_input(raw: &[String], map: &ColumnMap) -> Result<CreateDonorInput, String> {
+fn build_input(
+    raw: &[String],
+    map: &ColumnMap,
+    lawful_basis: Option<LawfulBasis>,
+) -> Result<CreateDonorInput, String> {
     let first = cell(raw, map.first).trim().to_string();
     let last = cell(raw, map.last).trim().to_string();
     if first.is_empty() || last.is_empty() {
@@ -322,10 +344,9 @@ fn build_input(raw: &[String], map: &ColumnMap) -> Result<CreateDonorInput, Stri
         postcode: opt_cell(raw, map.postcode),
         email: opt_cell(raw, map.email),
         phone: opt_cell(raw, map.phone),
-        // Migrated donors predate basis recording: record Legitimate interest
-        // explicitly (it IS recorded, not silent) and flag it for per-donor
-        // review via the summary basis_note (plan Phase 5.2).
-        lawful_basis: Some(offering_domain::entities::donor::LawfulBasis::LegitimateInterest),
+        // Plan Phase 6.3: the batch basis chosen by the operator (or
+        // "Not recorded" when None) — never a silent Legitimate interest.
+        lawful_basis,
         privacy_notice_version: None,
     })
 }
@@ -399,10 +420,13 @@ mod tests {
             preferred: Some(2),
             ..Default::default()
         };
-        assert!(build_input(&["a".into(), String::new()], &map).is_err());
-        let input = build_input(&["A".into(), "B".into(), "Pref".into()], &map).unwrap();
+        assert!(build_input(&["a".into(), String::new()], &map, None).is_err());
+        let input = build_input(&["A".into(), "B".into(), "Pref".into()], &map, None).unwrap();
         assert_eq!(input.first_name, "A");
         assert_eq!(input.preferred_name.as_deref(), Some("Pref"));
+        // Plan Phase 6.3: an unchosen basis stays "Not recorded", never a
+        // silent default.
+        assert_eq!(input.lawful_basis, None);
     }
 
     #[test]
@@ -413,7 +437,20 @@ mod tests {
             email: Some(2),
             ..Default::default()
         };
-        let input = build_input(&["A".into(), "B".into(), String::new()], &map).unwrap();
+        let input = build_input(&["A".into(), "B".into(), String::new()], &map, None).unwrap();
         assert_eq!(input.email, None);
+    }
+
+    #[test]
+    fn build_input_carries_batch_basis_choice() {
+        // Plan Phase 6.3: the operator's per-batch choice lands on every row.
+        let map = ColumnMap {
+            first: Some(0),
+            last: Some(1),
+            ..Default::default()
+        };
+        let input =
+            build_input(&["A".into(), "B".into()], &map, Some(LawfulBasis::Consent)).unwrap();
+        assert_eq!(input.lawful_basis, Some(LawfulBasis::Consent));
     }
 }

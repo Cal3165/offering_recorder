@@ -29,6 +29,7 @@ import type {
   GasdsResult,
   GdprReport,
   GiftAidDeclaration,
+  GiftAidReadiness,
   GiftAidReportEntry,
   Meeting,
   MeetingEventType,
@@ -218,6 +219,8 @@ export const updateDonor = (donor_id: string, input: CreateDonorInput) =>
   run<Donor>("update_donor", { donor_id: donor_id, input });
 export const setDonorActive = (donor_id: string, active: boolean) =>
   run<Donor>("set_donor_active", { donor_id: donor_id, active });
+export const redactDonorPii = (donor_id: string, reason: string) =>
+  run<Donor>("redact_donor_pii", { donor_id: donor_id, reason });
 export const getDonor = (donor_id: string) =>
   run<Donor | null>("get_donor", { donor_id: donor_id });
 
@@ -303,6 +306,8 @@ export const donorReport = (start: string, end: string) =>
   run<DonorReportEntry[]>("donor_report", { start, end });
 export const giftAidReport = (tax_year: number) =>
   run<GiftAidReportEntry[]>("gift_aid_report", { tax_year: tax_year });
+export const giftAidReadiness = (tax_year: number) =>
+  run<GiftAidReadiness>("gift_aid_readiness", { tax_year: tax_year });
 export const gasdsReport = (start: string, end: string) =>
   run<GasdsReportEntry[]>("gasds_report", { start, end });
 export const depositReport = (start: string, end: string) =>
@@ -350,8 +355,8 @@ export const recentAuditEvents = (limit: number, offset?: number) =>
   run<AuditEvent[]>("recent_audit_events", { limit, offset: offset ?? 0 });
 
 // migration
-export const importDonorsCsv = (csv: string) =>
-  run<CsvImportSummary>("import_donors_csv", { csv });
+export const importDonorsCsv = (csv: string, lawful_basis?: string | null) =>
+  run<CsvImportSummary>("import_donors_csv", { csv, lawful_basis: lawful_basis ?? null });
 
 // retention
 export const retentionReport = () => run<RetentionReport>("retention_report");

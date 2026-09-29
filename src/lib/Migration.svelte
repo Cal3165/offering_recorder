@@ -6,6 +6,10 @@
   let summary = $state<CsvImportSummary | null>(null);
   let error = $state("");
   let busy = $state(false);
+  // Per-batch lawful-basis choice (plan Phase 6.3): one basis for the whole
+  // batch, chosen explicitly. "" means "Not recorded" — rows import with no
+  // basis and must be completed per donor.
+  let basis = $state("");
 
   const template = `first_name,last_name,preferred_name,address_line1,address_line2,address_line3,postcode,email,phone
 John,Smith,,10 High Street,,,AB1 2CD,john.smith@example.com,
@@ -24,7 +28,7 @@ Jane,Doe,Jane,,,,"AB2 3EF",jane.doe@example.com,01234 567890`;
     }
     busy = true;
     try {
-      summary = await importDonorsCsv(csv);
+      summary = await importDonorsCsv(csv, basis === "" ? null : basis);
     } catch (e) {
       error = String(e);
     } finally {
@@ -39,9 +43,20 @@ Jane,Doe,Jane,,,,"AB2 3EF",jane.doe@example.com,01234 567890`;
     Bulk-import donors from a spreadsheet exported as CSV. The first row must be a header; the first-name and
     last-name columns are required (aliases such as <code>forename</code>/<code>surname</code> are recognised).
     Rows matching an existing donor are skipped; problem rows are reported below without affecting the rest.
+    Choose one lawful basis for the whole batch — or leave "Not recorded" and complete each donor's basis afterwards.
   </p>
   <div class="row">
     <button class="secondary" onclick={useTemplate}>Insert sample template</button>
+    <label>
+      Lawful basis for this batch
+      <select bind:value={basis} aria-label="Lawful basis for this batch">
+        <option value="">Not recorded (complete per donor later)</option>
+        <option value="Consent">Consent</option>
+        <option value="Contract">Contract</option>
+        <option value="Legal obligation">Legal obligation</option>
+        <option value="Legitimate interest">Legitimate interest</option>
+      </select>
+    </label>
     <button onclick={runImport} disabled={busy}>{busy ? "Importing…" : "Import donors"}</button>
   </div>
   <textarea

@@ -115,6 +115,16 @@ pub fn can_view_audit(user: &User) -> bool {
     user.is_active && (user.roles.has(&Role::Admin) || user.roles.has(&Role::Trustee))
 }
 
+/// Irreversible PII redaction (plan Phase 6.3) is Admin-only by design:
+/// erasing donor identities affects Gift Aid evidence and the audit trail,
+/// so neither operational roles (Counter/Checker/Banker/Bookkeeper/GiftAid)
+/// nor oversight-only Trustee may trigger it. The HMRC-duty check inside
+/// refuses redaction while records are still within retention.
+#[must_use]
+pub fn can_redact_donor_pii(user: &User) -> bool {
+    user.is_active && user.roles.has(&Role::Admin)
+}
+
 #[must_use]
 pub fn user_is_active(user: &User) -> bool {
     user.is_active
@@ -164,6 +174,7 @@ mod tests {
             ("backup", can_backup(user)),
             ("restore", can_restore(user)),
             ("audit", can_view_audit(user)),
+            ("redact", can_redact_donor_pii(user)),
         ]
     }
 
@@ -253,6 +264,25 @@ mod tests {
         let trustee = user_with(RoleSet::new(vec![Role::Trustee]));
         assert!(can_view_claims(&trustee));
         assert!(!can_manage_gift_aid(&trustee));
+    }
+
+    #[test]
+    fn pii_redaction_is_admin_only() {
+        // Plan Phase 6.3: erasure is irreversible and touches Gift Aid
+        // evidence, so only Admin may trigger it (after the HMRC-duty check).
+        let admin = user_with(RoleSet::admin());
+        assert!(can_redact_donor_pii(&admin));
+        for role in [
+            Role::Counter,
+            Role::Checker,
+            Role::Banker,
+            Role::GiftAid,
+            Role::Bookkeeper,
+            Role::Trustee,
+        ] {
+            let u = user_with(RoleSet::new(vec![role.clone()]));
+            assert!(!can_redact_donor_pii(&u), "role {role:?} must not redact");
+        }
     }
 
     #[test]

@@ -60,6 +60,10 @@ impl<'a> Services<'a> {
         hasher: &'a dyn PasswordHasher,
         backup_storage: &'a dyn BackupStorage,
     ) -> Self {
+        // One shared donor service: redaction (plan Phase 6.3) needs the
+        // donation/declaration repos for its HMRC-duty check, and migration
+        // reuses the same basis-aware creation path.
+        let donor_service = DonorService::new(donors, donations, gift_aid, audit);
         Services {
             users,
             auth: AuthService::new(users, hasher, audit),
@@ -73,7 +77,7 @@ impl<'a> Services<'a> {
                 audit,
             ),
             amendments: AmendmentService::new(amendments, offerings, deposits, audit),
-            donors: DonorService::new(donors, audit),
+            donors: donor_service.clone(),
             gift_aid: GiftAidService::new(
                 gift_aid,
                 donors,
@@ -100,7 +104,7 @@ impl<'a> Services<'a> {
             retention: RetentionService::new(offerings, gift_aid, gasds_claims, deposits, audit),
             backups: BackupService::new(backups, backup_storage, audit),
             audit: AuditLog::new(audit),
-            migration: MigrationService::new(DonorService::new(donors, audit)),
+            migration: MigrationService::new(donor_service),
         }
     }
 }

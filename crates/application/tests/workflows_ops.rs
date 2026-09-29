@@ -449,7 +449,11 @@ Grace,Hopper,,NY1 1NY,
 ";
     let summary = services
         .migration
-        .import_donors_csv(&admin, csv)
+        .import_donors_csv(
+            &admin,
+            csv,
+            Some(offering_domain::entities::donor::LawfulBasis::LegitimateInterest),
+        )
         .await
         .unwrap();
     assert_eq!(summary.created, 2, "{summary:?}");
@@ -469,7 +473,11 @@ Grace,Hopper,,NY1 1NY,
     // Re-importing the same rows yields duplicates, not second donors.
     let again = services
         .migration
-        .import_donors_csv(&admin, csv)
+        .import_donors_csv(
+            &admin,
+            csv,
+            Some(offering_domain::entities::donor::LawfulBasis::LegitimateInterest),
+        )
         .await
         .unwrap();
     assert_eq!(again.created, 0);

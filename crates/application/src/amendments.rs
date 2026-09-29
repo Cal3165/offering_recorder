@@ -66,14 +66,17 @@ impl<'a> AmendmentService<'a> {
     /// Different operator ids pass; an Admin may explicitly override (audited).
     /// Enforced where both halves exist, i.e. at checker-sign time; at
     /// counter-sign time there is no second signature to compare against.
+    ///
+    /// NOTE (plan Phase 6.2): pair detection routes through
+    /// [`SigningPolicy`](offering_domain::signature::SigningPolicy), but the
+    /// override stays Admin-only here — extending the Trustee override from
+    /// offerings to amendments is deferred follow-up, not a silent change.
     fn reject_same_user_double_sign(
         actor: &User,
         counter: &offering_domain::signature::Signature,
         checker: &offering_domain::signature::Signature,
     ) -> AppResult<()> {
-        if offering_domain::signature::SAME_OPERATOR_DUAL_GUEST_FORBIDDEN
-            && !counter.user_id.is_nil()
-            && counter.user_id == checker.user_id
+        if offering_domain::signature::SigningPolicy::is_single_operator_pair(counter, checker)
             && !actor.is_admin()
         {
             return Err(crate::error::AppError::Conflict(

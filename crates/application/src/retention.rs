@@ -52,6 +52,11 @@ pub struct RetentionReport {
     pub gift_aid_declarations: RetentionSummary,
     pub gasds_claims: RetentionSummary,
     pub bank_deposits: RetentionSummary,
+    /// Audit-trail review (plan Phase 6.4): audit rows sit under the same
+    /// 7-year review policy as the business records (see the DPIA note in
+    /// [`crate::audit`]). They are report-only like everything else here —
+    /// this service never deletes.
+    pub audit_events: RetentionSummary,
     pub expiring: Vec<RetentionItem>,
     pub expired: Vec<RetentionItem>,
     pub warnings: Vec<String>,
@@ -63,6 +68,7 @@ pub struct RetentionService<'a> {
     gift_aid: &'a dyn GiftAidRepository,
     gasds_claims: &'a dyn GasdsClaimRepository,
     deposits: &'a dyn BankDepositRepository,
+    audit_repo: &'a dyn AuditRepository,
     audit: AuditLog<'a>,
 }
 
@@ -79,6 +85,7 @@ impl<'a> RetentionService<'a> {
             gift_aid,
             gasds_claims,
             deposits,
+            audit_repo,
             audit: AuditLog::new(audit_repo),
         }
     }
@@ -91,6 +98,12 @@ impl<'a> RetentionService<'a> {
         }
     }
 
+    /// Build the retention review report (plan Phase 6.4).
+    ///
+    /// Report-only: this method reads every record class (donations,
+    /// declarations, claims, deposits AND audit rows) and classifies each
+    /// against the 7-year window, but deletes nothing — there is no
+    /// auto-deletion of business records anywhere in this service.
     /// # Errors
     ///
     /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
@@ -111,6 +124,7 @@ impl<'a> RetentionService<'a> {
             gift_aid_declarations: RetentionSummary::default(),
             gasds_claims: RetentionSummary::default(),
             bank_deposits: RetentionSummary::default(),
+            audit_events: RetentionSummary::default(),
             expiring: Vec::new(),
             expired: Vec::new(),
             warnings: Vec::new(),
@@ -213,6 +227,30 @@ impl<'a> RetentionService<'a> {
             );
         }
 
+        // Audit rows under the same review policy (plan Phase 6.4): the
+        // 7-year window runs from the event date. Expired audit rows are
+        // listed for review like business records — review before any
+        // disposal, and never while an HMRC enquiry or dispute is open.
+        let events = self.audit_repo.list().await?;
+        for event in &events {
+            let record_date = event.timestamp.date_naive();
+            let status = RetentionStatus::classify(today, retention_deadline(record_date));
+            report.audit_events.add(status);
+            push_expired_or_expiring(
+                &mut report,
+                RetentionItem {
+                    record_type: "Audit event".into(),
+                    record_id: event.id,
+                    detail: format!("{} {}", event.action, event.entity),
+                    record_date,
+                    tax_year: TaxYear::from_date(record_date),
+                    deadline: retention_deadline(record_date),
+                    days_remaining: days_until_deadline(record_date, today),
+                    status,
+                },
+            );
+        }
+
         if report.expired.is_empty() && report.expiring.is_empty() {
             report.warnings.push(
                 "no records have reached or are approaching their retention deadline.".into(),
@@ -228,6 +266,9 @@ impl<'a> RetentionService<'a> {
                     .into(),
             );
         }
+        // Report-only by design (plan Phase 6.4): this service has no delete
+        // path — disposal is always an explicit, separately-audited human
+        // decision after review, never automatic.
 
         self.audit
             .record(
@@ -237,7 +278,14 @@ impl<'a> RetentionService<'a> {
                 None,
                 None,
                 None,
-                Some("retention report generated".into()),
+                Some(format!(
+                    "retention report generated: donations={} declarations={} claims={} deposits={} audit_events={}",
+                    report.donations.total,
+                    report.gift_aid_declarations.total,
+                    report.gasds_claims.total,
+                    report.bank_deposits.total,
+                    report.audit_events.total
+                )),
             )
             .await?;
 

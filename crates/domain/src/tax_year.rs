@@ -23,6 +23,10 @@ impl TaxYear {
     /// typos such as year 25 or 99999 flowing into deadlines/ceilings.
     pub const MAX_START_YEAR: i32 = 2100;
 
+    /// A claim deadline within this many days is "approaching" for readiness
+    /// warnings (plan Phase 6.1). Matches the retention expiring-soon window
+    /// so deadline and retention nudges speak the same language.
+    pub const CLAIM_DEADLINE_WARNING_DAYS: i64 = 90;
     /// Range-checked constructor (Phase 3.10).
     /// # Errors
     ///
@@ -130,6 +134,20 @@ impl TaxYear {
     #[must_use]
     pub fn gasds_claim_deadline(&self) -> NaiveDate {
         NaiveDate::from_ymd_opt(self.end_year() + 2, 4, 5).unwrap()
+    }
+
+    /// Days from `today` until the Gift Aid claim deadline (negative when the
+    /// window has closed). Readiness surfaces use this for past/near-deadline
+    /// warnings (plan Phase 6.1).
+    #[must_use]
+    pub fn days_until_gift_aid_deadline(&self, today: NaiveDate) -> i64 {
+        (self.gift_aid_claim_deadline() - today).num_days()
+    }
+
+    /// Days from `today` until the GASDS claim deadline (negative when closed).
+    #[must_use]
+    pub fn days_until_gasds_deadline(&self, today: NaiveDate) -> i64 {
+        (self.gasds_claim_deadline() - today).num_days()
     }
 
     /// Retention deadline: records relating to this tax year must be kept for

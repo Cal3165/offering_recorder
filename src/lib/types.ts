@@ -560,6 +560,20 @@ export interface ClaimReadiness {
   items: ClaimReadinessItem[];
 }
 
+/** Gift Aid claim readiness for one tax year (plan Phase 6.1): eligible
+ * schedule total plus past/near-deadline state against the 4-year HMRC
+ * window. Expired years are warned, not excluded. */
+export interface GiftAidReadiness {
+  tax_year: number;
+  gift_aid_deadline: string;
+  days_remaining: number;
+  expired: boolean;
+  approaching: boolean;
+  donation_count: number;
+  total_amount: Money;
+  warnings: string[];
+}
+
 export type RetentionStatus = "WithinRetention" | "ExpiringSoon" | "Expired";
 
 export interface RetentionItem {
@@ -589,6 +603,7 @@ export interface RetentionReport {
   gift_aid_declarations: RetentionSummary;
   gasds_claims: RetentionSummary;
   bank_deposits: RetentionSummary;
+  audit_events: RetentionSummary;
   expiring: RetentionItem[];
   expired: RetentionItem[];
   warnings: string[];

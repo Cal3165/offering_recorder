@@ -65,6 +65,25 @@ pub async fn gift_aid_report(
         .map_err(AppErrorDto::from)
 }
 
+/// Gift Aid claim readiness for a tax year: eligible total plus
+/// past/near-deadline warnings (plan Phase 6.1; feeds the dashboard warning).
+/// # Errors
+///
+/// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.
+#[tauri::command]
+pub async fn gift_aid_readiness(
+    state: State<'_, AppState>,
+    tax_year: TaxYear,
+) -> Result<offering_application::reports::GiftAidReadiness, AppErrorDto> {
+    let actor = with_actor!(state);
+    state
+        .services
+        .reports
+        .gift_aid_readiness(&actor, tax_year)
+        .await
+        .map_err(AppErrorDto::from)
+}
+
 /// # Errors
 ///
 /// Returns a user-facing error string if authentication fails, validation rejects the input, or the service call fails.

@@ -1,5 +1,7 @@
 use offering_domain::entities::user::User;
 use offering_domain::gasds::{GasdsCalculator, GasdsConfig, GasdsResult};
+use offering_domain::money::Money;
+use offering_domain::tax_year::TaxYear;
 use offering_persistence::{
     AmendmentRepository, AuditRepository, BankDepositRepository, BookkeepingEntry,
     DonorReportEntry, GasdsReportEntry, GdprReport, GiftAidReportEntry, GiftAidRepository,
@@ -12,6 +14,22 @@ use crate::error::{unauthorized, AppResult};
 use crate::permissions::{
     can_run_bookkeeping_report, can_run_claim_reports, can_run_deposit_report,
 };
+
+/// Gift Aid claim readiness for one tax year (plan Phase 6.1): the eligible
+/// schedule total plus past/near-deadline state against the 4-year HMRC
+/// window, mirroring GASDS `ClaimReadiness`. Expired years are warned, not
+/// excluded — the schedule remains a true record of eligibility.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GiftAidReadiness {
+    pub tax_year: TaxYear,
+    pub gift_aid_deadline: chrono::NaiveDate,
+    pub days_remaining: i64,
+    pub expired: bool,
+    pub approaching: bool,
+    pub donation_count: usize,
+    pub total_amount: Money,
+    pub warnings: Vec<String>,
+}
 
 #[derive(Clone)]
 pub struct ReportService<'a> {
@@ -207,6 +225,20 @@ impl<'a> ReportService<'a> {
     ) -> AppResult<Vec<GiftAidReportEntry>> {
         Self::require_claim_reports_permission(actor)?;
         let entries = self.reports.gift_aid_report(tax_year.clone()).await?;
+        // Warn (don't exclude) on expired years (plan Phase 6.1, mirroring
+        // the GASDS deadline enforcement): the schedule is a record of what
+        // IS eligible, but HMRC rejects claims past the 4-year deadline, so
+        // the audit trail must show the operator was told.
+        let today = chrono::Utc::now().date_naive();
+        let days_remaining = tax_year.days_until_gift_aid_deadline(today);
+        let expired_note = if days_remaining < 0 {
+            format!(
+                " WARNING: tax year {tax_year} is past the Gift Aid claim deadline ({}); HMRC will reject a late claim",
+                tax_year.gift_aid_claim_deadline()
+            )
+        } else {
+            String::new()
+        };
         self.audit
             .record(
                 actor,
@@ -216,12 +248,76 @@ impl<'a> ReportService<'a> {
                 None,
                 None,
                 Some(format!(
-                    "gift aid report generated: tax_year={tax_year} rows={}",
+                    "gift aid report generated: tax_year={tax_year} rows={}{expired_note}",
                     entries.len()
                 )),
             )
             .await?;
         Ok(entries)
+    }
+
+    /// Gift Aid claim readiness for a tax year (plan Phase 6.1): the
+    /// `gift_aid_readiness`-style surfacing mirroring GASDS `claim_readiness`
+    /// — eligible total plus past/near-deadline warnings against the 4-year
+    /// `gift_aid_claim_deadline`. The dashboard consumes this for the
+    /// Plan.md "donations approaching Gift Aid claim deadline" warning.
+    /// # Errors
+    ///
+    /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
+    pub async fn gift_aid_readiness(
+        &self,
+        actor: &User,
+        tax_year: TaxYear,
+    ) -> AppResult<GiftAidReadiness> {
+        Self::require_claim_reports_permission(actor)?;
+        let entries = self.reports.gift_aid_report(tax_year.clone()).await?;
+        let today = chrono::Utc::now().date_naive();
+        let deadline = tax_year.gift_aid_claim_deadline();
+        let days_remaining = tax_year.days_until_gift_aid_deadline(today);
+        let expired = days_remaining < 0;
+        let approaching = (0..=TaxYear::CLAIM_DEADLINE_WARNING_DAYS).contains(&days_remaining);
+        let total_amount = Money::sum(entries.iter().map(|e| e.amount))?;
+        let mut warnings = Vec::new();
+        if expired {
+            warnings.push(format!(
+                "tax year {tax_year} is past the Gift Aid claim deadline ({deadline}); HMRC will reject a late claim — the schedule is for records only"
+            ));
+        } else if approaching {
+            warnings.push(format!(
+                "{days_remaining} day(s) left to claim Gift Aid for tax year {tax_year} (deadline {deadline})"
+            ));
+        }
+        if entries.is_empty() {
+            warnings.push(format!(
+                "no qualifying Gift Aid donations found for tax year {tax_year}"
+            ));
+        }
+        let readiness = GiftAidReadiness {
+            tax_year: tax_year.clone(),
+            gift_aid_deadline: deadline,
+            days_remaining,
+            expired,
+            approaching,
+            donation_count: entries.len(),
+            total_amount,
+            warnings,
+        };
+        self.audit
+            .record(
+                actor,
+                offering_domain::entities::audit_event::AuditAction::ReportGenerated,
+                "Report",
+                None,
+                None,
+                None,
+                Some(format!(
+                    "gift aid readiness generated: tax_year={tax_year} rows={} total={} expired={expired}",
+                    entries.len(),
+                    total_amount.display()
+                )),
+            )
+            .await?;
+        Ok(readiness)
     }
 
     /// # Errors

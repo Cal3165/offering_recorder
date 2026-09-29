@@ -33,6 +33,8 @@
       { label: "Gift Aid declarations", s: report.gift_aid_declarations },
       { label: "GASDS claims", s: report.gasds_claims },
       { label: "Bank deposits", s: report.bank_deposits },
+      // Plan Phase 6.4: audit rows sit under the same 7-year review policy.
+      { label: "Audit events", s: report.audit_events },
     ];
   }
 

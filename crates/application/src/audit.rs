@@ -1,3 +1,23 @@
+//! Audit trail: append-only business-event log with PII minimization.
+//!
+//! DPIA note — 7-year audit retention (plan Phase 6.3, UK GDPR Art. 5/6/17):
+//! audit rows are kept for at least 7 years alongside the business records
+//! and are covered by the same report-only review policy
+//! ([`crate::retention`]). The justification is the church's legal obligation
+//! (Art. 6(1)(c)): HMRC requires Gift Aid/GASDS evidence to be producible for
+//! 6+ years, and an examiner must be able to reconstruct WHO changed WHAT and
+//! WHEN. Storage limitation (Art. 5(1)(e)) is met by the retention review
+//! report (review before any disposal; never during an enquiry/dispute) and
+//! data minimisation (Art. 5(1)(c)) by minimized snapshots — donor audit
+//! events carry presence flags and a correlation hash, never names, addresses
+//! or contact details (see [`donor_audit_snapshot`]).
+//!
+//! Erasure (Art. 17) where no HMRC duty overrides it is served by the
+//! redaction path ([`crate::donors::DonorService::redact_donor_pii`]): the
+//! donor's identifying fields are erased while the row, its donation links
+//! and the audit history are retained. While records sit inside the 7-year
+//! window the HMRC duty overrides erasure and redaction is refused.
+
 use offering_domain::entities::audit_event::{AuditAction, AuditEvent};
 use offering_domain::entities::donor::Donor;
 use offering_domain::entities::user::User;

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listBackups, recentAuditEvents, listDeposits, listMeetings, listActiveOfferings, listLockedOfferings } from "./api";
+  import { listBackups, recentAuditEvents, listDeposits, listMeetings, listActiveOfferings, listLockedOfferings, giftAidReadiness } from "./api";
   import type { AuditEvent, Backup, BankDeposit, Meeting, Offering, User } from "./types";
   import { fmtPence, depositExpectedTotals } from "./types";
 
@@ -13,6 +13,10 @@
   let audit = $state<AuditEvent[]>([]);
   let loaded = $state(false);
   let error = $state("");
+  // Gift Aid deadline warnings for the current tax year (plan Phase 6.1,
+  // Plan.md "donations approaching Gift Aid claim deadline"). Advisory only:
+  // a failed fetch never blocks the dashboard.
+  let deadlineWarnings = $state<string[]>([]);
   // Per-section load errors: one failing endpoint must not blank the whole
   // dashboard (Promise.all would reject everything on the first failure).
   let sectionErrors = $state<Record<string, string>>({});
@@ -57,7 +61,26 @@
     backups = (bk ?? []) as Backup[];
     audit = (aud ?? []) as AuditEvent[];
     loaded = true;
+    // Gift Aid deadline nudge (visible only to roles that can run claim
+    // reports; everyone else keeps a quiet dashboard).
+    if (is.admin || is.giftAid) {
+      try {
+        const readiness = await giftAidReadiness(currentTaxYear());
+        deadlineWarnings = readiness.warnings;
+      } catch {
+        deadlineWarnings = [];
+      }
+    }
   });
+
+  /** UK tax year containing today (starts 6 April). */
+  function currentTaxYear(): number {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const day = now.getDate();
+    const year = now.getFullYear();
+    return month > 4 || (month === 4 && day >= 6) ? year : year - 1;
+  }
 
   const depositedIds = $derived(new Set(deposits.flatMap((d) => d.items.map((i) => i.offering_id))));
 
@@ -198,6 +221,18 @@ const attention = $derived<AttentionItem[]>([
         </span>
         <button onclick={() => onNavigate("backups")}>Open backups</button>
       </div>
+    </div>
+  {/if}
+  {#if deadlineWarnings.length > 0}
+    <!-- HMRC deadline nudge (plan Phase 6.1): Gift Aid must be claimed within
+      4 years of the tax-year end — surface the readiness warnings here so an
+      approaching deadline is seen without opening Reports. -->
+    <div class="card">
+      <h2>⚠ Gift Aid claim deadline</h2>
+      <ul class="warn">
+        {#each deadlineWarnings as w, i (i)}<li>{w}</li>{/each}
+      </ul>
+      <button class="secondary" onclick={() => onNavigate("reports")}>Open reports & generate claim</button>
     </div>
   {/if}
   {#if is.admin || is.counter}
