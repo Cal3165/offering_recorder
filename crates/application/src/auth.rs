@@ -73,6 +73,9 @@ impl<'a> AuthService<'a> {
     ///
     /// Returns [`AppError`] for unauthorized actors, missing records, conflicting state, or repository failures.
     pub async fn login(&self, username: &str, password: &str) -> AppResult<User> {
+        // Phase 5.5: the raw username is untrusted renderer input — sanitize
+        // before it touches the audit log (log-injection safe, truncated).
+        let safe_username = crate::audit::sanitize_audit_username(username);
         let user = self.users.get_by_username(username).await?;
         match user {
             None => {
@@ -88,7 +91,7 @@ impl<'a> AuthService<'a> {
                         None,
                         None,
                         None,
-                        Some(format!("failed login: unknown username '{username}'")),
+                        Some(format!("failed login: unknown username '{safe_username}'")),
                     )
                     .await?;
                 Err(crate::error::AppError::InvalidCredentials)
@@ -107,7 +110,9 @@ impl<'a> AuthService<'a> {
                             Some(user.id),
                             None,
                             None,
-                            Some(format!("failed login: invalid password for '{username}'")),
+                            Some(format!(
+                                "failed login: invalid password for '{safe_username}'"
+                            )),
                         )
                         .await?;
                     return Err(crate::error::AppError::InvalidCredentials);
@@ -121,7 +126,7 @@ impl<'a> AuthService<'a> {
                             Some(user.id),
                             None,
                             None,
-                            Some(format!("failed login: inactive user '{username}'")),
+                            Some(format!("failed login: inactive user '{safe_username}'")),
                         )
                         .await?;
                     return Err(crate::error::AppError::UserInactive);

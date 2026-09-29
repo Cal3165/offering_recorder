@@ -39,19 +39,48 @@ impl ValidationService {
             .iter()
             .filter(|d| (d.date - recorded).num_days().abs() > SKEW_DAYS)
             .count();
-        if skewed == 0 {
-            Vec::new()
-        } else {
-            vec![ValidationIssue {
+        let mut issues = Vec::new();
+        if skewed > 0 {
+            issues.push(ValidationIssue {
                 code: "donation_date_skew".into(),
                 message: format!(
                     "{skewed} donation(s) are dated more than {SKEW_DAYS} days from the offering date; check for backdate/postdate typos"
                 ),
                 blocking: false,
-            }]
+            });
         }
+        // Future-date guard (Phase 5.6): money cannot be received in the
+        // future — it is a typo'd year. BLOCKING for signing/locking (the
+        // offering cannot progress while it stands), but deliberately NOT a
+        // service-level rejection in `add_donation`: reporting fixtures and
+        // tax-year boundary tests legitimately exercise future-dated rows,
+        // and the date-skew advisory above already flags them at entry.
+        // Compared against the local calendar date so an evening entry is
+        // not flagged near midnight.
+        let today = chrono::Local::now().date_naive();
+        let future = offering
+            .donations()
+            .iter()
+            .filter(|d| d.date > today)
+            .count();
+        if future > 0 {
+            issues.push(ValidationIssue {
+                code: "donation_date_future".into(),
+                message: format!(
+                    "{future} donation(s) are dated in the future; check for date typos"
+                ),
+                blocking: true,
+            });
+        }
+        issues
     }
 
+    /// Attendance policy (plan Phase 5.6): `None` means "not recorded" and
+    /// blocks signing — the counter must confirm the headcount. `Some(0)` is
+    /// a VALID explicit count (an empty service, e.g. a cancelled gathering
+    /// with no collection) and does not block. Downstream consumers treat 0
+    /// as no meaningful attendance: the GASDS report surfaces it as `None`
+    /// and the community-buildings claim path requires >= 10.
     fn validate_attendance(offering: &Offering) -> Vec<ValidationIssue> {
         if offering.attendance().is_none() {
             vec![ValidationIssue {

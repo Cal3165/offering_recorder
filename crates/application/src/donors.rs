@@ -247,6 +247,8 @@ impl<'a> DonorService<'a> {
         donor.donor_type = input.donor_type;
         donor.set_lawful_basis(basis, input.privacy_notice_version.clone())?;
         let donor = self.donors.create(donor).await?;
+        // Phase 5.5: the audit trail records THAT a donor was created (plus
+        // non-identifying metadata), never a second copy of the PII itself.
         self.audit
             .record(
                 actor,
@@ -254,7 +256,7 @@ impl<'a> DonorService<'a> {
                 "Donor",
                 Some(donor.id),
                 None,
-                crate::audit::state_json(&donor),
+                Some(crate::audit::donor_audit_snapshot(&donor)),
                 Some("donor created".into()),
             )
             .await?;
@@ -326,7 +328,8 @@ impl<'a> DonorService<'a> {
             .get(donor_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("donor not found".into()))?;
-        let old = crate::audit::state_json(&donor);
+        let old_snapshot = crate::audit::donor_audit_snapshot(&donor);
+        let old_donor = donor.clone();
         let address = input.to_address()?;
         donor.update_profile(
             &input.first_name,
@@ -349,6 +352,9 @@ impl<'a> DonorService<'a> {
             }
             (None, None) => {}
         }
+        // Phase 5.5: audit the field-level diff (names of changed fields, not
+        // values) alongside minimized before/after snapshots — no PII.
+        let changed_fields = crate::audit::donor_audit_diff(&old_donor, &donor);
         let updated = self.donors.update(donor).await?;
         self.audit
             .record(
@@ -356,9 +362,16 @@ impl<'a> DonorService<'a> {
                 AuditAction::DonorChanged,
                 "Donor",
                 Some(updated.id),
-                old,
-                crate::audit::state_json(&updated),
-                Some("donor updated".into()),
+                Some(old_snapshot),
+                Some(crate::audit::donor_audit_snapshot(&updated)),
+                Some(format!(
+                    "donor updated (changed: {})",
+                    if changed_fields.is_empty() {
+                        "none".to_string()
+                    } else {
+                        changed_fields.join(", ")
+                    }
+                )),
             )
             .await?;
         Ok(updated)
@@ -376,7 +389,7 @@ impl<'a> DonorService<'a> {
             .get(donor_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("donor not found".into()))?;
-        let old = crate::audit::state_json(&donor);
+        let old_snapshot = crate::audit::donor_audit_snapshot(&donor);
         if active {
             donor.activate();
         } else {
@@ -389,8 +402,8 @@ impl<'a> DonorService<'a> {
                 AuditAction::DonorChanged,
                 "Donor",
                 Some(updated.id),
-                old,
-                crate::audit::state_json(&updated),
+                Some(old_snapshot),
+                Some(crate::audit::donor_audit_snapshot(&updated)),
                 Some(format!("set active = {active}")),
             )
             .await?;

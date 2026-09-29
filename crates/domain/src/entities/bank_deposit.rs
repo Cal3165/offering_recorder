@@ -58,6 +58,13 @@ pub struct BankDeposit {
     pub actual_cash: Money,
     pub actual_cheques: Money,
     pub actual_other: Money,
+    /// Whether bank-counter actuals have ever been recorded (plan Phase 5.6).
+    /// Distinguishes "reconciled at exactly £0.00" (recorded, all zeros —
+    /// banking evidence, blocks deletion) from "never reconciled" (no
+    /// counter visit yet — deletion allowed). Defaults to `false` so
+    /// pre-flag rows deserialize as never-reconciled.
+    #[serde(default)]
+    pub actuals_recorded: bool,
     pub reference: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -88,6 +95,7 @@ impl BankDeposit {
             actual_cash: Money::zero(),
             actual_cheques: Money::zero(),
             actual_other: Money::zero(),
+            actuals_recorded: false,
             reference,
             created_at: now,
             updated_at: now,
@@ -202,6 +210,23 @@ impl BankDeposit {
         Ok(self.actual_cash.pence() != self.expected_cash()?.pence()
             || self.actual_cheques.pence() != self.expected_cheques()?.pence()
             || self.actual_other.pence() != self.expected_other()?.pence())
+    }
+
+    /// Whether bank-counter actuals were ever recorded (plan Phase 5.6).
+    /// A deposit whose actuals were recorded as all-zeros IS reconciled
+    /// evidence (deletion blocked); a deposit never visited by the counter
+    /// is still pending (deletion allowed). Never infer this from
+    /// `actual_total().is_zero()` — that conflates the two states.
+    #[must_use]
+    pub fn has_recorded_actuals(&self) -> bool {
+        self.actuals_recorded
+    }
+
+    /// Mark that the counter visit happened (called by `record_actuals`,
+    /// even when every bucket reconciles at exactly zero).
+    pub fn mark_actuals_recorded(&mut self) {
+        self.actuals_recorded = true;
+        self.updated_at = Utc::now();
     }
 }
 
@@ -327,5 +352,16 @@ mod tests {
         d.add_item(item).unwrap();
         // A shortfall of £5.00 must be reported (it was previously £0.00).
         assert_eq!(d.cash_discrepancy().unwrap().pence(), 500);
+    }
+
+    #[test]
+    fn zero_actuals_count_as_recorded_once_marked() {
+        // Phase 5.6: all-zero actuals are still reconciled evidence — the
+        // flag, not the total, decides.
+        let mut d = BankDeposit::create(Uuid::new_v4(), Utc::now(), None).unwrap();
+        assert!(!d.has_recorded_actuals());
+        d.mark_actuals_recorded();
+        assert!(d.has_recorded_actuals());
+        assert!(d.actual_total().unwrap().is_zero());
     }
 }

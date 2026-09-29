@@ -1,0 +1,13 @@
+-- Phase 5.6: distinguish "actuals recorded as £0.00" from "never reconciled".
+--
+-- `bank_deposits.actuals_recorded` marks that the bank-counter visit happened.
+-- A deposit with recorded all-zero actuals is reconciled banking evidence
+-- (deletion blocked); a deposit the counter never visited is still pending
+-- (deletion allowed). Previously both states looked identical
+-- (`actual_total().is_zero()`), so a reconciled-at-zero deposit could be
+-- deleted and a pending deposit looked reconciled.
+--
+-- Backfill: existing rows default to 0 (never reconciled). Rows whose actuals
+-- are non-zero could be backfilled to 1, but the conservative default keeps
+-- the migration infallible; the next `record_actuals` call sets the flag.
+ALTER TABLE bank_deposits ADD COLUMN actuals_recorded INTEGER NOT NULL DEFAULT 0;

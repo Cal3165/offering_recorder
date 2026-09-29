@@ -72,7 +72,7 @@ impl<'a> Services<'a> {
                 gasds_claims,
                 audit,
             ),
-            amendments: AmendmentService::new(amendments, offerings, audit),
+            amendments: AmendmentService::new(amendments, offerings, deposits, audit),
             donors: DonorService::new(donors, audit),
             gift_aid: GiftAidService::new(
                 gift_aid,

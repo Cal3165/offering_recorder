@@ -212,6 +212,34 @@ impl<'a> BankingService<'a> {
         deposit.actual_cash = Money::from_pence(actual_cash_pence)?;
         deposit.actual_cheques = Money::from_pence(actual_cheques_pence)?;
         deposit.actual_other = Money::from_pence(actual_other_pence)?;
+        // Phase 5.6: the counter visit happened even when every bucket
+        // reconciles at exactly zero — record the fact, not just the totals.
+        deposit.mark_actuals_recorded();
+        // Phase 5.6 (discrepancy signal): a mismatch between counted and
+        // banked money must shout, not just persist. Warn to the operational
+        // log AND name the discrepancy in the audit reason so the Banking
+        // view is not the only place it surfaces.
+        let discrepancy_note = match deposit.has_discrepancy() {
+            Ok(false) => "reconciled exactly".to_string(),
+            Ok(true) => {
+                let note = format!(
+                    "DISCREPANCY: expected {} but counted {}",
+                    deposit.expected_total()?.display(),
+                    deposit.actual_total()?.display()
+                );
+                tracing::warn!(
+                    deposit_id = %deposit_id,
+                    expected_pence = deposit.expected_total()?.pence(),
+                    actual_pence = deposit.actual_total()?.pence(),
+                    "deposit actuals recorded with a discrepancy"
+                );
+                note
+            }
+            Err(e) => {
+                tracing::error!(deposit_id = %deposit_id, detail = %e, "discrepancy check overflowed");
+                "discrepancy check overflowed; totals may be corrupt".to_string()
+            }
+        };
         let updated = self.deposits.update(deposit, expected_updated_at).await?;
         self.audit
             .record(
@@ -221,7 +249,7 @@ impl<'a> BankingService<'a> {
                 Some(updated.id),
                 old,
                 crate::audit::state_json(&updated),
-                Some("deposit actuals recorded".into()),
+                Some(format!("deposit actuals recorded: {discrepancy_note}")),
             )
             .await?;
         Ok(updated)
@@ -241,10 +269,11 @@ impl<'a> BankingService<'a> {
             .get(deposit_id)
             .await?
             .ok_or_else(|| crate::error::AppError::NotFound("deposit not found".into()))?;
-        // Recorded actuals in ANY bucket are banking evidence (review O20:
-        // actual_other was previously ignored, allowing deletion of a
-        // reconciled non-cash deposit).
-        if !deposit.actual_total()?.is_zero() {
+        // Phase 5.6: the recorded-actuals FLAG is the evidence test, not the
+        // totals. A counter visit that reconciled at exactly £0.00 is still
+        // banking evidence (deletion blocked); a deposit the counter never
+        // visited — even with non-zero expected totals — is still pending.
+        if deposit.has_recorded_actuals() {
             return Err(crate::error::AppError::Validation(
                 "cannot delete a deposit that has recorded actuals".into(),
             ));

@@ -58,7 +58,10 @@ async fn actor(state: &AppState) -> AppResult<User> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
     {
-        return Err(AppError::Unauthorized(
+        // Phase 5.4: a restore in flight is a transient service state, not an
+        // auth failure — report it as `unavailable` (retry shortly) so the UI
+        // shows a "busy, try again" state instead of logging the user out.
+        return Err(AppError::Unavailable(
             "a backup restore is in progress; please retry shortly".into(),
         ));
     }

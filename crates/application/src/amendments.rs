@@ -2,7 +2,9 @@ use offering_domain::entities::amendment::{Amendment, AmendmentChange, OfferingR
 use offering_domain::entities::audit_event::AuditAction;
 use offering_domain::entities::offering::Offering;
 use offering_domain::entities::user::User;
-use offering_persistence::{AmendmentRepository, AuditRepository, OfferingRepository};
+use offering_persistence::{
+    AmendmentRepository, AuditRepository, BankDepositRepository, OfferingRepository,
+};
 use uuid::Uuid;
 
 use crate::audit::AuditLog;
@@ -15,6 +17,7 @@ use crate::validation::{ValidationIssue, ValidationService};
 pub struct AmendmentService<'a> {
     amendments: &'a dyn AmendmentRepository,
     offerings: &'a dyn OfferingRepository,
+    deposits: &'a dyn BankDepositRepository,
     audit: AuditLog<'a>,
 }
 
@@ -22,11 +25,13 @@ impl<'a> AmendmentService<'a> {
     pub fn new(
         amendments: &'a dyn AmendmentRepository,
         offerings: &'a dyn OfferingRepository,
+        deposits: &'a dyn BankDepositRepository,
         audit_repo: &'a dyn AuditRepository,
     ) -> Self {
         AmendmentService {
             amendments,
             offerings,
+            deposits,
             audit: AuditLog::new(audit_repo),
         }
     }
@@ -35,9 +40,14 @@ impl<'a> AmendmentService<'a> {
         user: &User,
         guest_name: Option<String>,
     ) -> offering_domain::signature::Signature {
+        // Phase 5.5: trim guest names (copying the gift_aid guard) — a
+        // whitespace-only entry falls back to the operator's own signature
+        // and surrounding spaces are never stored in the audit trail.
         match guest_name {
-            Some(name) => offering_domain::signature::Signature::guest_for(user.id, name),
-            None => {
+            Some(name) if !name.trim().is_empty() => {
+                offering_domain::signature::Signature::guest_for(user.id, name.trim().to_string())
+            }
+            _ => {
                 offering_domain::signature::Signature::from_user(user.id, user.display_name.clone())
             }
         }
@@ -243,6 +253,69 @@ impl<'a> AmendmentService<'a> {
                     .into(),
             ));
         }
+        // Phase 5.6 (deposited/claimed guard): an amendment to an
+        // already-banked offering changes what was deposited. Approval still
+        // lands (Phase 4.1 re-bank flow: the claim paths cap at what was
+        // actually banked with a shortfall warning until the deposit is
+        // deleted and re-taken), but the banked state is detected here and
+        // carried LOUDLY into the approval audit reason plus the operational
+        // log — never a silent drift. Claimed donations are always banked
+        // first, so a banked offering covers the claimed case too.
+        let banked = !self
+            .deposits
+            .list_by_offering(amendment.offering_id())
+            .await?
+            .is_empty();
+        if banked {
+            tracing::warn!(
+                offering_id = %amendment.offering_id(),
+                amendment_id = %amendment.id(),
+                "approving amendment to an already-banked offering; delete the deposit and re-bank"
+            );
+        }
+        // Phase 5.6 (re-validation): re-run the offering validation against
+        // the post-amendment state BEFORE committing the approval, on a
+        // simulated clone so the stored row is untouched. Protocol violations
+        // (unlocked target, foreign offering, dangling removals) fail LOUDLY
+        // as Conflict via `from_amendments`. Coherence issues (e.g. a cash
+        // recount that has not caught up with an added donation — a
+        // legitimate intermediate state corrected by a follow-up amendment,
+        // see the Phase 4.1 re-bank flow) are ADVISORY: they ride loudly in
+        // the approval audit reason and the operational log instead of
+        // blocking, so multi-step corrections keep working.
+        let coherence_warnings: Vec<String> = {
+            let stored = self
+                .require_stored_offering(amendment.offering_id())
+                .await?;
+            let mut approved = self
+                .amendments
+                .approved_amendments_for_offering(amendment.offering_id())
+                .await?;
+            let mut simulated = amendment.clone();
+            simulated.approve(actor.id).map_err(|e| {
+                crate::error::AppError::Conflict(format!(
+                    "cannot approve amendment in its current state: {e}"
+                ))
+            })?;
+            approved.push(simulated);
+            let current = OfferingReconstruction::from_amendments(stored, approved)?
+                .current()
+                .clone();
+            let blocking: Vec<String> = ValidationService::validate(&current)
+                .into_iter()
+                .filter(|i| i.blocking)
+                .map(|i| i.message)
+                .collect();
+            if !blocking.is_empty() {
+                tracing::warn!(
+                    offering_id = %amendment.offering_id(),
+                    amendment_id = %amendment.id(),
+                    issues = %blocking.join("; "),
+                    "approving amendment leaves coherence issues; a follow-up amendment may be needed"
+                );
+            }
+            blocking
+        };
         // Snapshot for optimistic-concurrency check at save time (review O27).
         let expected_updated_at = amendment.updated_at();
         amendment.approve(actor.id)?;
@@ -250,6 +323,21 @@ impl<'a> AmendmentService<'a> {
             .amendments
             .update(amendment, expected_updated_at)
             .await?;
+        let mut reason = "amendment approved".to_string();
+        if banked {
+            reason.push_str(
+                " WARNING: offering already banked — delete the deposit and re-bank; \
+                 claims exclude the unbanked difference until then",
+            );
+        }
+        if !coherence_warnings.is_empty() {
+            use std::fmt::Write as _;
+            let _ = write!(
+                reason,
+                " WARNING: amended offering has unresolved issues ({})",
+                coherence_warnings.join("; ")
+            );
+        }
         self.audit
             .record(
                 actor,
@@ -258,7 +346,7 @@ impl<'a> AmendmentService<'a> {
                 Some(amendment.id()),
                 None,
                 crate::audit::state_json(&amendment),
-                Some("amendment approved".into()),
+                Some(reason),
             )
             .await?;
         Ok(amendment)

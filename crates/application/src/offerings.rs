@@ -447,9 +447,14 @@ impl<'a> OfferingService<'a> {
         user: &User,
         guest_name: Option<String>,
     ) -> offering_domain::signature::Signature {
+        // Phase 5.5: trim guest names (copying the gift_aid guard) — a
+        // whitespace-only entry falls back to the operator's own signature
+        // and surrounding spaces are never stored in the audit trail.
         match guest_name {
-            Some(name) => offering_domain::signature::Signature::guest_for(user.id, name),
-            None => {
+            Some(name) if !name.trim().is_empty() => {
+                offering_domain::signature::Signature::guest_for(user.id, name.trim().to_string())
+            }
+            _ => {
                 offering_domain::signature::Signature::from_user(user.id, user.display_name.clone())
             }
         }

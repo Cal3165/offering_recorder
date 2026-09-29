@@ -52,6 +52,10 @@ fn row_to_deposit_base(row: &SqliteRow) -> Result<BankDeposit, RepoError> {
         actual_cash: money_row(row, "actual_cash_pence")?,
         actual_cheques: money_row(row, "actual_cheques_pence")?,
         actual_other: money_row(row, "actual_other_pence")?,
+        // Phase 5.6: pre-flag databases (and the `DEFAULT 0` backfill) read
+        // as never-reconciled; tolerate a missing column for in-memory test
+        // databases built before this migration.
+        actuals_recorded: row.try_get::<i64, _>("actuals_recorded").unwrap_or(0) != 0,
         reference: row.get("reference"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
@@ -101,8 +105,8 @@ impl BankDepositRepository for SqliteBankDepositRepository {
     async fn create(&self, deposit: BankDeposit) -> RepoResult<BankDeposit> {
         let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
         sqlx::query(
-            "INSERT INTO bank_deposits (id, deposit_date, banker_id, actual_cash_pence, actual_cheques_pence, actual_other_pence, reference, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO bank_deposits (id, deposit_date, banker_id, actual_cash_pence, actual_cheques_pence, actual_other_pence, actuals_recorded, reference, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(deposit.id)
         .bind(deposit.deposit_date)
@@ -110,6 +114,7 @@ impl BankDepositRepository for SqliteBankDepositRepository {
         .bind(deposit.actual_cash.pence())
         .bind(deposit.actual_cheques.pence())
         .bind(deposit.actual_other.pence())
+        .bind(i64::from(deposit.actuals_recorded))
         .bind(&deposit.reference)
         .bind(deposit.created_at)
         .bind(deposit.updated_at)
@@ -193,14 +198,16 @@ impl BankDepositRepository for SqliteBankDepositRepository {
         let mut tx = self.pool.get().begin().await.map_err(map_db_err)?;
         // Phase 4.4: `banker_id` is persisted on update (it was silently
         // dropped before, so a re-assigned deposit kept the old banker).
+        // Phase 5.6: `actuals_recorded` travels with the actuals.
         let result = sqlx::query(
-            "UPDATE bank_deposits SET deposit_date = ?, banker_id = ?, actual_cash_pence = ?, actual_cheques_pence = ?, actual_other_pence = ?, reference = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+            "UPDATE bank_deposits SET deposit_date = ?, banker_id = ?, actual_cash_pence = ?, actual_cheques_pence = ?, actual_other_pence = ?, actuals_recorded = ?, reference = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(deposit.deposit_date)
         .bind(deposit.banker_id)
         .bind(deposit.actual_cash.pence())
         .bind(deposit.actual_cheques.pence())
         .bind(deposit.actual_other.pence())
+        .bind(i64::from(deposit.actuals_recorded))
         .bind(&deposit.reference)
         .bind(deposit.updated_at)
         .bind(deposit.id)

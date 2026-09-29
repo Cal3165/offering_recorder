@@ -633,3 +633,98 @@ async fn same_operator_dual_guest_signing_is_rejected() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn zero_actuals_count_as_recorded_evidence() {
+    // Phase 5.6: a counter visit that reconciles at exactly £0.00 is still
+    // banking evidence — the recorded-actuals FLAG (not the totals) blocks
+    // deletion — while a never-visited deposit stays deletable.
+    let (services, admin) = bootstrap_admin().await;
+    let meeting = create_test_meeting(&services, &admin, "ZeroActuals").await;
+    let offering = create_test_offering(&services, &admin, meeting.id).await;
+    services
+        .offerings
+        .set_attendance(&admin, offering.id(), 5)
+        .await
+        .unwrap();
+    lock_offering(&services, &admin, offering.id()).await;
+
+    let deposit = services
+        .banking
+        .create_deposit(&admin, vec![offering.id()], chrono::Utc::now(), None)
+        .await
+        .unwrap();
+    assert!(!deposit.has_recorded_actuals());
+    // Never visited: deletable.
+    services
+        .banking
+        .delete_deposit(&admin, deposit.id)
+        .await
+        .unwrap();
+
+    let deposit = services
+        .banking
+        .create_deposit(&admin, vec![offering.id()], chrono::Utc::now(), None)
+        .await
+        .unwrap();
+    let updated = services
+        .banking
+        .record_actuals(&admin, deposit.id, 0, 0, 0)
+        .await
+        .unwrap();
+    assert!(updated.has_recorded_actuals());
+    assert!(updated.actual_total().unwrap().is_zero());
+    // Recorded-at-zero: banking evidence, deletion blocked.
+    let err = services
+        .banking
+        .delete_deposit(&admin, deposit.id)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, offering_application::error::AppError::Validation(_)),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn future_dated_donation_blocks_locking_not_entry() {
+    // Phase 5.6: a future donation date is accepted at entry (reporting and
+    // boundary fixtures need it) but blocks counter-signing until corrected.
+    use offering_application::offerings::AddDonationInput;
+    let (services, admin) = bootstrap_admin().await;
+    let meeting = create_test_meeting(&services, &admin, "FutureDate").await;
+    let offering = create_test_offering(&services, &admin, meeting.id).await;
+    services
+        .offerings
+        .set_attendance(&admin, offering.id(), 10)
+        .await
+        .unwrap();
+    let tomorrow = chrono::Local::now().date_naive().succ_opt().unwrap();
+    services
+        .offerings
+        .add_donation(
+            &admin,
+            offering.id(),
+            AddDonationInput {
+                donor_id: None,
+                amount_pence: 1000,
+                donation_type: DonationType::Offering,
+                payment_method: PaymentMethod::Cheque,
+                classification: DonationClassification::Anonymous,
+                reference: None,
+                cash_denominations: None,
+                date: Some(tomorrow),
+            },
+        )
+        .await
+        .unwrap();
+    let err = services
+        .offerings
+        .counter_sign(&admin, offering.id(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, offering_application::error::AppError::Validation(_)),
+        "future-dated donation must block signing, got {err:?}"
+    );
+}

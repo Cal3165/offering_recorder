@@ -33,7 +33,7 @@ impl offering_application::ports::BackupStorage for SqliteBackupStorage {
         let pool = self.pool.get();
         BackupManager::create_backup(&pool, backup_dir, passphrase)
             .await
-            .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))
+            .map_err(log_and_persist)
     }
 
     async fn validate_backup_file(
@@ -43,7 +43,7 @@ impl offering_application::ports::BackupStorage for SqliteBackupStorage {
     ) -> offering_application::error::AppResult<()> {
         BackupManager::validate_backup(path, passphrase)
             .await
-            .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))
+            .map_err(log_and_persist)
     }
 
     async fn restore_backup_file(
@@ -68,31 +68,42 @@ impl offering_application::ports::BackupStorage for SqliteBackupStorage {
         // blocking pool inside `restore_backup_files` (review O12).
         BackupManager::restore_backup_files(db_path, backup_path, safety_dir, passphrase)
             .await
-            .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))?;
+            .map_err(log_and_persist)?;
 
         // The running application must not serve queries from the now-stale
         // database handle: swap in a fresh pool pointing at the restored file.
         let options = SqliteConnectOptions::from_str(db_path.to_str().ok_or_else(|| {
             offering_application::error::AppError::Validation("db path is not valid UTF-8".into())
         })?)
-        .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))?
+        .map_err(InfraError::Database)
+        .map_err(log_and_persist)?
         .create_if_missing(true)
         .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect_with(options)
             .await
-            .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))?;
+            .map_err(InfraError::Database)
+            .map_err(log_and_persist)?;
 
         // Run migrations on the restored database (B5).
-        MIGRATOR
-            .run(&pool)
-            .await
-            .map_err(|e| offering_application::error::AppError::Persistence(e.to_string()))?;
+        MIGRATOR.run(&pool).await.map_err(|e| {
+            tracing::error!(detail = %e, "migration of restored database failed");
+            offering_application::error::AppError::Persistence(e.to_string())
+        })?;
 
         self.pool.replace_draining(pool).await;
         Ok(())
     }
+}
+
+/// Map an infrastructure failure to the generic `Persistence` IPC error AFTER
+/// logging the full detail (plan Phase 5.1): the `WebView` must never see
+/// SQLite internals or file paths, but the operational log must.
+#[allow(clippy::needless_pass_by_value)] // by-value keeps `map_err(log_and_persist)` usable as a fn pointer
+fn log_and_persist(e: InfraError) -> offering_application::error::AppError {
+    tracing::error!(detail = %e, "backup storage operation failed");
+    offering_application::error::AppError::Persistence(e.to_string())
 }
 
 /// A temporary file that is best-effort removed when dropped, so that a panic or
@@ -105,11 +116,24 @@ struct TempFileGuard {
 impl TempFileGuard {
     fn new(dir: &Path, name: &str) -> InfraResult<Self> {
         let path = dir.join(format!("{name}_{}", uuid::Uuid::new_v4()));
-        fs::write(&path, [])?;
+        // Phase 5.5: create the file atomically with owner-only permissions.
+        // The previous create-then-chmod left a window where the plaintext
+        // database (donor PII + Argon2 hashes) was world-readable, and
+        // `create_new` refuses to truncate a pre-existing file (no symlink
+        // plant followed).
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)
+                .map_err(|e| InfraError::Message(format!("create owner-only temp file: {e}")))?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(&path, [])?;
         }
         Ok(TempFileGuard { path })
     }

@@ -297,7 +297,14 @@ pub async fn declaration_used_in_report(
         .get_declaration(&actor, id)
         .await
         .map_err(AppErrorDto::from)?
-        .ok_or_else(|| "declaration not found".to_string())?;
+        // Phase 5.4: a missing declaration is NotFound, not Validation — the
+        // previous plain-string error miscarried as `validation` at the IPC
+        // boundary.
+        .ok_or_else(|| {
+            AppErrorDto::from(offering_application::error::AppError::NotFound(
+                "declaration not found".into(),
+            ))
+        })?;
     state
         .services
         .gift_aid

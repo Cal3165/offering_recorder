@@ -91,6 +91,9 @@ impl<'a> ReportService<'a> {
             .reports
             .bookkeeping_report(start, end, meeting_id)
             .await?;
+        // Phase 5.3: the audit reason carries the query parameters and result
+        // size so an examiner can tell WHAT was run, not just that a report
+        // ran.
         self.audit
             .record(
                 actor,
@@ -99,7 +102,11 @@ impl<'a> ReportService<'a> {
                 None,
                 None,
                 None,
-                Some("bookkeeping report generated".into()),
+                Some(format!(
+                    "bookkeeping report generated: start={start} end={end} meeting_id={} rows={}",
+                    meeting_id.map_or_else(|| "all".to_string(), |m| m.to_string()),
+                    entries.len()
+                )),
             )
             .await?;
         Ok(entries)
@@ -124,7 +131,10 @@ impl<'a> ReportService<'a> {
                 None,
                 None,
                 None,
-                Some("donor report generated".into()),
+                Some(format!(
+                    "donor report generated: start={start} end={end} rows={}",
+                    entries.len()
+                )),
             )
             .await?;
         Ok(entries)
@@ -141,6 +151,7 @@ impl<'a> ReportService<'a> {
     ) -> AppResult<String> {
         Self::require_claim_reports_permission(actor)?;
         let rows = self.reports.iif_donation_export(start, end).await?;
+        let row_count = rows.len();
         let iif = build_iif(&rows);
         self.audit
             .record(
@@ -150,7 +161,9 @@ impl<'a> ReportService<'a> {
                 None,
                 None,
                 None,
-                Some("IIF export generated".into()),
+                Some(format!(
+                    "IIF export generated: start={start} end={end} rows={row_count}"
+                )),
             )
             .await?;
         Ok(iif)
@@ -162,15 +175,23 @@ impl<'a> ReportService<'a> {
     pub async fn gdpr_report(&self, actor: &User, donor_id: Uuid) -> AppResult<GdprReport> {
         Self::require_claim_reports_permission(actor)?;
         let report = self.reports.gdpr_report(donor_id).await?;
+        // Phase 5.3: a subject-access export is the most sensitive report —
+        // the audit event carries the subject id as `entity_id` so a SAR can
+        // be traced to its subject without opening the reason text.
         self.audit
             .record(
                 actor,
                 offering_domain::entities::audit_event::AuditAction::ReportGenerated,
                 "Report",
+                Some(donor_id),
                 None,
                 None,
-                None,
-                Some("gdpr report generated".into()),
+                Some(format!(
+                    "gdpr report generated: donor_id={donor_id} donations={} declarations={} audit_events={}",
+                    report.donations.len(),
+                    report.gift_aid_declarations.len(),
+                    report.audit_events.len()
+                )),
             )
             .await?;
         Ok(report)
@@ -185,8 +206,7 @@ impl<'a> ReportService<'a> {
         tax_year: offering_domain::tax_year::TaxYear,
     ) -> AppResult<Vec<GiftAidReportEntry>> {
         Self::require_claim_reports_permission(actor)?;
-        let label = format!("gift aid report generated for {tax_year}");
-        let entries = self.reports.gift_aid_report(tax_year).await?;
+        let entries = self.reports.gift_aid_report(tax_year.clone()).await?;
         self.audit
             .record(
                 actor,
@@ -195,7 +215,10 @@ impl<'a> ReportService<'a> {
                 None,
                 None,
                 None,
-                Some(label),
+                Some(format!(
+                    "gift aid report generated: tax_year={tax_year} rows={}",
+                    entries.len()
+                )),
             )
             .await?;
         Ok(entries)
@@ -286,7 +309,10 @@ impl<'a> ReportService<'a> {
                 None,
                 None,
                 None,
-                Some("gasds report generated".into()),
+                Some(format!(
+                    "gasds report generated: start={start} end={end} rows={}",
+                    entries.len()
+                )),
             )
             .await?;
         Ok(entries)
@@ -307,11 +333,15 @@ impl<'a> ReportService<'a> {
         // like every other report, so the boundary day belongs to exactly one
         // period.
         let end_exclusive = end.succ_opt().unwrap_or(chrono::NaiveDate::MAX);
+        // Phase 5.6: compare LOCAL calendar dates, not UTC dates. A deposit
+        // recorded at 23:30 local time is that day's banking, even when UTC
+        // has already rolled over — the treasurer reconciles by local day.
         deposits.retain(|d| {
-            let date = d.deposit_date.date_naive();
+            let date = d.deposit_date.with_timezone(&chrono::Local).date_naive();
             date >= start && date < end_exclusive
         });
         deposits.sort_by_key(|d| d.deposit_date);
+        let row_count = deposits.len();
         self.audit
             .record(
                 actor,
@@ -320,7 +350,9 @@ impl<'a> ReportService<'a> {
                 None,
                 None,
                 None,
-                Some("deposit report generated".into()),
+                Some(format!(
+                    "deposit report generated: start={start} end={end} rows={row_count}"
+                )),
             )
             .await?;
         Ok(deposits)
@@ -329,6 +361,31 @@ impl<'a> ReportService<'a> {
 
 const IIF_INCOME_ACCOUNT: &str = "Donations";
 const IIF_OFFSET_ACCOUNT: &str = "Undeposited Funds";
+
+/// Escape a free-text value for tab-delimited IIF (plan Phase 5.6): donor
+/// names and memos come from operator input and may contain tabs, newlines or
+/// carriage returns that would corrupt the row structure (or forge extra
+/// rows). They are replaced with spaces; quotes and backslashes are harmless
+/// to IIF and preserved.
+fn iif_escape(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| match c {
+            '\t' | '\n' | '\r' => ' ',
+            _ => c,
+        })
+        .collect()
+}
+
+/// Format integer pence as `pounds.cents` without any `f64` path
+/// (plan Phase 5.6): binary floating point cannot represent most cent values
+/// exactly, so large totals drifted by a penny through `as f64 / 100.0`.
+fn iif_money(pence: i64) -> String {
+    let sign = if pence < 0 { "-" } else { "" };
+    // `unsigned_abs` avoids wrapping on `i64::MIN`, unlike negation.
+    let abs = pence.unsigned_abs();
+    format!("{sign}{}.{:02}", abs / 100, abs % 100)
+}
 
 fn build_iif(rows: &[IifDonationRow]) -> String {
     use std::fmt::Write as _;
@@ -343,29 +400,27 @@ fn build_iif(rows: &[IifDonationRow]) -> String {
         // absurdly large inputs.
         let trns_id = u32::try_from(idx).unwrap_or(u32::MAX).saturating_add(1);
         let date = row.donation_date.format("%m/%d/%Y");
-        let name = row.donor_name.clone().unwrap_or_else(|| "Anonymous".into());
-        // IIF amounts render to 2dp; realistic pence totals convert exactly.
-        #[allow(clippy::cast_precision_loss)]
-        let amount = row.amount_pence as f64 / 100.0;
-        let memo = format!(
+        let name = iif_escape(&row.donor_name.clone().unwrap_or_else(|| "Anonymous".into()));
+        let amount = iif_money(row.amount_pence);
+        let neg_amount = iif_money(row.amount_pence.checked_neg().unwrap_or(i64::MIN));
+        let memo = iif_escape(&format!(
             "Offering {} - {} ({})",
             row.offering_number, row.donation_type, row.payment_method
-        );
+        ));
         let debit_spl_id = trns_id.saturating_mul(2).saturating_sub(1);
         let credit_spl_id = trns_id.saturating_mul(2);
-        let neg_amount = -amount;
 
         let _ = writeln!(
             out,
-            "TRNS\t{trns_id}\tGENERAL JOURNAL\t{date}\t{IIF_INCOME_ACCOUNT}\t{name}\t{amount:.2}\t{memo}"
+            "TRNS\t{trns_id}\tGENERAL JOURNAL\t{date}\t{IIF_INCOME_ACCOUNT}\t{name}\t{amount}\t{memo}"
         );
         let _ = writeln!(
             out,
-            "SPL\t{debit_spl_id}\tGENERAL JOURNAL\t{date}\t{IIF_INCOME_ACCOUNT}\t{name}\t{amount:.2}\t{memo}"
+            "SPL\t{debit_spl_id}\tGENERAL JOURNAL\t{date}\t{IIF_INCOME_ACCOUNT}\t{name}\t{amount}\t{memo}"
         );
         let _ = writeln!(
             out,
-            "SPL\t{credit_spl_id}\tGENERAL JOURNAL\t{date}\t{IIF_OFFSET_ACCOUNT}\t{name}\t{neg_amount:.2}\t{memo}"
+            "SPL\t{credit_spl_id}\tGENERAL JOURNAL\t{date}\t{IIF_OFFSET_ACCOUNT}\t{name}\t{neg_amount}\t{memo}"
         );
     }
     out
@@ -416,5 +471,36 @@ mod tests {
             .filter_map(|a| a.parse::<f64>().ok())
             .sum();
         assert!(totals.abs() < 0.001);
+    }
+
+    #[test]
+    fn iif_escapes_tabs_and_newlines_in_names() {
+        // Phase 5.6: a donor name containing a tab or newline must not forge
+        // extra IIF columns or rows.
+        let out = build_iif(&[row(1, 100, Some("Evil\tName\nForged"))]);
+        for line in out
+            .lines()
+            .filter(|l| l.starts_with("TRNS\t") || l.starts_with("SPL\t"))
+        {
+            assert_eq!(
+                line.split('\t').count(),
+                8,
+                "escaped row must keep exactly 8 tab fields: {line:?}"
+            );
+        }
+        assert!(!out.contains("Evil\tName"));
+        assert!(out.contains("Evil Name Forged"));
+    }
+
+    #[test]
+    fn iif_amounts_are_exact_without_floats() {
+        // Phase 5.6: integer formatting — 1p renders as 0.01 exactly, and
+        // negatives carry the sign on the pounds.
+        assert_eq!(super::iif_money(1), "0.01");
+        assert_eq!(super::iif_money(2000), "20.00");
+        assert_eq!(super::iif_money(-350), "-3.50");
+        assert_eq!(super::iif_money(0), "0.00");
+        let out = build_iif(&[row(1, 1, None)]);
+        assert!(out.contains("\t0.01\t"));
     }
 }

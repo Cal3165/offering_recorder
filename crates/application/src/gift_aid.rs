@@ -82,23 +82,26 @@ impl<'a> GiftAidService<'a> {
             .ok_or_else(|| AppError::NotFound("donor not found".into()))?;
 
         if donor.donor_type == DonorType::Unknown {
-            return Err(AppError::Conflict(
+            // Phase 5.4: missing/unknown inputs are Validation, not Conflict —
+            // Conflict is reserved for real state conflicts (an active
+            // declaration already exists, a lost optimistic-concurrency race).
+            return Err(AppError::Validation(
                 "cannot create a declaration: the donor's UK/non-UK status is not known; please set it on the donor first".into(),
             ));
         }
 
         let full_name = details.donor_full_name.as_deref().map_or("", str::trim);
         if full_name.is_empty() {
-            return Err(AppError::Conflict(
+            return Err(AppError::Validation(
                 "donor full name must be provided on the declaration".into(),
             ));
         }
         let address = details
             .donor_address
             .as_ref()
-            .ok_or_else(|| AppError::Conflict("donor address must be provided".into()))?;
+            .ok_or_else(|| AppError::Validation("donor address must be provided".into()))?;
         if address.line1.trim().is_empty() {
-            return Err(AppError::Conflict(
+            return Err(AppError::Validation(
                 "donor address must include a first line".into(),
             ));
         }
@@ -575,8 +578,13 @@ impl<'a> GiftAidService<'a> {
     }
 
     fn signature_for(actor: &User, guest_name: Option<String>) -> Signature {
+        // Phase 5.5: trim guest names like the offering path — a
+        // whitespace-only entry falls back to the operator's own signature
+        // and surrounding spaces are never stored in the audit trail.
         match guest_name {
-            Some(name) if !name.trim().is_empty() => Signature::guest_for(actor.id, name),
+            Some(name) if !name.trim().is_empty() => {
+                Signature::guest_for(actor.id, name.trim().to_string())
+            }
             _ => Signature::from_user(actor.id, actor.display_name.clone()),
         }
     }

@@ -60,7 +60,9 @@ async fn declaration_requires_known_donor_type() {
             .gift_aid
             .create_declaration(&admin, donor.id, details)
             .await,
-        Err(AppError::Conflict(_))
+        // Phase 5.4: missing/unknown declaration inputs are Validation;
+        // Conflict is reserved for real state conflicts.
+        Err(AppError::Validation(_))
     ));
 }
 
@@ -122,7 +124,8 @@ async fn declaration_requires_full_name_and_address() {
             .gift_aid
             .create_declaration(&admin, donor.id, missing_name)
             .await,
-        Err(AppError::Conflict(_))
+        // Phase 5.4: input errors are Validation, not Conflict.
+        Err(AppError::Validation(_))
     ));
 
     let missing_address = offering_application::gift_aid::NewDeclarationDetails {
@@ -141,7 +144,8 @@ async fn declaration_requires_full_name_and_address() {
             .gift_aid
             .create_declaration(&admin, donor.id, missing_address)
             .await,
-        Err(AppError::Conflict(_))
+        // Phase 5.4: input errors are Validation, not Conflict.
+        Err(AppError::Validation(_))
     ));
 
     let ok = offering_application::gift_aid::NewDeclarationDetails {
