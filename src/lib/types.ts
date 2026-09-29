@@ -239,6 +239,10 @@ export interface BankDeposit {
   actual_cash: Money;
   actual_cheques: Money;
   actual_other: Money;
+  /** Phase 5.6: true once the bank-counter visit happened, even when every
+   * bucket reconciles at exactly £0.00. Distinguishes "reconciled at zero"
+   * (evidence, deletion blocked) from "never reconciled" (pending). */
+  actuals_recorded: boolean;
   reference: string | null;
   created_at: string;
   updated_at: string;
@@ -442,6 +446,26 @@ export function localDateTimeInput(d: Date): string {
 }
 
 /**
+ * Format a UTC instant (created_at, timestamp, deposit_date, signed_at) for
+ * display in the client's locale (plan Phase 7.4). Never slice instants with
+ * `slice(0, 10)` — that shows the UTC calendar day, not the local one.
+ */
+export function formatInstant(iso: string): string {
+  return new Date(iso).toLocaleString();
+}
+
+/**
+ * Format a date-only value (tax-year bounds, retention deadlines, claim
+ * deadlines) for display. Plain `YYYY-MM-DD` strings parse as UTC midnight
+ * and shift a day back in BST, so noon-anchor before rendering as a local
+ * calendar day (same mitigation as DonorDetail/Claims).
+ */
+export function formatDateOnly(ymdOrIso: string): string {
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(ymdOrIso) ? `${ymdOrIso}T12:00:00` : ymdOrIso;
+  return localYmd(new Date(iso));
+}
+
+/**
  * Canonical amendment-change description (review O17): one wording shared by
  * the offering report and the donor detail views.
  */
@@ -479,6 +503,50 @@ export function parsePenceFromInput(value: string): number | null {
   const pence = parseInt(whole, 10) * 100 + parseInt(frac.padEnd(2, "0"), 10);
   if (!Number.isSafeInteger(pence)) return null;
   return pence;
+}
+
+/**
+ * Whether bank-counter actuals were ever recorded for a deposit (plan Phase
+ * 7.7 £0-actuals policy + Phase 5.6 leftover). Uses the backend-supplied
+ * `actuals_recorded` flag so a deposit reconciled at exactly £0.00 counts as
+ * recorded evidence; falls back to the nonzero heuristic for rows predating
+ * the flag. Never infer this from `actual_total().is_zero()`.
+ */
+export function depositHasActuals(d: BankDeposit): boolean {
+  if (typeof d.actuals_recorded === "boolean") return d.actuals_recorded;
+  return d.actual_cash.pence !== 0 || d.actual_cheques.pence !== 0 || d.actual_other.pence !== 0;
+}
+
+/**
+ * Whether recorded actuals match expected totals in all three buckets
+ * (shared with Banking, Dashboard, Reports — review O17).
+ */
+export function depositReconciled(d: BankDeposit): boolean {
+  if (!depositHasActuals(d)) return false;
+  const t = depositExpectedTotals(d);
+  return (
+    d.actual_cash.pence === t.cash &&
+    d.actual_cheques.pence === t.cheques &&
+    d.actual_other.pence === t.other
+  );
+}
+
+/** Total cash value (pence) of a denomination count map. Integer math only. */
+export function denomTotal(counts: Partial<Record<string, number>>): number {
+  return DENOMINATIONS.reduce((s, d) => s + d.pence * (counts[d.name] ?? 0), 0);
+}
+
+/**
+ * Whole non-negative integer guard for count/attendance inputs (plan Phase
+ * 7.7). Rejects blanks, fractions, exponents, signs and unsafe integers —
+ * never silently coerce garbage to 0.
+ */
+export function parseNonNegInt(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(n) || n < 0) return null;
+  return n;
 }
 
 export interface CommunityBuilding {

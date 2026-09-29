@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Amendment, AmendmentChange, CashTotal, Offering, User } from "../types";
+  import { changeLabel } from "../types";
   import DenominationGrid from "../DenominationGrid.svelte";
   import AmendmentSignModal from "./AmendmentSignModal.svelte";
   import ConfirmDialog from "../ConfirmDialog.svelte";
@@ -44,6 +45,14 @@
   let pendingDelete = $state<Amendment | null>(null);
   let deleteBusy = $state(false);
 
+  // NOTE (plan Phase 7.3): this panel deliberately does NOT offer an
+  // "add donation" amendment mode. `AmendmentChange::AddDonation` carries a
+  // full `Donation` (id, offering binding, timestamps) that cannot be
+  // fabricated client-side — a made-up id could collide and the backend
+  // rejects `d.offering_id != amendment.offering_id`. Donations are recorded
+  // pre-lock via DonationForm; post-lock additions go through a new
+  // collection, not a fabricated amendment. Existing AddDonation amendments
+  // (e.g. created elsewhere) still render read-only via changeLabel below.
   function startCorrect() {
     amendOpen = true;
     amendMode = "attendance";
@@ -164,6 +173,7 @@
         <div class="row space-between">
           <span>
             <span class="badge">{a.status}</span> {a.reason}
+            <span class="muted"> — {a.changes.map((c) => changeLabel(c)).join("; ")}</span>
             {#if a.counter_signature} • Counter: {a.counter_signature.user_name}{#if a.counter_signature.is_guest} (guest){/if}{/if}
             {#if a.checker_signature} • Checker: {a.checker_signature.user_name}{#if a.checker_signature.is_guest} (guest){/if}{/if}
           </span>

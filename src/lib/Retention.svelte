@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { retentionReport } from "./api";
-  import type { RetentionItem, RetentionReport as Report, RetentionSummary } from "./types";
-  import { fmtPence, localYmd } from "./types";
+  import type { RetentionReport as Report, RetentionSummary } from "./types";
+  import { formatDateOnly } from "./types";
 
   let report = $state<Report | null>(null);
   let error = $state("");
@@ -23,7 +23,7 @@
   }
 
   function fmtDate(d: string): string {
-    return localYmd(new Date(d));
+    return formatDateOnly(d);
   }
 
   function summaryRows(): { label: string; s: RetentionSummary }[] {

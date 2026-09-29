@@ -11,6 +11,7 @@
   let password = $state("");
   let displayName = $state("");
   let error = $state("");
+  let busy = $state(false);
 
   onMount(async () => {
     try {
@@ -24,7 +25,9 @@
 
   async function submit(e: Event) {
     e.preventDefault();
+    if (busy || loading) return;
     error = "";
+    busy = true;
     try {
       const u = isBootstrap
         ? await bootstrap(username, password, displayName || username)
@@ -32,6 +35,8 @@
       onLogin(u);
     } catch (err) {
       error = String(err);
+    } finally {
+      busy = false;
     }
   }
 </script>
@@ -42,19 +47,19 @@
   <form onsubmit={submit}>
     <div class="field">
       <label for="login-username">Username</label>
-      <input id="login-username" type="text" bind:value={username} style="width:100%" />
+      <input id="login-username" type="text" bind:value={username} style="width:100%" autocomplete="username" />
     </div>
     {#if isBootstrap}
       <div class="field">
         <label for="login-display-name">Display name</label>
-        <input id="login-display-name" type="text" bind:value={displayName} style="width:100%" />
+        <input id="login-display-name" type="text" bind:value={displayName} style="width:100%" autocomplete="nickname" />
       </div>
     {/if}
     <div class="field">
       <label for="login-password">Password</label>
-      <input id="login-password" type="password" bind:value={password} style="width:100%" />
+      <input id="login-password" type="password" bind:value={password} style="width:100%" autocomplete={isBootstrap ? "new-password" : "current-password"} />
     </div>
     {#if error}<div class="error">{error}</div>{/if}
-    <button type="submit" style="width:100%">{isBootstrap ? "Create admin account" : "Sign in"}</button>
+    <button type="submit" style="width:100%" disabled={busy || loading}>{busy ? "Working…" : isBootstrap ? "Create admin account" : "Sign in"}</button>
   </form>
 </div>

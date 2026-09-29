@@ -18,7 +18,6 @@
     withdrawDeclarationAmendmentSignature,
   } from "../api";
   import type {
-    AmendmentChange,
     DeclarationAmendment,
     Donation,
     Donor,
@@ -29,7 +28,7 @@
   } from "../types";
   import { fmtPence, localYmd, changeLabel } from "../types";
 
-  let { donor, user, onClose }: { donor: Donor; user: User; onClose: () => void } = $props();
+  let { donor, user, onClose, onDonorChanged = undefined }: { donor: Donor; user: User; onClose: () => void; onDonorChanged?: (d: Donor) => void } = $props();
 
   let declarations = $state<GiftAidDeclaration[]>([]);
   let declarationAmendments = $state<DeclarationAmendment[]>([]);
@@ -94,6 +93,10 @@
       notice = updated.privacy_notice_version;
       eBasis = "";
       eNotice = "";
+      // Refetch the donor header upstream (plan Phase 7.7): the parent owns
+      // `selected` and the table row, so push the updated donor up instead of
+      // leaving them stale.
+      onDonorChanged?.(updated);
     } catch (e) {
       error = String(e);
     } finally {

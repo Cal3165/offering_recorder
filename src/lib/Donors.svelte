@@ -212,6 +212,14 @@
 
 {#if selected}
   {#key selected.id}
-    <DonorDetail {user} donor={selected} onClose={() => (selected = null)} />
+    <DonorDetail
+      {user}
+      donor={selected}
+      onClose={() => (selected = null)}
+      onDonorChanged={(d) => {
+        selected = d;
+        donors = donors.map((x) => (x.id === d.id ? d : x));
+      }}
+    />
   {/key}
 {/if}

@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { listActiveOfferings, listLockedOfferings, listMeetings } from "./api";
-  import type { Meeting, Offering, User } from "./types";
-  import { DENOMINATIONS, fmtPence } from "./types";
+  import type { Meeting, Offering } from "./types";
+  import { DENOMINATIONS, fmtPence, denomTotal, formatInstant } from "./types";
 
-  let { user, onNavigate }: { user: User; onNavigate: (view: string, offeringId?: string) => void } = $props();
+  let { onNavigate }: { onNavigate: (view: string, offeringId?: string) => void } = $props();
 
   let meetings = $state<Meeting[]>([]);
   let activeOfferings = $state<Offering[]>([]);
@@ -33,8 +33,8 @@
   function meetingName(id: string) {
     return meetings.find((m) => m.id === id)?.name ?? "";
   }
-  function denomTotal(o: Offering) {
-    return DENOMINATIONS.reduce((s, d) => s + d.pence * (o.cash_denominations.counts[d.name] ?? 0), 0);
+  function denomTotalFor(o: Offering) {
+    return denomTotal(o.cash_denominations.counts);
   }
   function donationBreakdown(o: Offering) {
     const bd: Record<string, number> = {};
@@ -53,7 +53,7 @@
     return (o.donations ?? []).reduce((s, d) => s + d.amount.pence, 0);
   }
   function difference(o: Offering) {
-    return denomTotal(o) - cashDonations(o);
+    return denomTotalFor(o) - cashDonations(o);
   }
   function reconciles(o: Offering) {
     const bd = donationBreakdown(o);
@@ -63,7 +63,10 @@
   }
 
   const awaitingChecker = $derived(activeOfferings.filter((o) => o.status === "CounterSigned"));
-  const checked = $derived(lockedOfferings.filter((o) => o.status === "CheckerSigned" || o.status === "Locked"));
+  // `listLockedOfferings` returns Locked rows only, so the old
+  // `CheckerSigned || Locked` filter had a dead branch — every row here is
+  // locked (plan Phase 7.7).
+  const checked = $derived(lockedOfferings);
 </script>
 
 <div class="card">
@@ -89,7 +92,7 @@
             <span>
               <strong>{o.offering_number}</strong> — {fmtPence(totalDonations(o))} recorded
               {#if meetingName(o.meeting_id)}<span class="muted"> • {meetingName(o.meeting_id)}</span>{/if}
-              <span class="muted"> • {o.created_at.slice(0, 10)}</span>
+              <span class="muted"> • {formatInstant(o.created_at)}</span>
               {#if !reconciles(o)}
                 <span class="badge error-badge">cash differs by {fmtPence(Math.abs(difference(o)))}</span>
               {:else}
@@ -117,7 +120,7 @@
           <div class="row space-between">
             <span>
               {o.offering_number} — {fmtPence(totalDonations(o))}
-              <span class="muted"> • {o.created_at.slice(0, 10)} • {o.status === "Locked" ? "locked" : "signed, not yet locked"}</span>
+              <span class="muted"> • {formatInstant(o.created_at)} • locked</span>
             </span>
             <button class="secondary" onclick={() => onNavigate("offerings", o.id)}>View</button>
           </div>

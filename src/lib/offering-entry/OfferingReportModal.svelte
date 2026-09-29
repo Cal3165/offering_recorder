@@ -1,6 +1,6 @@
 <script lang="ts">
   import { DENOMINATIONS, fmtPence, fmtBreakdown, changeLabel } from "../types";
-  import type { AmendmentChange, OfferingReport } from "../types";
+  import type { OfferingReport } from "../types";
 
   let { report, onClose }: { report: OfferingReport; onClose: () => void } = $props();
 
@@ -11,11 +11,16 @@
   const repCardTotal = $derived(repDonations.filter(d => d.payment_method === "Contactless" || d.payment_method === "ChipAndPin").reduce((s, d) => s + d.amount.pence, 0));
   const repTotal = $derived(repCashTotal + repChequeTotal + repBankTotal + repCardTotal);
 
+  let printBtn: HTMLButtonElement | null = $state(null);
+
   $effect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
+    // Move focus into the dialog on open (plan Phase 7.7 a11y): screen
+    // readers announce the report and keyboard users start on Print.
+    printBtn?.focus();
     return () => window.removeEventListener("keydown", onKey);
   });
 </script>
@@ -35,7 +40,7 @@
 >
   <div class="export-card print-area">
     <div class="row no-print" style="justify-content: flex-end;">
-      <button onclick={() => window.print()}>Print / Save PDF</button>
+      <button bind:this={printBtn} onclick={() => window.print()}>Print / Save PDF</button>
       <button class="secondary" onclick={onClose}>Close</button>
     </div>
     <h1>Offering Record</h1>

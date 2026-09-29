@@ -59,11 +59,12 @@
     document.getElementById("donation-amount")?.focus();
   }
 
+  // Fill the denomination grid with the cash counted but not yet allocated
+  // to a donation. Cash only: for non-cash methods there is no remainder to
+  // suggest, so this is a no-op there (plan Phase 7.6 — previously it
+  // overwrote the typed amount with the cash remainder).
   function suggestRemaining() {
-    if (dMethod !== "Cash") {
-      dAmount = (remainingCash / 100).toFixed(2);
-      return;
-    }
+    if (dMethod !== "Cash") return;
     const next: Record<string, number> = {};
     for (const d of DENOMINATIONS) {
       const remaining = Math.max(0, (cashCounts[d.name] ?? 0) - (donationBreakdown[d.name] ?? 0));
@@ -88,6 +89,12 @@
   async function handleSubmit() {
     // Loose cash must always be recorded as a cash donation.
     if (dClass === "LooseCash") dMethod = "Cash";
+    // Named donations are Gift Aid candidates — they are meaningless without
+    // a donor, and the backend rejects them (plan Phase 7.6).
+    if (dClass === "Named" && !dDonor) {
+      onError("Select a donor for a named donation.");
+      return;
+    }
     let pence: number;
     let breakdown: CashTotal | null = null;
     if (dMethod === "Cash") {

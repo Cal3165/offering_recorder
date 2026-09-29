@@ -6,19 +6,18 @@
     offering,
     issues,
     user,
-    canSign,
     reviewAction,
     reviewConfirmed,
     reviewGuest,
     reviewGuestName,
     error,
+    reviewErrorCode,
     cashReconciled,
     cashDiff,
     donationTotal,
     cashDonationTotal,
     chequeDonationTotal,
     bankDonationTotal,
-    onAction,
     onConfirmedChange,
     onGuestChange,
     onGuestNameChange,
@@ -27,19 +26,19 @@
   }: {
     offering: Offering;
     issues: ValidationIssue[];    user: User;
-    canSign: boolean;
     reviewAction: "counter" | "checker" | "lock";
     reviewConfirmed: boolean;
     reviewGuest: boolean;
     reviewGuestName: string;
     error: string;
+    /** Machine-readable IPC error code of `error` (plan Phase 7.5). */
+    reviewErrorCode: string | null;
     cashReconciled: boolean;
     cashDiff: number;
     donationTotal: number;
     cashDonationTotal: number;
     chequeDonationTotal: number;
     bankDonationTotal: number;
-    onAction: (action: "counter" | "checker" | "lock") => void;
     onConfirmedChange: (confirmed: boolean) => void;
     onGuestChange: (guest: boolean) => void;
     onGuestNameChange: (name: string) => void;
@@ -98,7 +97,7 @@
     {#if error}
       <div class="sign-error" role="alert">
         <strong>Could not complete the signature.</strong>
-        {#if error.toLowerCase().includes("different users") || error.toLowerCase().includes("different people")}
+        {#if reviewErrorCode === "conflict"}
           <div style="margin-top:0.3rem;">
             The counter and checker must be different people. If you counted the offering yourself and someone
             else checked it, choose <em>“Signed by someone else”</em> and enter their name so they are recorded

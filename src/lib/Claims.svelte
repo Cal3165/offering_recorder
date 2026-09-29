@@ -10,7 +10,7 @@
     submitGasdsClaimForReview,
   } from "./api";
   import type { ClaimReadiness, GasdsClaim, GasdsClaimMethod, User } from "./types";
-  import { fmtPence, localYmd } from "./types";
+  import { fmtPence, formatDateOnly } from "./types";
 
   let { user }: { user: User } = $props();
 
@@ -81,10 +81,7 @@
 
   function fmtDate(d: string | null): string {
     if (!d) return "—";
-    // Date-only strings parse as UTC midnight and shift a day back in BST;
-    // noon-anchor keeps the calendar day (same mitigation as DonorDetail).
-    const iso = /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T12:00:00` : d;
-    return localYmd(new Date(iso));
+    return formatDateOnly(d);
   }
 
   async function runSomething(a: () => Promise<unknown>) {

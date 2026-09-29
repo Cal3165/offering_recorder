@@ -26,6 +26,7 @@
     validateOffering,
     listOfferings,
     withdrawSignature,
+    errorCode,
   } from "./api";
   import type {
     Amendment,
@@ -62,7 +63,7 @@
   let reportOpen = $state(false);
   let reportLoading = $state(false);
 
-  let attendance = $state(0);
+  let attendance = $state<number | null>(null);
   let counts = $state<Partial<Record<string, number>>>({});
 
   let addDonationOpen = $state(false);
@@ -72,13 +73,15 @@
 
   let startOpen = $state(false);
   let startAttendance = $state(0);
-  let startNumber = $state("");
 
   let reviewOpen = $state(false);
   let reviewAction = $state<"counter" | "checker" | "lock">("counter");
   let reviewConfirmed = $state(false);
   let reviewGuest = $state(false);
   let reviewGuestName = $state("");
+  // Machine-readable code of the last signing failure, so ReviewModal can
+  // branch on errorCode(e) instead of message substrings (plan Phase 7.5).
+  let reviewErrorCode = $state<string | null>(null);
 
   const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   let meetingOpen = $state(false);
@@ -156,21 +159,36 @@
   async function loadOfferings() {
     const req = ++meetingsSeq;
     if (!meetingId) return;
-    const rows = await listOfferings(meetingId);
-    if (req !== meetingsSeq) return;
-    offerings = rows;
-    offeringId = rows.length > 0 ? rows[rows.length - 1].id : null;
-    await selectOffering();
+    try {
+      const rows = await listOfferings(meetingId);
+      if (req !== meetingsSeq) return;
+      offerings = rows;
+      offeringId = rows.length > 0 ? rows[rows.length - 1].id : null;
+      await selectOffering();
+    } catch (e) {
+      if (req !== meetingsSeq) return;
+      error = String(e);
+    }
   }
 
   async function pickMeeting(id: string) {
     meetingId = id;
-    await loadOfferings();
+    error = "";
+    try {
+      await loadOfferings();
+    } catch (e) {
+      error = String(e);
+    }
   }
 
   async function pickOffering(id: string) {
     offeringId = id;
-    await selectOffering();
+    error = "";
+    try {
+      await selectOffering();
+    } catch (e) {
+      error = String(e);
+    }
   }
 
   async function newMeeting() {
@@ -212,13 +230,20 @@
     error = "";
     ok = "";
     if (!offeringId) return;
-    const loaded = await getOffering(offeringId);
-    if (req !== offeringSeq) return;
-    offering = loaded;
-    if (offering) {
-      attendance = offering.attendance ?? 0;
-      counts = { ...offering.cash_denominations.counts };
-      await refresh(req, loaded);
+    try {
+      const loaded = await getOffering(offeringId);
+      if (req !== offeringSeq) return;
+      offering = loaded;
+      if (offering) {
+        // Null (never entered) stays null so the input renders empty; 0 is a
+        // real recorded headcount (plan Phase 7.7 null-vs-0).
+        attendance = offering.attendance ?? null;
+        counts = { ...offering.cash_denominations.counts };
+        await refresh(req, loaded);
+      }
+    } catch (e) {
+      if (req !== offeringSeq) return;
+      error = String(e);
     }
   }
 
@@ -227,20 +252,25 @@
     // Callers that already own a generation pass it through; fresh callers
     // start a new one, invalidating any in-flight refresh.
     const req = seq ?? ++offeringSeq;
-    // When the caller already holds the offering (selectOffering's `loaded`),
-    // reuse it instead of re-fetching the same row.
-    const offeringPromise = initial !== undefined ? Promise.resolve(initial) : getOffering(offeringId);
-    const [o, a, i, g] = await Promise.all([
-      offeringPromise,
-      listAmendments(offeringId),
-      validateOffering(offeringId),
-      gasdsForOffering(offeringId),
-    ]);
-    if (req !== offeringSeq) return;
-    offering = o;
-    amendments = a;
-    issues = i;
-    gasds = g;
+    try {
+      // When the caller already holds the offering (selectOffering's `loaded`),
+      // reuse it instead of re-fetching the same row.
+      const offeringPromise = initial !== undefined ? Promise.resolve(initial) : getOffering(offeringId);
+      const [o, a, i, g] = await Promise.all([
+        offeringPromise,
+        listAmendments(offeringId),
+        validateOffering(offeringId),
+        gasdsForOffering(offeringId),
+      ]);
+      if (req !== offeringSeq) return;
+      offering = o;
+      amendments = a;
+      issues = i;
+      gasds = g;
+    } catch (e) {
+      if (req !== offeringSeq) return;
+      error = String(e);
+    }
   }
 
   async function openReport() {
@@ -346,9 +376,6 @@
 
   function openStart() {
     if (!meetingId) return;
-    // The backend assigns offering numbers from persisted counters; any
-    // index-based guess here could mislead, so we no longer show one.
-    startNumber = "";
     startAttendance = 0;
     startOpen = true;
   }
@@ -385,12 +412,10 @@
     reviewConfirmed = false;
     reviewGuest = false;
     reviewGuestName = "";
+    reviewErrorCode = null;
     error = "";
     ok = "";
     reviewOpen = true;
-  }
-  function setReviewAction(action: "counter" | "checker" | "lock") {
-    reviewAction = action;
   }
   function setReviewConfirmed(confirmed: boolean) {
     reviewConfirmed = confirmed;
@@ -410,12 +435,14 @@
       else if (reviewAction === "checker") await checkerSign(offeringId!, guestName);
       else await lockOffering(offeringId!);
       reviewOpen = false;
+      reviewErrorCode = null;
       ok =
         reviewAction === "lock"
           ? "Offering locked."
           : `${reviewAction === "counter" ? "Counter" : "Checker"} signature recorded.`;
       await refresh();
     } catch (e) {
+      reviewErrorCode = errorCode(e);
       error = String(e);
     }
   }
@@ -742,7 +769,7 @@
           <input
             id="offering-attendance"
             type="number"
-            value={attendance}
+            value={attendance ?? ""}
             oninput={(e) => (attendance = e.currentTarget.value === "" ? NaN : Number(e.currentTarget.value))}
             min="0"
             onchange={() => saveAttendance()}
@@ -953,19 +980,18 @@
       {offering}
       {issues}
       {user}
-      {canSign}
       {reviewAction}
       {reviewConfirmed}
       {reviewGuest}
       {reviewGuestName}
       {error}
+      {reviewErrorCode}
       {cashReconciled}
       {cashDiff}
       {donationTotal}
       {cashDonationTotal}
       {chequeDonationTotal}
       {bankDonationTotal}
-      onAction={setReviewAction}
     onConfirmedChange={setReviewConfirmed}
     onGuestChange={setReviewGuest}
     onGuestNameChange={setReviewGuestName}

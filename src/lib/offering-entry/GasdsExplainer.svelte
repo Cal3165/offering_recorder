@@ -8,7 +8,8 @@
 </script>
 
 <p class="muted">
-  GASDS eligible: {fmtPence(gasds.eligible_amount.pence)} • Claimable:
+  GASDS eligible: {fmtPence(gasds.eligible_amount.pence)} • Claimable
+  <span class="hint" title="Estimate only: the per-offering view applies this offering's Gift Aid total and annual ceiling. The final claimable figure is computed when the claim is prepared, after the yearly matching limit is applied.">estimate ⓘ</span>:
   {fmtPence(Math.min(gasds.eligible_amount.pence, gasds.maximum_allowed.pence))}
   <button class="secondary" onclick={() => (open = !open)} style="font-size:0.8rem; padding:0.1rem 0.5rem; margin-left:0.5rem;">
     {open ? "Hide" : "Why?"}

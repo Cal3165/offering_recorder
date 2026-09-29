@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { availableOfferingsForDeposit, createDeposit, deleteDeposit, listLockedOfferings, listDeposits, recordDepositActuals } from "./api";
+  import { availableOfferingsForDeposit, createDeposit, deleteDeposit, listLockedOfferings, listDeposits, recordDepositActuals, errorCode } from "./api";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import type { BankDeposit, DepositCandidate } from "./types";
-  import { fmtPence, parsePenceFromInput, localDateTimeInput, depositExpectedTotals } from "./types";
+  import { fmtPence, parsePenceFromInput, localDateTimeInput, depositExpectedTotals, depositHasActuals, depositReconciled, formatInstant } from "./types";
 
   let candidates = $state<DepositCandidate[]>([]);
   let selected = $state<Set<string>>(new Set());
@@ -30,11 +30,27 @@
     await load();
   });
 
+  // Friendly error text that branches on the machine-readable IPC error code
+  // (plan Phase 7 leftover): `unavailable` is transient (retry shortly),
+  // `audit-failed-after-commit` means the business write already stands so
+  // the operator must confirm state instead of retrying blindly.
+  function friendlyError(e: unknown): string {
+    const code = errorCode(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    if (code === "unavailable") return `${msg} (service busy — please retry shortly)`;
+    if (code === "audit-failed-after-commit")
+      return `${msg} — the change was saved, so confirm the current state before doing anything else (do not retry blindly).`;
+    return msg;
+  }
+
   async function load() {
     error = "";
     busy = true;
     try {
       [candidates, deposits] = await Promise.all([availableOfferingsForDeposit(), listDeposits()]);
+      // Fresh actuals inputs per load so stale entries can't be recorded
+      // against a changed deposit list (review follow-up).
+      actuals = {};
       // BankDepositItem carries only offering_id (no offering_number), so
       // resolve human-readable numbers via the offerings list.
       try {
@@ -46,7 +62,7 @@
         // Non-fatal: item rows fall back to the truncated offering id.
       }
     } catch (e) {
-      error = String(e);
+      error = friendlyError(e);
     } finally {
       busy = false;
     }
@@ -74,13 +90,18 @@
       return;
     }
     const date = depositDate || localDateTimeInput(new Date());
+    const parsed = new Date(date);
+    if (Number.isNaN(parsed.getTime())) {
+      error = "Enter a valid deposit date and time.";
+      return;
+    }
     try {
       // Contract: datetime-local wall time is interpreted in the client TZ and
       // stored as a UTC instant. Same wall time in different TZs = different
       // instants (accepted for single-parish use).
       await createDeposit(
         selectedCandidates.map((c) => c.offering_id),
-        new Date(date).toISOString(),
+        parsed.toISOString(),
         reference.trim() || null,
       );
       selected = new Set();
@@ -89,11 +110,14 @@
       ok = "Deposit created.";
       await load();
     } catch (e) {
-      error = String(e);
+      error = friendlyError(e);
     }
   }
 
-  // Shared deposit reconciliation math (review O17).
+  // Shared deposit reconciliation math (review O17), now centralised in
+  // types.ts so Banking, Dashboard and Reports cannot drift. `hasActuals`
+  // honours the backend `actuals_recorded` flag: a deposit reconciled at
+  // exactly £0.00 is recorded evidence (deletion blocked), not "pending".
   function expectedCash(d: BankDeposit) {
     return depositExpectedTotals(d).cash;
   }
@@ -110,15 +134,10 @@
     return d.actual_cash.pence + d.actual_cheques.pence + d.actual_other.pence;
   }
   function hasActuals(d: BankDeposit) {
-    return d.actual_cash.pence !== 0 || d.actual_cheques.pence !== 0 || d.actual_other.pence !== 0;
+    return depositHasActuals(d);
   }
   function reconciled(d: BankDeposit) {
-    return (
-      hasActuals(d) &&
-      d.actual_cash.pence === expectedCash(d) &&
-      d.actual_cheques.pence === expectedCheques(d) &&
-      d.actual_other.pence === expectedOther(d)
-    );
+    return depositReconciled(d);
   }
 
   async function saveActuals(d: BankDeposit) {
@@ -137,7 +156,7 @@
       ok = "Actuals recorded.";
       await load();
     } catch (e) {
-      error = String(e);
+      error = friendlyError(e);
     }
   }
 
@@ -159,7 +178,7 @@
       ok = "Deposit deleted.";
       await load();
     } catch (e) {
-      error = String(e);
+      error = friendlyError(e);
     } finally {
       deleteBusy = false;
     }
@@ -179,7 +198,7 @@
   }
 
   function fmtDate(iso: string): string {
-    return new Date(iso).toLocaleString();
+    return formatInstant(iso);
   }
 </script>
 

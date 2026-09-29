@@ -5,6 +5,7 @@
     createDonor,
     donorEligibilitySummary,
     listActiveDonors,
+    errorCode,
   } from "../api";
 
   const FAV_DONORS_KEY = "or-fav-donors";
@@ -157,14 +158,19 @@
       const d = await createDonor(newDonorInput(), false);
       await finishNewDonor(d);
     } catch (e) {
-      const msg = String(e);
-      if (msg.toLowerCase().includes("duplicate")) {
+      // Branch on the machine-readable code (plan Phase 7.5): a `conflict`
+      // means the backend found possible duplicates — surface the inline
+      // "create anyway" choice. Anything else is a plain error. The message
+      // text is only used to extract the candidate names, never to decide.
+      if (errorCode(e) === "conflict") {
+        const msg = e instanceof Error ? e.message : String(e);
         ndDuplicates = msg
           .replace(/^.*possible duplicate donor:\s*/i, "")
           .split(", ")
           .filter(Boolean);
+        if (ndDuplicates.length === 0) onError(msg);
       } else {
-        onError(msg);
+        onError(e instanceof Error ? e.message : String(e));
       }
     } finally {
       ndSaving = false;

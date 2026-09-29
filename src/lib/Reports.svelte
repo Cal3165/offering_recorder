@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { bookkeepingReport, depositReport, donorReport, exportIif, gasdsReport, giftAidReport, listMeetings } from "./api";
   import type { BankDeposit, BookkeepingEntry, DonorReportEntry, GasdsReportEntry, GiftAidReportEntry, Meeting } from "./types";
-  import { depositExpectedTotals, fmtPence, localYmd } from "./types";
+  import { depositExpectedTotals, depositHasActuals, fmtPence, localYmd } from "./types";
 
   let meetings = $state<Meeting[]>([]);
   let meetingId = $state<string | null>(null);
@@ -25,15 +25,35 @@
   let donorBusy = $state(false);
   let gasdsBusy = $state(false);
   let gaBusy = $state(false);
-  let lastRunSignature = $state<string | null>(null);
+  // Per-report run signatures (plan Phase 7.7): a shared signature marked
+  // every section stale whenever any filter moved, including filters a given
+  // report ignores. Each report tracks only the filters it consumes.
+  let lastRun = $state<Record<string, string | null>>({
+    bk: null,
+    donor: null,
+    gasds: null,
+    ga: null,
+    dep: null,
+    iif: null,
+  });
   let taxYearError = $state("");
 
-  function currentSignature(): string {
-    return JSON.stringify({ start, end, meetingId, taxYear });
+  function rangeSignature(): string {
+    return JSON.stringify({ start, end });
   }
-  let filtersStale = $derived(
-    lastRunSignature !== null && lastRunSignature !== currentSignature(),
-  );
+  function bookkeepingSignature(): string {
+    return JSON.stringify({ start, end, meetingId });
+  }
+  function giftAidSignature(): string {
+    return JSON.stringify({ taxYear });
+  }
+  function isStale(kind: string): boolean {
+    const last = lastRun[kind];
+    if (last === null) return false;
+    if (kind === "bk") return last !== bookkeepingSignature();
+    if (kind === "ga") return last !== giftAidSignature();
+    return last !== rangeSignature();
+  }
 
   function taxYearBounds(): { min: number; max: number } {
     return { min: 2000, max: new Date().getFullYear() + 1 };
@@ -95,7 +115,7 @@
     error = "";
     try {
       bk = await bookkeepingReport(start, end, meetingId);
-      lastRunSignature = currentSignature();
+      lastRun = { ...lastRun, bk: bookkeepingSignature() };
     } catch (e) {
       error = String(e);
     } finally {
@@ -109,7 +129,7 @@
     error = "";
     try {
       donor = await donorReport(start, end);
-      lastRunSignature = currentSignature();
+      lastRun = { ...lastRun, donor: rangeSignature() };
     } catch (e) {
       error = String(e);
     } finally {
@@ -123,7 +143,7 @@
     error = "";
     try {
       gasds = await gasdsReport(start, end);
-      lastRunSignature = currentSignature();
+      lastRun = { ...lastRun, gasds: rangeSignature() };
     } catch (e) {
       error = String(e);
     } finally {
@@ -138,7 +158,7 @@
     try {
       clampTaxYear();
       ga = await giftAidReport(taxYear);
-      lastRunSignature = currentSignature();
+      lastRun = { ...lastRun, ga: giftAidSignature() };
     } catch (e) {
       error = String(e);
     } finally {
@@ -152,7 +172,7 @@
     error = "";
     try {
       deposits = await depositReport(start, end);
-      lastRunSignature = currentSignature();
+      lastRun = { ...lastRun, dep: rangeSignature() };
     } catch (e) {
       error = String(e);
     } finally {
@@ -167,7 +187,7 @@
     iifCopied = false;
     try {
       iif = await exportIif(start, end);
-      lastRunSignature = currentSignature();
+      lastRun = { ...lastRun, iif: rangeSignature() };
     } catch (e) {
       error = String(e);
     } finally {
@@ -231,7 +251,7 @@
   <h2>Bookkeeping</h2>
   <button onclick={runBookkeeping} disabled={bkBusy}>{bkBusy ? "Running…" : "Run"}</button>
   {#if bk}
-    {#if filtersStale}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
+    {#if isStale("bk")}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
     {#if bk.length === 0}
       <p class="muted">No results in this range.</p>
     {:else}
@@ -254,7 +274,7 @@
   <h2>Donor report</h2>
   <button onclick={runDonor} disabled={donorBusy}>{donorBusy ? "Running…" : "Run"}</button>
   {#if donor}
-    {#if filtersStale}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
+    {#if isStale("donor")}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
     {#if donor.length === 0}
       <p class="muted">No results in this range.</p>
     {:else}
@@ -284,7 +304,7 @@
   <h2>GASDS</h2>
   <button onclick={runGasds} disabled={gasdsBusy}>{gasdsBusy ? "Running…" : "Run"}</button>
   {#if gasds}
-    {#if filtersStale}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
+    {#if isStale("gasds")}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
     {#if gasds.length === 0}
       <p class="muted">No results in this range.</p>
     {:else}
@@ -312,7 +332,7 @@
   <h2>Bank deposits</h2>
   <button onclick={runDeposits} disabled={depBusy}>{depBusy ? "Running…" : "Run"}</button>
   {#if deposits}
-    {#if filtersStale}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
+    {#if isStale("dep")}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
     {#if deposits.length === 0}
       <p class="muted">No results in this range.</p>
     {:else}
@@ -323,13 +343,14 @@
       <tbody>
         {#each deposits as d (d.id)}
           {@const t = depositExpectedTotals(d)}
+          {@const recorded = depositHasActuals(d)}
           <tr>
             <td>{d.deposit_date.slice(0, 10)}</td>
             <td>{d.reference ?? ""}</td>
-            <td>{fmtPence(d.actual_cash.pence || t.cash)}</td>
-            <td>{fmtPence(d.actual_cheques.pence || t.cheques)}</td>
-            <td>{fmtPence(d.actual_other.pence || t.other)}</td>
-            <td>{fmtPence((d.actual_cash.pence + d.actual_cheques.pence + d.actual_other.pence) || t.total)}</td>
+            <td>{fmtPence(recorded ? d.actual_cash.pence : t.cash)}</td>
+            <td>{fmtPence(recorded ? d.actual_cheques.pence : t.cheques)}</td>
+            <td>{fmtPence(recorded ? d.actual_other.pence : t.other)}</td>
+            <td>{fmtPence(recorded ? (d.actual_cash.pence + d.actual_cheques.pence + d.actual_other.pence) : t.total)}</td>
           </tr>
         {/each}
       </tbody>
@@ -346,7 +367,7 @@
     <button onclick={runGiftAid} disabled={gaBusy}>{gaBusy ? "Running…" : "Run"}</button>
   </div>
   {#if ga}
-    {#if filtersStale}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
+    {#if isStale("ga")}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
     {#if ga.length === 0}
       <p class="muted">No results in this range.</p>
     {:else}
@@ -355,7 +376,7 @@
       <caption class="sr-only">Gift Aid claim donations</caption>
       <thead><tr><th scope="col">Donor</th><th scope="col">Address</th><th scope="col">Date</th><th scope="col">Amount</th></tr></thead>
       <tbody>
-        {#each ga as e (e.donor_id + e.donation_date + e.amount.pence)}
+        {#each ga as e, i (i)}
           <tr>
             <td>{e.donor_name}</td>
             <td>
@@ -390,7 +411,7 @@
     {/if}
   </div>
   {#if iif}
-    {#if filtersStale}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
+    {#if isStale("iif")}<p class="muted">Filters changed — results may be out of date, press Run.</p>{/if}
     {#if !iif.trim()}
       <p class="muted">No results in this range.</p>
     {:else}

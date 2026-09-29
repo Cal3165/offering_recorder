@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listAuditEvents, recentAuditEvents } from "./api";
+  import { recentAuditEvents } from "./api";
   import type { AuditEvent } from "./types";
 
   let events = $state<AuditEvent[]>([]);

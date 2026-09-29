@@ -35,7 +35,10 @@
   // and only the latest results stay in memory.
   let searchDonorHits = $state<Donor[]>([]);
   let searchError = $state("");
-  let searchSeq = 0;
+  // Separate generations (plan Phase 7.7): the meetings load and the debounced
+  // donor search must not invalidate each other through a shared counter.
+  let meetingsSeq = 0;
+  let donorSearchSeq = 0;
 
   onMount(async () => {
     user = await currentUser();
@@ -46,21 +49,22 @@
   // stayed empty until restart (review O13).
   $effect(() => {
     if (user === null) {
-      searchSeq++;
+      meetingsSeq++;
+      donorSearchSeq++;
       searchMeetings = [];
       searchDonorHits = [];
       searchError = "";
       return;
     }
-    const seq = ++searchSeq;
+    const seq = ++meetingsSeq;
     searchError = "";
     (async () => {
       try {
         const meetings = await listMeetings();
-        if (seq !== searchSeq) return;
+        if (seq !== meetingsSeq) return;
         searchMeetings = meetings;
       } catch (e) {
-        if (seq !== searchSeq) return;
+        if (seq !== meetingsSeq) return;
         searchError = String(e);
         searchMeetings = [];
         searchDonorHits = [];
@@ -74,18 +78,18 @@
     const q = searchQuery.trim();
     const session = user;
     if (session === null || !canViewDonors || q.length === 0) {
-      searchSeq++;
+      donorSearchSeq++;
       searchDonorHits = [];
       return;
     }
     const timer = setTimeout(async () => {
-      const seq = ++searchSeq;
+      const seq = ++donorSearchSeq;
       try {
         const hits = await apiSearchDonors(q, false);
-        if (seq !== searchSeq) return;
+        if (seq !== donorSearchSeq) return;
         searchDonorHits = hits;
       } catch (e) {
-        if (seq !== searchSeq) return;
+        if (seq !== donorSearchSeq) return;
         searchError = String(e);
         searchDonorHits = [];
       }
@@ -143,12 +147,17 @@
   const searchHasResults = $derived(searchMeetingResults.length > 0 || searchDonorResults.length > 0);
 
   function goToMeeting(m: Meeting) {
+    // Role-guard (plan Phase 7.7): search results are visible to anyone
+    // signed in, but jumping into a view the role cannot open must be a
+    // no-op rather than a blank screen.
+    if (!hasAny(["Admin", "Counter", "Checker"])) return;
     focusMeetingId = m.id;
     view = "offerings";
     searchQuery = "";
     searchOpen = false;
   }
   function goToDonor(d: Donor) {
+    if (!canViewDonors) return;
     focusDonorId = d.id;
     view = "donors";
     searchQuery = "";
@@ -216,7 +225,7 @@
       <OfferingEntry user={user} focusId={focusOfferingId} focusMeetingId={focusMeetingId} />
     {:else if view === 'checking'}
       {#key checkKey}
-        <Checking user={user} onNavigate={switchView} />
+        <Checking onNavigate={switchView} />
       {/key}
     {:else if view === 'meetings'}
       <Meetings />

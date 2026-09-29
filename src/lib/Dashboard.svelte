@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { listBackups, recentAuditEvents, listDeposits, listMeetings, listActiveOfferings, listLockedOfferings, giftAidReadiness } from "./api";
   import type { AuditEvent, Backup, BankDeposit, Meeting, Offering, User } from "./types";
-  import { fmtPence, depositExpectedTotals } from "./types";
+  import { fmtPence, depositExpectedTotals, depositHasActuals, formatInstant } from "./types";
 
   let { user, onNavigate }: { user: User; onNavigate: (view: string, offeringId?: string) => void } = $props();
 
@@ -99,12 +99,10 @@
   const discrepancies = $derived(
     deposits.filter((d) => {
       const t = depositExpectedTotals(d);
-      const hasActuals =
-        d.actual_cash.pence !== 0 || d.actual_cheques.pence !== 0 || d.actual_other.pence !== 0;
       // Compare all three buckets, matching Banking's reconciled check
       // (review O17: the previous copy ignored actual_other).
       return (
-        hasActuals &&
+        depositHasActuals(d) &&
         (d.actual_cash.pence !== t.cash ||
           d.actual_cheques.pence !== t.cheques ||
           d.actual_other.pence !== t.other)
@@ -214,7 +212,7 @@ const attention = $derived<AttentionItem[]>([
         <span>
           <span class="badge error-badge">Backup overdue</span>
           {#if lastBackup}
-            <span> — last backup {new Date(lastBackup.created_at).toLocaleString()}; create a fresh one.</span>
+            <span> — last backup {formatInstant(lastBackup.created_at)}; create a fresh one.</span>
           {:else}
             <span> — no backup yet. Backups protect offering and Gift Aid records; create one now.</span>
           {/if}
@@ -268,7 +266,7 @@ const attention = $derived<AttentionItem[]>([
         </div>
       </div>
       {#if lastBackup}
-        <p class="muted">Last backup: {new Date(lastBackup.created_at).toLocaleString()}
+        <p class="muted">Last backup: {formatInstant(lastBackup.created_at)}
           {#if backupOverdue}<span class="badge error-badge">overdue</span>{/if}
         </p>
       {:else}
@@ -311,7 +309,7 @@ const attention = $derived<AttentionItem[]>([
               <span>
                 Offering <strong>{o.offering_number}</strong> —
                 {fmtPence((o.donations ?? []).reduce((s, d) => s + d.amount.pence, 0))} recorded
-                <span class="muted"> • started {new Date(o.created_at).toLocaleString()}</span>
+                <span class="muted"> • started {formatInstant(o.created_at)}</span>
               </span>
               <button onclick={() => go(o)}>Continue</button>
             </span>
@@ -353,7 +351,7 @@ const attention = $derived<AttentionItem[]>([
           <li>
             <span class="row space-between">
               <span>{activityLabel(e)} — {entityLabel(e)}</span>
-              <span class="muted">{new Date(e.timestamp).toLocaleString()}</span>
+              <span class="muted">{formatInstant(e.timestamp)}</span>
             </span>
           </li>
         {/each}

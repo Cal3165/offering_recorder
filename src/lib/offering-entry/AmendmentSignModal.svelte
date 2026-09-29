@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Amendment, User } from "../types";
+  import type { User } from "../types";
 
   let {
     amendSignKind,
