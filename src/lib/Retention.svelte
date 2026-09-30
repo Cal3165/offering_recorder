@@ -38,13 +38,6 @@
     ];
   }
 
-  function badge(status: string): string {
-    switch (status) {
-      case "Expired": return "badge danger";
-      case "ExpiringSoon": return "badge warn";
-      default: return "badge";
-    }
-  }
 </script>
 
 <div class="card">

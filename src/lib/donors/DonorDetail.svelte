@@ -367,6 +367,7 @@
 
 <div class="card">
   <h2>{donor.first_name} {donor.last_name} — Gift Aid</h2>
+  <div class="row"><button class="secondary" onclick={onClose}>Close</button></div>
   {#if error}<p class="error">{error}</p>{/if}
   <p class="muted">UK status: {donor.donor_type}</p>
   {#if basis}

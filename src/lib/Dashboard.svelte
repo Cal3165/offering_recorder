@@ -6,7 +6,6 @@
 
   let { user, onNavigate }: { user: User; onNavigate: (view: string, offeringId?: string) => void } = $props();
 
-  let meetings = $state<Meeting[]>([]);
   let offerings = $state<Offering[]>([]);
   let deposits = $state<BankDeposit[]>([]);
   let backups = $state<Backup[]>([]);
@@ -50,10 +49,9 @@
     sectionErrors = errs;
     const failed = Object.keys(errs);
     error = failed.length === 6 ? `Couldn't load dashboard: ${errs[keys[0]]}` : "";
-    const [m, active, locked, dep, bk, aud] = values as [
+    const [, active, locked, dep, bk, aud] = values as [
       Meeting[], Offering[], Offering[], BankDeposit[], Backup[], AuditEvent[],
     ];
-    meetings = (m ?? []) as Meeting[];
     // Caps bound IPC while covering realistic parish volumes.
     offerings = ((active ?? []) as Offering[]).concat((locked ?? []) as Offering[]);
     offerings.sort((a, b) => b.created_at.localeCompare(a.created_at));
