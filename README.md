@@ -1,10 +1,143 @@
+<div align="center">
+
 # Offering Recorder
 
-Church donation recording system (UK): meetings, offerings, donors, Gift Aid declarations,
-GASDS calculations, two-person signing, banking reconciliation, reports, audit trail,
-backup/restore. Offline-first desktop app: Tauri + Rust (SQLite) + SvelteKit.
+**Offline-first church donation recording for UK churches.**
+Meetings, offerings, cash counting, donors, Gift Aid, GASDS, two-person signing,
+bank reconciliation, reports, audit trail and encrypted backups.
 
-## Prerequisites
+Two front ends on one shared Rust core: a **Tauri + SvelteKit** web-view app
+and a **native Slint** desktop app.
+
+<img src="docs/screenshots/02_entry_tall.png" alt="Offering entry screen in the native Slint edition" width="720">
+
+</div>
+
+## Contents
+
+- [Highlights](#highlights)
+- [Screenshots](#screenshots)
+- [Choose a front end](#choose-a-front-end)
+- [Native Slint edition](#native-slint-edition)
+- [Tauri + Svelte edition](#tauri--svelte-edition)
+- [Architecture](#architecture)
+- [Roles (RBAC)](#roles-rbac)
+- [Dual control](#dual-control-procedural) · [Backups](#backups) · [GDPR](#gdpr--retention-notes)
+- [Key domain rules](#key-domain-rules)
+
+## Highlights
+
+- **Counting that matches the bank.** Per-denomination cash counts, donation
+  breakdowns and a live reconciliation badge between counted cash and recorded cash gifts.
+- **Two-person control.** Counter → checker → lock, enforced with segregation of
+  duties. Locked offerings change only through approved, append-only amendments.
+- **UK Gift Aid and GASDS built in.** Declarations, eligibility per donation date,
+  claim readiness, the 10:1 GASDS match and annual ceilings.
+- **Money is integer pence.** Checked arithmetic everywhere, no floats.
+- **Audit and privacy.** Full audit trail, lawful-basis tracking, subject-access
+  reports, Admin-only PII redaction, 7-year retention review.
+- **Safe backups.** AES-256-GCM + Argon2id, validate-before-restore, safety copy.
+- **Role-aware UI.** Each user sees only the sections their roles permit, and
+  every permission is enforced in the backend, not just hidden in the UI.
+
+## Screenshots
+
+Rendered headlessly from the native Slint edition with the software renderer.
+
+| Offering entry | Dashboard |
+| :---: | :---: |
+| <img src="docs/screenshots/02_entry_tall.png" alt="Offering entry" width="380"> | <img src="docs/screenshots/04_overview_dashboard.png" alt="Dashboard with alerts and metrics" width="380"> |
+| Cash grid, donations, reconciliation and inline signing | Metric cards and attention banners, loaded automatically |
+
+| Create donor | Amend cash count |
+| :---: | :---: |
+| <img src="docs/screenshots/05_donor_new_2col.png" alt="Two-column donor form" width="380"> | <img src="docs/screenshots/06_amend_cash_grid.png" alt="Amend cash count grid" width="380"> |
+| Two-column forms with clear required and optional fields | Prefilled denomination grid with a live total |
+
+| Users and roles | Reports and export |
+| :---: | :---: |
+| <img src="docs/screenshots/07_users_chips.png" alt="Role chips" width="380"> | <img src="docs/screenshots/08_reports_iif.png" alt="QuickBooks IIF export" width="380"> |
+| Add roles from a menu, remove them with the × chip | Date presets, monospace output, Browse and Save |
+
+| First-run setup | Narrow window (390px) |
+| :---: | :---: |
+| <img src="docs/screenshots/01_bootstrap.png" alt="Administrator setup" width="380"> | <img src="docs/screenshots/03_entry_narrow_390.png" alt="Offering entry at 390px wide" width="190"> |
+| Password confirmation on first run | Layout adapts to small windows |
+
+## Choose a front end
+
+| | Native Slint | Tauri + Svelte |
+| --- | --- | --- |
+| UI | Slint (`src-slint/`) | SvelteKit in a web view (`src/`, `src-tauri/`) |
+| Database | Its own SQLite file | Its own SQLite file |
+| Core logic | Shared `crates/*` | Shared `crates/*` |
+| Run | `cargo run --locked --manifest-path src-slint/Cargo.toml` | `bun run tauri dev` |
+
+The two editions keep **separate databases**, so you can run them side by side
+with test data and compare behaviour.
+
+## Native Slint edition
+
+Needs Rust 1.95 or newer.
+
+```sh
+cargo run --release --locked --manifest-path src-slint/Cargo.toml
+```
+
+Data lives in `offering-recorder-slint` under the OS local data directory (on
+Linux, `${XDG_DATA_HOME:-$HOME/.local/share}/offering-recorder-slint`). On first
+run you create the administrator account.
+
+**Offering entry** covers meetings, offerings, attendance, cash counting, donor
+search and creation, cash and non-cash donations, validation, and inline
+counter-sign, checker-sign, withdraw and lock.
+
+**Workspace sections** (filtered by your roles):
+
+| Section | What you can do |
+| --- | --- |
+| Overview | Dashboard metrics, backup and Gift Aid deadline alerts, checking queue |
+| Meetings | Meetings, event details, community buildings |
+| Checking | Signing, withdrawal, locking, offering amendments |
+| Donors | Directory, profiles, GDPR subject-access report, CSV import, PII redaction |
+| Gift Aid | Declarations, eligibility, declaration amendments |
+| Banking | Deposit candidates, deposits, bank actuals |
+| Claims | GASDS readiness, draft, prepare, submit, approve, reject |
+| Reports | Bookkeeping, donor, Gift Aid, GASDS, deposit, QuickBooks IIF with date presets |
+| Users | Create users, reset passwords, activate and deactivate |
+| Audit | Audit log and retention review |
+| Backups | Create, validate, restore, prune |
+
+Read-only views load automatically. Destructive actions ask for confirmation and
+check required fields first. Result files are written with `0600` permissions and
+never overwrite an existing file. Browse buttons use `zenity` or `kdialog` when
+installed, and you can always type a path.
+
+Verified on Linux (`x86_64-unknown-linux-gnu`). Windows, macOS, mobile and
+browser builds have not been tried.
+
+### Slint checks
+
+```sh
+cargo fmt --manifest-path src-slint/Cargo.toml --check
+cargo clippy --locked --all-targets --manifest-path src-slint/Cargo.toml -- -D warnings
+cargo test --locked --manifest-path src-slint/Cargo.toml
+```
+
+The tests include a full end-to-end workflow across every section and a headless
+render of the main screens. To regenerate the screenshots in `docs/screenshots/`:
+
+```sh
+SLINT_WALKTHROUGH_DIR=docs/screenshots \
+  cargo test --locked --manifest-path src-slint/Cargo.toml headless_ui_renders_all_redesigned_screens
+```
+
+That writes `.ppm` files; convert them with ImageMagick
+(`magick in.ppm out.png`).
+
+## Tauri + Svelte edition
+
+### Prerequisites
 
 - Rust stable ≥ 1.85 (`rustup update stable`)
 - Bun ≥ 1.x (canonical JS package manager — `bun.lock` is authoritative)
@@ -14,7 +147,7 @@ backup/restore. Offline-first desktop app: Tauri + Rust (SQLite) + SvelteKit.
 No `DATABASE_URL` needed at runtime: migrations are embedded
 (`crates/infrastructure/src/db.rs` → `sqlx::migrate!("../../migrations")`).
 
-## Quick start
+### Quick start
 
 ```sh
 bun install

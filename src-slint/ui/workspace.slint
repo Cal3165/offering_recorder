@@ -1,0 +1,507 @@
+import { ComboBox, LineEdit, TextEdit } from "std-widgets.slint";
+import { ActionButton, Card, CashGrid, SectionTitle, StatusBadge, Theme } from "components.slint";
+
+export struct WorkspaceChip {
+    key: string,
+    label: string,
+}
+
+export struct WorkspaceField {
+    key: string,
+    label: string,
+    value: string,
+    secret: bool,
+    select: bool,
+    multiple: bool,
+    is-file: bool,
+    choices: [string],
+    keys: [string],
+    current: int,
+    chips: [WorkspaceChip],
+}
+
+export struct DashboardMetricRow {
+    label: string,
+    value: string,
+    alert: bool,
+}
+
+component WorkspaceFieldControl inherits VerticalLayout {
+    in property <WorkspaceField> field;
+    in property <int> field-index;
+    in property <bool> working;
+    callback field-changed(int, string);
+    callback field-accepted;
+    callback select-field(int, int);
+    callback remove-chip(int, string);
+    callback clear-field(int);
+    callback browse-input(int);
+
+    spacing: 5px;
+    Text {
+        text: root.field.label;
+        font-size: 12px;
+        color: Theme.text-muted;
+        font-weight: 600;
+        wrap: word-wrap;
+    }
+    if !root.field.select && !root.field.is-file: LineEdit {
+        min-width: 64px;
+        property <string> saved-value: root.field.value;
+        text: self.saved-value;
+        input-type: root.field.secret ? InputType.password : InputType.text;
+        enabled: !root.working;
+        edited => { root.field-changed(root.field-index, self.text); }
+        accepted => { root.field-accepted(); }
+        changed saved-value => {
+            if (self.text != self.saved-value) { self.text = self.saved-value; }
+        }
+    }
+    if root.field.is-file: HorizontalLayout {
+        spacing: 8px;
+        LineEdit {
+            horizontal-stretch: 1;
+            min-width: 64px;
+            property <string> saved-value: root.field.value;
+            text: self.saved-value;
+            placeholder-text: "Select or enter file path…";
+            enabled: !root.working;
+            edited => { root.field-changed(root.field-index, self.text); }
+            accepted => { root.field-accepted(); }
+            changed saved-value => {
+                if (self.text != self.saved-value) { self.text = self.saved-value; }
+            }
+        }
+        ActionButton {
+            text: "Browse…";
+            enabled: !root.working;
+            clicked => { root.browse-input(root.field-index); }
+        }
+    }
+    if root.field.select && !root.field.multiple: ComboBox {
+        min-width: 64px;
+        property <int> saved-index: root.field.current;
+        model: root.field.choices;
+        current-index: self.saved-index;
+        enabled: !root.working && root.field.choices.length > 1;
+        changed saved-index => {
+            if (self.current-index != self.saved-index) { self.current-index = self.saved-index; }
+        }
+        selected => { root.select-field(root.field-index, self.current-index); }
+    }
+    if root.field.select && root.field.multiple: VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            option := ComboBox {
+                horizontal-stretch: 1;
+                min-width: 64px;
+                model: root.field.choices;
+                enabled: !root.working && root.field.choices.length > 1;
+                selected => {
+                    if (self.current-index > 0) {
+                        let picked = self.current-index;
+                        self.current-index = 0;
+                        root.select-field(root.field-index, picked);
+                    }
+                }
+            }
+            if root.field.chips.length > 0: ActionButton {
+                text: "Clear all";
+                compact: true;
+                enabled: !root.working;
+                clicked => { root.clear-field(root.field-index); }
+            }
+        }
+        if root.field.chips.length > 0: VerticalLayout {
+            spacing: 4px;
+            for chip in root.field.chips: Rectangle {
+                background: Theme.surface-subtle;
+                border-color: Theme.border;
+                border-width: 1px;
+                border-radius: 6px;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 6px;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
+                    spacing: 8px;
+                    Text {
+                        text: chip.label;
+                        color: Theme.text-primary;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    ActionButton {
+                        text: "×";
+                        compact: true;
+                        kind: "subtle";
+                        enabled: !root.working;
+                        clicked => { root.remove-chip(root.field-index, chip.key); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component WorkspacePanel inherits VerticalLayout {
+    in property <bool> working;
+    in property <bool> wide: true;
+    in property <[string]> actions;
+    in-out property <int> action-index: 0;
+    in property <[WorkspaceField]> fields;
+    in property <bool> configured;
+    in property <string> submit-label: "Run";
+    in property <bool> destructive;
+    in property <bool> has-dynamic-choices;
+    in property <bool> has-date-presets;
+    in property <bool> cash-amendment-mode;
+    in property <[string]> denominations;
+    in property <[string]> amend-cash-values;
+    in property <string> amend-cash-preview;
+    in property <string> confirmation;
+    in property <string> result-title;
+    in property <string> result-text;
+    in property <string> result-extension;
+    in property <bool> result-exportable;
+    in property <bool> result-monospace;
+    in property <[DashboardMetricRow]> dashboard-metrics;
+    in property <[string]> dashboard-warnings;
+    in-out property <bool> confirming;
+    in-out property <string> export-path;
+
+    callback action-changed(int);
+    callback field-changed(int, string);
+    callback select-field(int, int);
+    callback remove-chip(int, string);
+    callback clear-field(int);
+    callback browse-input(int);
+    callback edit-amend-cash(int, string);
+    callback apply-date-preset(string);
+    callback reload;
+    callback request-confirm;
+    callback execute;
+    callback browse-export;
+    callback save-result(string);
+
+    alignment: start;
+    padding: 16px;
+    spacing: 12px;
+
+    Card {
+        HorizontalLayout {
+            spacing: 8px;
+            SectionTitle { text: "Action"; horizontal-stretch: 1; }
+            if root.has-dynamic-choices && !root.confirming: ActionButton {
+                text: "Reload choices";
+                compact: true;
+                enabled: !root.working;
+                clicked => { root.reload(); }
+            }
+        }
+        ComboBox {
+            min-width: 90px;
+            enabled: !root.working;
+            model: root.actions;
+            current-index <=> root.action-index;
+            selected => {
+                root.confirming = false;
+                root.action-changed(self.current-index);
+            }
+        }
+
+        if root.has-date-presets && root.wide: HorizontalLayout {
+            spacing: 6px;
+            ActionButton { text: "Today"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("today"); } }
+            ActionButton { text: "This week"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("week"); } }
+            ActionButton { text: "This month"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("month"); } }
+            ActionButton { text: "Tax year"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("taxyear"); } }
+            ActionButton { text: "Prev year"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("prev_taxyear"); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if root.has-date-presets && !root.wide: VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
+                spacing: 6px;
+                ActionButton { text: "Today"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("today"); } }
+                ActionButton { text: "This week"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("week"); } }
+                ActionButton { text: "This month"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("month"); } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                ActionButton { text: "Tax year"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("taxyear"); } }
+                ActionButton { text: "Prev year"; compact: true; enabled: !root.working; clicked => { root.apply-date-preset("prev_taxyear"); } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        if root.cash-amendment-mode: VerticalLayout {
+            spacing: 10px;
+            if root.fields.length > 0: WorkspaceFieldControl {
+                field: root.fields[0];
+                field-index: 0;
+                working: root.working;
+                field-changed(i, v) => { root.field-changed(i, v); }
+                field-accepted => {
+                    if (root.configured && !root.working) {
+                        if (root.confirmation != "" && !root.confirming) { root.request-confirm(); }
+                        else { root.confirming = false; root.execute(); }
+                    }
+                }
+                select-field(i, c) => { root.select-field(i, c); }
+                remove-chip(i, k) => { root.remove-chip(i, k); }
+                clear-field(i) => { root.clear-field(i); }
+                browse-input(i) => { root.browse-input(i); }
+            }
+            Text {
+                text: "Corrected cash denominations (prefilled from the selected offering)";
+                font-size: 12px;
+                color: Theme.text-muted;
+                font-weight: 600;
+                wrap: word-wrap;
+            }
+            CashGrid {
+                labels: root.denominations;
+                counts: root.amend-cash-values;
+                editable: !root.working;
+                count-changed(i, v) => { root.edit-amend-cash(i, v); }
+            }
+            Text {
+                text: "Corrected cash total  " + root.amend-cash-preview;
+                color: Theme.text-primary;
+                font-weight: 600;
+            }
+            if root.fields.length > 1: WorkspaceFieldControl {
+                field: root.fields[root.fields.length - 1];
+                field-index: root.fields.length - 1;
+                working: root.working;
+                field-changed(i, v) => { root.field-changed(i, v); }
+                field-accepted => {
+                    if (root.configured && !root.working) {
+                        if (root.confirmation != "" && !root.confirming) { root.request-confirm(); }
+                        else { root.confirming = false; root.execute(); }
+                    }
+                }
+                select-field(i, c) => { root.select-field(i, c); }
+                remove-chip(i, k) => { root.remove-chip(i, k); }
+                clear-field(i) => { root.clear-field(i); }
+                browse-input(i) => { root.browse-input(i); }
+            }
+        }
+
+        if !root.cash-amendment-mode && (!root.wide || root.fields.length <= 1): VerticalLayout {
+            spacing: 10px;
+            for field[index] in root.fields: WorkspaceFieldControl {
+                field: field;
+                field-index: index;
+                working: root.working;
+                field-changed(i, v) => { root.field-changed(i, v); }
+                field-accepted => {
+                    if (root.configured && !root.working) {
+                        if (root.confirmation != "" && !root.confirming) { root.request-confirm(); }
+                        else { root.confirming = false; root.execute(); }
+                    }
+                }
+                select-field(i, c) => { root.select-field(i, c); }
+                remove-chip(i, k) => { root.remove-chip(i, k); }
+                clear-field(i) => { root.clear-field(i); }
+                browse-input(i) => { root.browse-input(i); }
+            }
+        }
+
+        if !root.cash-amendment-mode && root.wide && root.fields.length > 1: VerticalLayout {
+            spacing: 0px;
+            for row-idx in [0, 2, 4, 6, 8, 10, 12, 14]: VerticalLayout {
+                if row-idx < root.fields.length: HorizontalLayout {
+                    padding-bottom: 10px;
+                    spacing: 12px;
+                    WorkspaceFieldControl {
+                        horizontal-stretch: 1;
+                        field: root.fields[row-idx];
+                        field-index: row-idx;
+                        working: root.working;
+                        field-changed(i, v) => { root.field-changed(i, v); }
+                        field-accepted => {
+                            if (root.configured && !root.working) {
+                                if (root.confirmation != "" && !root.confirming) { root.request-confirm(); }
+                                else { root.confirming = false; root.execute(); }
+                            }
+                        }
+                        select-field(i, c) => { root.select-field(i, c); }
+                        remove-chip(i, k) => { root.remove-chip(i, k); }
+                        clear-field(i) => { root.clear-field(i); }
+                        browse-input(i) => { root.browse-input(i); }
+                    }
+                    if row-idx + 1 < root.fields.length: WorkspaceFieldControl {
+                        horizontal-stretch: 1;
+                        field: root.fields[row-idx + 1];
+                        field-index: row-idx + 1;
+                        working: root.working;
+                        field-changed(i, v) => { root.field-changed(i, v); }
+                        field-accepted => {
+                            if (root.configured && !root.working) {
+                                if (root.confirmation != "" && !root.confirming) { root.request-confirm(); }
+                                else { root.confirming = false; root.execute(); }
+                            }
+                        }
+                        select-field(i, c) => { root.select-field(i, c); }
+                        remove-chip(i, k) => { root.remove-chip(i, k); }
+                        clear-field(i) => { root.clear-field(i); }
+                        browse-input(i) => { root.browse-input(i); }
+                    }
+                    if row-idx + 1 >= root.fields.length: Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+
+        if root.confirming: Rectangle {
+            background: Theme.danger-bg;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 10px;
+                Text {
+                    text: root.confirmation;
+                    color: Theme.danger-text;
+                    wrap: word-wrap;
+                    font-weight: 600;
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle { horizontal-stretch: 1; }
+            if root.confirming: ActionButton {
+                text: "Cancel";
+                enabled: !root.working;
+                clicked => { root.confirming = false; }
+            }
+            ActionButton {
+                text: root.confirming ? ("Confirm: " + root.submit-label) : root.submit-label;
+                kind: root.confirming || root.destructive ? (root.confirming ? "danger" : "primary") : "primary";
+                enabled: root.configured && !root.working;
+                clicked => {
+                    if (root.confirmation != "" && !root.confirming) {
+                        root.request-confirm();
+                    } else {
+                        root.confirming = false;
+                        root.execute();
+                    }
+                }
+            }
+        }
+    }
+
+    if root.dashboard-warnings.length > 0: Card {
+        SectionTitle { text: "Attention needed"; color: Theme.warning-text; }
+        for warning in root.dashboard-warnings: Rectangle {
+            background: Theme.warning-bg;
+            border-color: Theme.warning-border;
+            border-width: 1px;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 10px;
+                Text { text: warning; color: Theme.warning-text; wrap: word-wrap; font-weight: 600; }
+            }
+        }
+    }
+
+    if root.dashboard-metrics.length > 0: Card {
+        SectionTitle { text: root.result-title != "" ? root.result-title : "Dashboard"; }
+        if root.wide: VerticalLayout {
+            spacing: 10px;
+            for row-idx in [0, 3, 6]: VerticalLayout {
+                if row-idx < root.dashboard-metrics.length: HorizontalLayout {
+                    spacing: 10px;
+                    for offset in [0, 1, 2]: VerticalLayout {
+                        horizontal-stretch: 1;
+                        if row-idx + offset < root.dashboard-metrics.length: Rectangle {
+                            background: root.dashboard-metrics[row-idx + offset].alert ? Theme.warning-bg : Theme.surface-subtle;
+                            border-color: root.dashboard-metrics[row-idx + offset].alert ? Theme.warning-border : Theme.border;
+                            border-width: 1px;
+                            border-radius: 8px;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+                                Text {
+                                    text: root.dashboard-metrics[row-idx + offset].label;
+                                    color: Theme.text-muted;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.dashboard-metrics[row-idx + offset].value;
+                                    color: root.dashboard-metrics[row-idx + offset].alert ? Theme.warning-text : Theme.text-primary;
+                                    font-size: 20px;
+                                    font-weight: 700;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !root.wide: VerticalLayout {
+            spacing: 8px;
+            for metric in root.dashboard-metrics: Rectangle {
+                background: metric.alert ? Theme.warning-bg : Theme.surface-subtle;
+                border-color: metric.alert ? Theme.warning-border : Theme.border;
+                border-width: 1px;
+                border-radius: 8px;
+                HorizontalLayout {
+                    padding: 10px;
+                    spacing: 8px;
+                    Text { text: metric.label; color: Theme.text-muted; horizontal-stretch: 1; vertical-alignment: center; wrap: word-wrap; }
+                    Text { text: metric.value; color: metric.alert ? Theme.warning-text : Theme.text-primary; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+
+    if root.result-title != "" && root.dashboard-metrics.length == 0: Card {
+        HorizontalLayout {
+            spacing: 8px;
+            SectionTitle { text: root.result-title; horizontal-stretch: 1; }
+            if root.result-exportable: StatusBadge { text: "." + root.result-extension; tone: "info"; }
+        }
+        TextEdit {
+            text: root.result-text;
+            read-only: true;
+            height: 320px;
+            min-width: 75px;
+            font-family: root.result-monospace ? "monospace" : "sans-serif";
+            font-size: root.result-monospace ? 12px : 13px;
+            wrap: root.result-monospace ? TextWrap.no-wrap : TextWrap.word-wrap;
+        }
+        if root.result-exportable: HorizontalLayout {
+            spacing: 8px;
+            LineEdit {
+                horizontal-stretch: 1;
+                text <=> root.export-path;
+                min-width: 75px;
+                placeholder-text: "Save as (." + root.result-extension + ")";
+                enabled: !root.working;
+                accepted => {
+                    if (!root.working && root.export-path != "") {
+                        root.save-result(root.export-path);
+                    }
+                }
+            }
+            ActionButton {
+                text: "Browse…";
+                enabled: !root.working;
+                clicked => { root.browse-export(); }
+            }
+            ActionButton {
+                text: "Save";
+                kind: "primary";
+                enabled: !root.working && root.export-path != "";
+                clicked => { root.save-result(root.export-path); }
+            }
+        }
+    }
+}

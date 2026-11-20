@@ -1,0 +1,206 @@
+import { ComboBox, LineEdit } from "std-widgets.slint";
+
+export global Theme {
+    out property <color> bg: #eef3ed;
+    out property <color> surface: #ffffff;
+    out property <color> surface-subtle: #f5f8f4;
+    out property <color> header-bg: #173a2e;
+    out property <color> header-sub: #b8d7c8;
+    out property <color> nav-bg: #e0ece3;
+    out property <color> border: #dbe5dc;
+    out property <color> text-primary: #19392d;
+    out property <color> text-muted: #405649;
+
+    out property <color> primary: #1b5e46;
+    out property <color> primary-hover: #164d39;
+    out property <color> primary-pressed: #113e2e;
+    out property <color> primary-disabled: #9db7ac;
+
+    out property <color> danger: #b42318;
+    out property <color> danger-hover: #912018;
+    out property <color> danger-pressed: #7a1b14;
+    out property <color> danger-bg: #fbe5df;
+    out property <color> danger-text: #81281b;
+
+    out property <color> warning-bg: #fef3c7;
+    out property <color> warning-border: #f59e0b;
+    out property <color> warning-text: #854d0e;
+
+    out property <color> success-bg: #dcece0;
+    out property <color> success-text: #1b5e46;
+
+    out property <color> info-bg: #e0f2fe;
+    out property <color> info-text: #0c4a6e;
+}
+
+export component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    // "secondary" | "primary" | "danger" | "header" | "subtle"
+    in property <string> kind: "secondary";
+    in property <bool> compact: false;
+    callback clicked;
+
+    horizontal-stretch: 0;
+    min-height: root.compact ? 28px : 34px;
+    border-radius: 7px;
+    border-width: root.kind == "primary" || root.kind == "danger" ? 0px : 1px;
+    border-color: root.kind == "header" ? #4a7362
+        : root.kind == "subtle" ? #c9d8cd
+        : #c5d4c8;
+    background: !root.enabled
+        ? (root.kind == "primary" ? Theme.primary-disabled
+            : root.kind == "danger" ? #dca59f
+            : root.kind == "header" ? #244b3d
+            : #f1f4f1)
+        : touch.pressed
+            ? (root.kind == "primary" ? Theme.primary-pressed
+                : root.kind == "danger" ? Theme.danger-pressed
+                : root.kind == "header" ? #2a5948
+                : #dce6de)
+            : touch.has-hover
+                ? (root.kind == "primary" ? Theme.primary-hover
+                    : root.kind == "danger" ? Theme.danger-hover
+                    : root.kind == "header" ? #255242
+                    : #eaf1ec)
+                : (root.kind == "primary" ? Theme.primary
+                    : root.kind == "danger" ? Theme.danger
+                    : root.kind == "header" ? #214a3b
+                    : root.kind == "subtle" ? Theme.surface-subtle
+                    : Theme.surface);
+
+    HorizontalLayout {
+        padding-left: root.compact ? 10px : 14px;
+        padding-right: root.compact ? 10px : 14px;
+        padding-top: root.compact ? 4px : 6px;
+        padding-bottom: root.compact ? 4px : 6px;
+        alignment: center;
+        Text {
+            text: root.text;
+            font-size: root.compact ? 12px : 13px;
+            font-weight: root.kind == "primary" || root.kind == "danger" ? 600 : 500;
+            color: !root.enabled
+                ? (root.kind == "primary" || root.kind == "danger" || root.kind == "header" ? #e6f0ec : #8ea095)
+                : (root.kind == "primary" || root.kind == "danger" || root.kind == "header" ? #ffffff : Theme.text-primary);
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component StatusBadge inherits Rectangle {
+    in property <string> text;
+    // "neutral" | "success" | "warning" | "danger" | "info"
+    in property <string> tone: "neutral";
+
+    horizontal-stretch: 0;
+    border-radius: 999px;
+    background: root.tone == "success" ? Theme.success-bg
+        : root.tone == "warning" ? Theme.warning-bg
+        : root.tone == "danger" ? Theme.danger-bg
+        : root.tone == "info" ? Theme.info-bg
+        : #e7efe9;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 3px;
+        padding-bottom: 3px;
+        Text {
+            text: root.text;
+            font-size: 12px;
+            font-weight: 600;
+            color: root.tone == "success" ? Theme.success-text
+                : root.tone == "warning" ? Theme.warning-text
+                : root.tone == "danger" ? Theme.danger-text
+                : root.tone == "info" ? Theme.info-text
+                : Theme.text-muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component EntryInput inherits LineEdit {
+    min-width: 44px;
+}
+
+export component SelectBox inherits ComboBox {
+    min-width: 70px;
+}
+
+export component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> secret;
+    in property <bool> editable: true;
+    in property <InputType> input-mode: text;
+    in-out property <string> value;
+    callback accepted;
+    spacing: 5px;
+    Text { text: root.label; color: Theme.text-muted; font-size: 12px; font-weight: 600; }
+    EntryInput {
+        text <=> root.value;
+        placeholder-text: root.placeholder;
+        input-type: root.secret ? InputType.password : root.input-mode;
+        enabled: root.editable;
+        accepted => { root.accepted(); }
+    }
+}
+
+export component Card inherits Rectangle {
+    vertical-stretch: 0;
+    background: Theme.surface;
+    border-color: Theme.border;
+    border-width: 1px;
+    border-radius: 12px;
+    VerticalLayout {
+        alignment: start;
+        padding: 16px;
+        spacing: 12px;
+        @children
+    }
+}
+
+export component SectionTitle inherits Text {
+    color: Theme.text-primary;
+    font-size: 17px;
+    font-weight: 700;
+}
+
+export component CashGrid inherits VerticalLayout {
+    in property <[string]> labels;
+    in property <[string]> counts;
+    in property <bool> editable: true;
+    callback count-changed(int, string);
+    spacing: 9px;
+    for row in [0, 6]: HorizontalLayout {
+        spacing: 6px;
+        for col in [0, 1, 2, 3, 4, 5]: VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: root.labels[row + col];
+                color: Theme.text-muted;
+                font-size: 12px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            EntryInput {
+                property <string> count-value: root.counts[row + col];
+                text: self.count-value;
+                placeholder-text: "0";
+                changed count-value => {
+                    if (self.text != self.count-value) { self.text = self.count-value; }
+                }
+                input-type: InputType.number;
+                enabled: root.editable;
+                min-width: 34px;
+                edited => { root.count-changed(row + col, self.text); }
+            }
+        }
+    }
+}

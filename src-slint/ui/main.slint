@@ -1,0 +1,1022 @@
+import { Palette, ScrollView } from "std-widgets.slint";
+import { ActionButton, Card, CashGrid, EntryInput, Field, SectionTitle, SelectBox, StatusBadge, Theme } from "components.slint";
+import { DashboardMetricRow, WorkspaceChip, WorkspaceField, WorkspacePanel } from "workspace.slint";
+export { DashboardMetricRow, WorkspaceChip, WorkspaceField } from "workspace.slint";
+
+export struct DonationRow {
+    id: string,
+    name: string,
+    details: string,
+    amount: string,
+}
+
+export struct DonationDraft {
+    kind: int,
+    method: int,
+    category: int,
+    donor-id: string,
+    amount: string,
+    date: string,
+    reference: string,
+}
+
+export component RecorderWindow inherits Window {
+    title: "Offering Recorder — Slint";
+    preferred-width: 1060px;
+    preferred-height: 820px;
+    min-width: 390px;
+    min-height: 480px;
+    background: Theme.bg;
+    default-font-family: "sans-serif";
+    default-font-size: 14px;
+    init => { Palette.color-scheme = ColorScheme.light; }
+
+    // Workspace navigation (role-filtered)
+    in property <[string]> workspace-sections;
+    in-out property <int> workspace-section-index: 0;
+    in property <bool> showing-entry: true;
+    in-out property <int> workspace-action;
+    in property <[string]> workspace-actions;
+    in property <[WorkspaceField]> workspace-fields;
+    in property <bool> workspace-configured;
+    in property <string> workspace-submit-label: "Run";
+    in property <bool> workspace-destructive;
+    in property <bool> workspace-has-dynamic-choices;
+    in property <bool> workspace-has-date-presets;
+    in property <bool> workspace-cash-amendment-mode;
+    in property <[string]> workspace-amend-cash-values;
+    in property <string> workspace-amend-cash-preview;
+    in property <string> workspace-confirmation;
+    in property <string> workspace-result-title;
+    in property <string> workspace-result-text;
+    in property <string> workspace-result-extension;
+    in property <bool> workspace-result-exportable;
+    in property <bool> workspace-result-monospace;
+    in property <[DashboardMetricRow]> dashboard-metrics;
+    in property <[string]> dashboard-warnings;
+    in-out property <bool> workspace-confirming;
+    in-out property <string> workspace-export-path;
+
+    callback workspace-section-changed(int);
+    callback workspace-action-changed(int);
+    callback workspace-field-changed(int, string);
+    callback workspace-field-selected(int, int);
+    callback workspace-remove-chip(int, string);
+    callback workspace-clear-field(int);
+    callback workspace-browse-input(int);
+    callback workspace-edit-amend-cash(int, string);
+    callback workspace-apply-date-preset(string);
+    callback workspace-reload;
+    callback workspace-request-confirm;
+    callback workspace-run;
+    callback workspace-browse-export;
+    callback workspace-export(string);
+
+    // Session & auth
+    in property <bool> ready;
+    in property <bool> bootstrap;
+    in property <bool> signed-in;
+    in-out property <bool> busy: true;
+    in property <string> operator-name;
+    in property <string> operator-roles;
+    in-out property <string> message;
+    in-out property <bool> is-error;
+    in-out property <string> username;
+    in-out property <string> password;
+    in-out property <string> confirm-password;
+    in-out property <string> display-name;
+    in property <bool> can-record;
+    in property <bool> can-sign;
+    in property <bool> can-manage-donors;
+
+    // Offering entry state
+    in property <[string]> meetings;
+    in-out property <int> meeting-index: -1;
+    in property <[string]> offerings;
+    in-out property <int> offering-index: -1;
+    in property <string> offering-id;
+    in property <string> offering-number;
+    in property <string> offering-status;
+    in property <string> offering-status-tone: "neutral";
+    in property <bool> editable;
+    in property <string> offering-description;
+    in property <string> saved-cash;
+    in property <string> cash-donations-total;
+    in property <string> non-cash-donations-total;
+    in property <string> gift-total;
+    in property <bool> cash-reconciled;
+    in property <string> cash-reconcile-note;
+    in property <string> counter-sig-text;
+    in property <string> checker-sig-text;
+    in property <bool> can-counter-sign;
+    in property <bool> can-checker-sign;
+    in property <bool> can-withdraw-sig;
+    in property <bool> can-lock-offering;
+    in-out property <string> sign-guest-name;
+    in-out property <string> withdraw-reason;
+    in-out property <bool> confirm-lock;
+    in-out property <bool> show-withdraw-form;
+
+    in property <[DonationRow]> donations;
+    in-out property <string> confirm-remove;
+    in property <[string]> review-notes;
+
+    in property <[string]> denominations;
+    in property <[string]> count-values;
+    in property <[string]> gift-counts;
+    in property <string> count-preview;
+    in property <string> gift-preview;
+    in property <bool> cash-dirty;
+    in property <bool> attendance-dirty;
+    in-out property <string> attendance;
+    in-out property <int> gift-kind: 0;
+    in-out property <int> gift-method: 0;
+    in-out property <int> gift-category: 0;
+    in-out property <string> gift-date;
+    in-out property <string> gift-amount;
+    in-out property <string> gift-reference;
+    in-out property <string> donor-query;
+    in property <[string]> donor-names;
+    in property <[string]> donor-ids;
+    in-out property <int> donor-index: -1;
+
+    in-out property <string> meeting-name;
+    in-out property <int> meeting-day: 0;
+    in-out property <string> meeting-time: "10:00";
+    in-out property <bool> show-meeting-form;
+    in-out property <string> new-description;
+    in-out property <bool> show-donor-form;
+    in-out property <string> first-name;
+    in-out property <string> last-name;
+
+    callback sign-in(string, string, string, string);
+    callback sign-out;
+    callback select-meeting(int);
+    callback create-meeting(string, int, string);
+    callback select-offering(int);
+    callback create-offering(string);
+    callback refresh;
+    callback edit-attendance(string);
+    callback save-attendance(string);
+    callback edit-count(bool, int, string);
+    callback save-cash;
+    callback find-donor(string);
+    callback create-donor(string, string, string, string);
+    callback add-donation(DonationDraft);
+    callback remove-donation(string);
+    callback counter-sign(string);
+    callback checker-sign(string);
+    callback withdraw-signature(string);
+    callback lock-offering;
+
+    VerticalLayout {
+        spacing: 0;
+
+        // Top app bar
+        Rectangle {
+            background: Theme.header-bg;
+            height: 66px;
+            HorizontalLayout {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 12px;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text { text: "Offering Recorder"; color: #ffffff; font-size: 20px; font-weight: 700; }
+                    Text { text: "Slint edition"; color: Theme.header-sub; font-size: 12px; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if root.signed-in && root.width >= 520px: VerticalLayout {
+                    alignment: center;
+                    spacing: 1px;
+                    Text {
+                        text: root.operator-name;
+                        color: #ffffff;
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-alignment: right;
+                        overflow: elide;
+                    }
+                    if root.operator-roles != "": Text {
+                        text: root.operator-roles;
+                        color: Theme.header-sub;
+                        font-size: 11px;
+                        horizontal-alignment: right;
+                        overflow: elide;
+                    }
+                }
+                if root.signed-in: VerticalLayout {
+                    alignment: center;
+                    ActionButton {
+                        text: "Sign out";
+                        kind: "header";
+                        enabled: !root.busy;
+                        clicked => { root.sign-out(); }
+                    }
+                }
+            }
+        }
+
+        // Status / error banner
+        if root.message != "" || root.busy: Rectangle {
+            vertical-stretch: 0;
+            background: root.is-error ? Theme.danger-bg : Theme.success-bg;
+            VerticalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                Text {
+                    text: root.busy ? "Working…" : root.message;
+                    color: root.is-error ? Theme.danger-text : Theme.success-text;
+                    font-weight: 500;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // Startup loading state
+        if !root.ready: VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            padding: 18px;
+            HorizontalLayout {
+                alignment: center;
+                Card {
+                    horizontal-stretch: 1;
+                    max-width: 420px;
+                    SectionTitle { text: "Opening database…"; }
+                    Text {
+                        text: "Preparing local SQLite storage and verifying schema.";
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // Bootstrap / Sign-in screen
+        if root.ready && !root.signed-in: VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            padding: 18px;
+            HorizontalLayout {
+                alignment: center;
+                Card {
+                    horizontal-stretch: 1;
+                    max-width: 430px;
+                    SectionTitle { text: root.bootstrap ? "Set up administrator account" : "Sign in"; }
+                    Text {
+                        text: root.bootstrap
+                            ? "Create the first administrator for this local Slint database. Keep your password safe."
+                            : "Native Slint edition with its own local database alongside Tauri.";
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                    if root.bootstrap: Field {
+                        label: "Display name *";
+                        placeholder: "e.g. Jane Smith";
+                        value <=> root.display-name;
+                        editable: !root.busy;
+                        accepted => {
+                            if (!root.busy) {
+                                root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                            }
+                        }
+                    }
+                    Field {
+                        label: "Username *";
+                        placeholder: "e.g. admin";
+                        value <=> root.username;
+                        editable: !root.busy;
+                        accepted => {
+                            if (!root.busy) {
+                                root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                            }
+                        }
+                    }
+                    Field {
+                        label: root.bootstrap ? "Password * (at least 8 characters)" : "Password *";
+                        value <=> root.password;
+                        secret: true;
+                        editable: !root.busy;
+                        accepted => {
+                            if (!root.busy && !root.bootstrap) {
+                                root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                            }
+                        }
+                    }
+                    if root.bootstrap: Field {
+                        label: "Confirm password *";
+                        value <=> root.confirm-password;
+                        secret: true;
+                        editable: !root.busy;
+                        accepted => {
+                            if (!root.busy) {
+                                root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                            }
+                        }
+                    }
+                    ActionButton {
+                        text: root.bootstrap ? "Create administrator" : "Sign in";
+                        kind: "primary";
+                        enabled: !root.busy;
+                        clicked => {
+                            root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Workspace section switcher
+        if root.signed-in: Rectangle {
+            background: Theme.nav-bg;
+            vertical-stretch: 0;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 10px;
+                Text {
+                    text: "Section";
+                    vertical-alignment: center;
+                    color: Theme.text-primary;
+                    font-weight: 600;
+                    font-size: 13px;
+                }
+                SelectBox {
+                    horizontal-stretch: 1;
+                    model: root.workspace-sections;
+                    current-index <=> root.workspace-section-index;
+                    enabled: !root.busy;
+                    selected => {
+                        root.workspace-confirming = false;
+                        root.workspace-section-changed(self.current-index);
+                    }
+                }
+            }
+        }
+
+        // Generic / Workspace view
+        if root.signed-in && !root.showing-entry: ScrollView {
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            content-width: self.visible-width;
+            WorkspacePanel {
+                working: root.busy;
+                wide: root.width >= 680px;
+                actions: root.workspace-actions;
+                action-index <=> root.workspace-action;
+                fields: root.workspace-fields;
+                configured: root.workspace-configured;
+                submit-label: root.workspace-submit-label;
+                destructive: root.workspace-destructive;
+                has-dynamic-choices: root.workspace-has-dynamic-choices;
+                has-date-presets: root.workspace-has-date-presets;
+                cash-amendment-mode: root.workspace-cash-amendment-mode;
+                denominations: root.denominations;
+                amend-cash-values: root.workspace-amend-cash-values;
+                amend-cash-preview: root.workspace-amend-cash-preview;
+                confirmation: root.workspace-confirmation;
+                result-title: root.workspace-result-title;
+                result-text: root.workspace-result-text;
+                result-extension: root.workspace-result-extension;
+                result-exportable: root.workspace-result-exportable;
+                result-monospace: root.workspace-result-monospace;
+                dashboard-metrics: root.dashboard-metrics;
+                dashboard-warnings: root.dashboard-warnings;
+                confirming <=> root.workspace-confirming;
+                export-path <=> root.workspace-export-path;
+                action-changed(index) => {
+                    root.workspace-confirming = false;
+                    root.workspace-action-changed(index);
+                }
+                field-changed(index, value) => { root.workspace-field-changed(index, value); }
+                select-field(index, choice) => { root.workspace-field-selected(index, choice); }
+                remove-chip(index, key) => { root.workspace-remove-chip(index, key); }
+                clear-field(index) => { root.workspace-clear-field(index); }
+                browse-input(index) => { root.workspace-browse-input(index); }
+                edit-amend-cash(index, value) => { root.workspace-edit-amend-cash(index, value); }
+                apply-date-preset(preset) => { root.workspace-apply-date-preset(preset); }
+                reload => { root.workspace-reload(); }
+                request-confirm => { root.workspace-request-confirm(); }
+                execute => { root.workspace-run(); }
+                browse-export => { root.workspace-browse-export(); }
+                save-result(path) => { root.workspace-export(path); }
+            }
+        }
+
+        // Dedicated Offering Entry view
+        if root.signed-in && root.showing-entry: ScrollView {
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            content-width: self.visible-width;
+            VerticalLayout {
+                alignment: start;
+                padding: 16px;
+                spacing: 12px;
+
+                // Card 1: Meeting and offering selection
+                Card {
+                    SectionTitle { text: "Meeting and offering"; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        SelectBox {
+                            horizontal-stretch: 1;
+                            model: root.meetings;
+                            current-index <=> root.meeting-index;
+                            enabled: !root.busy && root.meetings.length > 0;
+                            selected => { root.select-meeting(self.current-index); }
+                        }
+                        if root.can-record: ActionButton {
+                            text: root.show-meeting-form ? "Cancel" : "New meeting";
+                            enabled: !root.busy;
+                            clicked => {
+                                root.show-meeting-form = !root.show-meeting-form;
+                                if (!root.show-meeting-form) {
+                                    root.meeting-name = "";
+                                    root.meeting-day = 0;
+                                    root.meeting-time = "10:00";
+                                }
+                            }
+                        }
+                    }
+                    if root.show-meeting-form: Rectangle {
+                        background: Theme.surface-subtle;
+                        border-color: Theme.border;
+                        border-width: 1px;
+                        border-radius: 8px;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+                            Field {
+                                label: "Meeting name *";
+                                placeholder: "e.g. Sunday Morning Service";
+                                value <=> root.meeting-name;
+                                editable: !root.busy;
+                                accepted => {
+                                    if (!root.busy) {
+                                        root.create-meeting(root.meeting-name, root.meeting-day, root.meeting-time);
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                SelectBox {
+                                    horizontal-stretch: 1;
+                                    model: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+                                    current-index <=> root.meeting-day;
+                                    enabled: !root.busy;
+                                }
+                                EntryInput {
+                                    width: 96px;
+                                    text <=> root.meeting-time;
+                                    placeholder-text: "HH:MM";
+                                    enabled: !root.busy;
+                                    accepted => {
+                                        if (!root.busy) {
+                                            root.create-meeting(root.meeting-name, root.meeting-day, root.meeting-time);
+                                        }
+                                    }
+                                }
+                                ActionButton {
+                                    text: "Save meeting";
+                                    kind: "primary";
+                                    enabled: !root.busy;
+                                    clicked => {
+                                        root.create-meeting(root.meeting-name, root.meeting-day, root.meeting-time);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.meeting-index >= 0: VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            SelectBox {
+                                horizontal-stretch: 1;
+                                model: root.offerings;
+                                current-index <=> root.offering-index;
+                                enabled: !root.busy && root.offerings.length > 0;
+                                selected => { root.select-offering(self.current-index); }
+                            }
+                            ActionButton { text: "Refresh"; enabled: !root.busy; clicked => { root.refresh(); } }
+                        }
+                        if root.can-record: HorizontalLayout {
+                            spacing: 8px;
+                            EntryInput {
+                                horizontal-stretch: 1;
+                                text <=> root.new-description;
+                                placeholder-text: "Description (optional)";
+                                enabled: !root.busy;
+                                accepted => {
+                                    if (!root.busy) { root.create-offering(root.new-description); }
+                                }
+                            }
+                            ActionButton {
+                                text: "Start offering";
+                                kind: "primary";
+                                enabled: !root.busy;
+                                clicked => { root.create-offering(root.new-description); }
+                            }
+                        }
+                    }
+                    if root.meetings.length == 0: Text {
+                        text: root.can-record
+                            ? "Create a meeting to start recording offerings."
+                            : "No offerings loaded. Use the Section menu above to open an offering for checking.";
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // Card 2: Offering summary & reconciliation
+                if root.offering-number != "": Card {
+                    HorizontalLayout {
+                        spacing: 8px;
+                        SectionTitle { text: root.offering-number; horizontal-stretch: 1; vertical-alignment: center; }
+                        StatusBadge { text: root.offering-status; tone: root.offering-status-tone; }
+                    }
+                    if root.offering-description != "": Text {
+                        text: root.offering-description;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Text { text: "Saved cash count"; color: Theme.text-muted; font-size: 12px; }
+                            Text { text: root.saved-cash; color: Theme.text-primary; font-size: 20px; font-weight: 700; }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Text { text: "Cash donations"; color: Theme.text-muted; font-size: 12px; }
+                            Text { text: root.cash-donations-total; color: Theme.text-primary; font-size: 20px; font-weight: 700; }
+                        }
+                        if root.width >= 560px: VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Text { text: "Non-cash donations"; color: Theme.text-muted; font-size: 12px; }
+                            Text { text: root.non-cash-donations-total; color: Theme.text-primary; font-size: 20px; font-weight: 700; }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Text { text: "All donations"; color: Theme.text-muted; font-size: 12px; }
+                            Text { text: root.gift-total; color: Theme.text-primary; font-size: 20px; font-weight: 700; }
+                        }
+                    }
+                    if root.cash-reconcile-note != "": HorizontalLayout {
+                        spacing: 8px;
+                        StatusBadge {
+                            text: root.cash-reconcile-note;
+                            tone: root.cash-reconciled ? "success" : "warning";
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+
+                // Card 3: Attendance and cash count
+                if root.offering-number != "": Card {
+                    HorizontalLayout {
+                        spacing: 8px;
+                        SectionTitle { text: "Attendance and cash count"; horizontal-stretch: 1; vertical-alignment: center; }
+                        if root.attendance-dirty || root.cash-dirty: StatusBadge {
+                            text: "Unsaved changes";
+                            tone: "warning";
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 5px;
+                            Text { text: "Attendance"; color: Theme.text-muted; font-size: 12px; font-weight: 600; }
+                            EntryInput {
+                                text <=> root.attendance;
+                                placeholder-text: "0";
+                                input-type: InputType.number;
+                                enabled: root.editable && !root.busy;
+                                edited => { root.edit-attendance(self.text); }
+                                accepted => {
+                                    if (root.editable && !root.busy) { root.save-attendance(root.attendance); }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 0;
+                            alignment: end;
+                            ActionButton {
+                                text: "Save attendance";
+                                kind: root.attendance-dirty ? "primary" : "secondary";
+                                enabled: root.editable && !root.busy;
+                                clicked => { root.save-attendance(root.attendance); }
+                            }
+                        }
+                    }
+                    CashGrid {
+                        labels: root.denominations;
+                        counts: root.count-values;
+                        editable: root.editable && !root.busy;
+                        count-changed(index, value) => { root.edit-count(false, index, value); }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Count total  " + root.count-preview;
+                            color: Theme.text-primary;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        ActionButton {
+                            text: "Save cash count";
+                            kind: root.cash-dirty ? "primary" : "secondary";
+                            enabled: root.editable && !root.busy;
+                            clicked => { root.save-cash(); }
+                        }
+                    }
+                }
+
+                // Card 4: Record donation
+                if root.editable: Card {
+                    SectionTitle { text: "Record donation"; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        SelectBox {
+                            horizontal-stretch: 1;
+                            model: ["Loose cash", "Anonymous", "Named donor"];
+                            current-index <=> root.gift-kind;
+                            enabled: !root.busy;
+                            selected => {
+                                if (self.current-index == 0) {
+                                    root.gift-method = 0;
+                                }
+                            }
+                        }
+                        if root.gift-kind != 0: SelectBox {
+                            horizontal-stretch: 1;
+                            model: ["Cash", "Cheque", "Bank transfer", "Contactless", "Chip & PIN"];
+                            current-index <=> root.gift-method;
+                            enabled: !root.busy;
+                        }
+                        if root.gift-kind != 0: SelectBox {
+                            horizontal-stretch: 1;
+                            model: ["General", "Tithe", "Special", "Offering", "Other"];
+                            current-index <=> root.gift-category;
+                            enabled: !root.busy;
+                        }
+                    }
+                    if root.gift-kind == 2: VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            EntryInput {
+                                horizontal-stretch: 1;
+                                text <=> root.donor-query;
+                                placeholder-text: "Search donor by name (or leave blank for all)";
+                                enabled: !root.busy;
+                                edited => { root.donor-index = -1; }
+                                accepted => { root.find-donor(root.donor-query); }
+                            }
+                            ActionButton {
+                                text: root.donor-query == "" ? "Browse" : "Find";
+                                enabled: !root.busy;
+                                clicked => { root.find-donor(root.donor-query); }
+                            }
+                            if root.can-manage-donors: ActionButton {
+                                text: root.show-donor-form ? "Cancel" : "New donor";
+                                enabled: !root.busy;
+                                clicked => { root.show-donor-form = !root.show-donor-form; }
+                            }
+                        }
+                        SelectBox {
+                            model: root.donor-names;
+                            current-index <=> root.donor-index;
+                            enabled: !root.busy && root.donor-names.length > 0;
+                        }
+                        if root.show-donor-form: Rectangle {
+                            background: Theme.surface-subtle;
+                            border-color: Theme.border;
+                            border-width: 1px;
+                            border-radius: 8px;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Field { label: "First name *"; value <=> root.first-name; editable: !root.busy; }
+                                    Field { label: "Last name *"; value <=> root.last-name; editable: !root.busy; }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    taxpayer := SelectBox { horizontal-stretch: 1; model: ["Unknown", "UK", "Non-UK"]; enabled: !root.busy; }
+                                    basis := SelectBox {
+                                        horizontal-stretch: 1;
+                                        model: ["Lawful basis…", "Consent", "Contract", "Legal obligation", "Legitimate interest"];
+                                        enabled: !root.busy;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    Rectangle { horizontal-stretch: 1; }
+                                    ActionButton {
+                                        text: "Create donor";
+                                        kind: "primary";
+                                        enabled: !root.busy && basis.current-index > 0;
+                                        clicked => {
+                                            root.create-donor(root.first-name, root.last-name, taxpayer.current-value, basis.current-value);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.gift-kind == 0 || root.gift-method == 0: CashGrid {
+                        labels: root.denominations;
+                        counts: root.gift-counts;
+                        editable: !root.busy;
+                        count-changed(index, value) => { root.edit-count(true, index, value); }
+                    }
+                    if root.gift-kind != 0 && root.gift-method != 0: Field {
+                        label: "Amount (£) *";
+                        value <=> root.gift-amount;
+                        placeholder: "0.00";
+                        editable: !root.busy;
+                        accepted => {
+                            if (!root.busy) {
+                                root.add-donation({
+                                    kind: root.gift-kind,
+                                    method: root.gift-kind == 0 ? 0 : root.gift-method,
+                                    category: root.gift-category,
+                                    donor-id: root.donor-index >= 0 ? root.donor-ids[root.donor-index] : "",
+                                    amount: root.gift-amount,
+                                    date: root.gift-date,
+                                    reference: root.gift-reference,
+                                });
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Field {
+                            horizontal-stretch: 1;
+                            label: "Date received *";
+                            value <=> root.gift-date;
+                            placeholder: "YYYY-MM-DD";
+                            editable: !root.busy;
+                        }
+                        if root.gift-kind != 0: Field {
+                            horizontal-stretch: 1;
+                            label: "Reference (optional)";
+                            value <=> root.gift-reference;
+                            editable: !root.busy;
+                            accepted => {
+                                if (!root.busy) {
+                                    root.add-donation({
+                                        kind: root.gift-kind,
+                                        method: root.gift-kind == 0 ? 0 : root.gift-method,
+                                        category: root.gift-category,
+                                        donor-id: root.donor-index >= 0 ? root.donor-ids[root.donor-index] : "",
+                                        amount: root.gift-amount,
+                                        date: root.gift-date,
+                                        reference: root.gift-reference,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        if root.gift-kind == 0 || root.gift-method == 0: Text {
+                            text: "Cash total  " + root.gift-preview;
+                            color: Theme.text-primary;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        ActionButton {
+                            text: "Record donation";
+                            kind: "primary";
+                            enabled: !root.busy;
+                            clicked => {
+                                root.add-donation({
+                                    kind: root.gift-kind,
+                                    method: root.gift-kind == 0 ? 0 : root.gift-method,
+                                    category: root.gift-category,
+                                    donor-id: root.donor-index >= 0 ? root.donor-ids[root.donor-index] : "",
+                                    amount: root.gift-amount,
+                                    date: root.gift-date,
+                                    reference: root.gift-reference,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Card 5: Donations & Review (inline repeater, no nested ListView scroll trap)
+                if root.offering-number != "": Card {
+                    SectionTitle { text: "Donations (" + root.donations.length + ")"; }
+                    if root.donations.length == 0: Text { text: "No donations recorded."; color: Theme.text-muted; }
+                    for donation in root.donations: Rectangle {
+                        background: Theme.surface-subtle;
+                        border-color: Theme.border;
+                        border-width: 1px;
+                        border-radius: 8px;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 10px;
+                            padding-top: 8px;
+                            padding-bottom: 8px;
+                            spacing: 8px;
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                spacing: 2px;
+                                Text { text: donation.name; color: Theme.text-primary; font-weight: 600; overflow: elide; }
+                                Text { text: donation.details; color: Theme.text-muted; font-size: 12px; overflow: elide; }
+                            }
+                            Text { text: donation.amount; color: Theme.text-primary; vertical-alignment: center; font-weight: 700; }
+                            if root.editable && root.confirm-remove != donation.id: VerticalLayout {
+                                alignment: center;
+                                ActionButton {
+                                    text: "Remove";
+                                    compact: true;
+                                    enabled: !root.busy;
+                                    clicked => { root.confirm-remove = donation.id; }
+                                }
+                            }
+                            if root.editable && root.confirm-remove == donation.id: HorizontalLayout {
+                                alignment: center;
+                                spacing: 6px;
+                                ActionButton {
+                                    text: "Cancel";
+                                    compact: true;
+                                    enabled: !root.busy;
+                                    clicked => { root.confirm-remove = ""; }
+                                }
+                                ActionButton {
+                                    text: "Confirm";
+                                    kind: "danger";
+                                    compact: true;
+                                    enabled: !root.busy;
+                                    clicked => {
+                                        root.confirm-remove = "";
+                                        root.remove-donation(donation.id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SectionTitle { text: "Review"; }
+                    if root.review-notes.length == 0: Text {
+                        text: "The recorded figures pass the offering validation checks.";
+                        color: Theme.success-text;
+                        wrap: word-wrap;
+                    }
+                    for note in root.review-notes: Text {
+                        text: "• " + note;
+                        color: Theme.warning-text;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // Card 6: Inline Checking, Signing & Locking
+                if root.offering-number != "" && root.can-sign: Card {
+                    SectionTitle { text: "Signing and locking"; }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Text { text: "Counter signature"; color: Theme.text-muted; font-size: 12px; }
+                            Text {
+                                text: root.counter-sig-text != "" ? root.counter-sig-text : "Not yet signed";
+                                color: Theme.text-primary;
+                                font-weight: 600;
+                                wrap: word-wrap;
+                            }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Text { text: "Checker signature"; color: Theme.text-muted; font-size: 12px; }
+                            Text {
+                                text: root.checker-sig-text != "" ? root.checker-sig-text : "Not yet signed";
+                                color: Theme.text-primary;
+                                font-weight: 600;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    if root.can-counter-sign || root.can-checker-sign: Field {
+                        label: "Guest signer name (optional — leave blank to sign as yourself)";
+                        placeholder: "Guest full name";
+                        value <=> root.sign-guest-name;
+                        editable: !root.busy;
+                    }
+                    if root.show-withdraw-form: Rectangle {
+                        background: Theme.surface-subtle;
+                        border-color: Theme.border;
+                        border-width: 1px;
+                        border-radius: 8px;
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+                            Field {
+                                label: "Reason for withdrawing signature *";
+                                value <=> root.withdraw-reason;
+                                editable: !root.busy;
+                                accepted => {
+                                    if (!root.busy) { root.withdraw-signature(root.withdraw-reason); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Rectangle { horizontal-stretch: 1; }
+                                ActionButton {
+                                    text: "Cancel";
+                                    compact: true;
+                                    enabled: !root.busy;
+                                    clicked => { root.show-withdraw-form = false; root.withdraw-reason = ""; }
+                                }
+                                ActionButton {
+                                    text: "Withdraw signature";
+                                    kind: "danger";
+                                    compact: true;
+                                    enabled: !root.busy;
+                                    clicked => { root.withdraw-signature(root.withdraw-reason); }
+                                }
+                            }
+                        }
+                    }
+                    if root.confirm-lock: Rectangle {
+                        background: Theme.danger-bg;
+                        border-radius: 8px;
+                        VerticalLayout {
+                            padding: 10px;
+                            Text {
+                                text: "Lock this offering? Once locked, further changes require a two-person approved amendment.";
+                                color: Theme.danger-text;
+                                font-weight: 600;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        if root.can-withdraw-sig && !root.show-withdraw-form && !root.confirm-lock: ActionButton {
+                            text: "Withdraw signature";
+                            enabled: !root.busy;
+                            clicked => { root.show-withdraw-form = true; }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        if root.can-counter-sign: ActionButton {
+                            text: "Counter sign";
+                            kind: "primary";
+                            enabled: !root.busy;
+                            clicked => { root.counter-sign(root.sign-guest-name); }
+                        }
+                        if root.can-checker-sign: ActionButton {
+                            text: "Checker sign";
+                            kind: "primary";
+                            enabled: !root.busy;
+                            clicked => { root.checker-sign(root.sign-guest-name); }
+                        }
+                        if root.can-lock-offering && !root.confirm-lock: ActionButton {
+                            text: "Lock offering";
+                            kind: "primary";
+                            enabled: !root.busy;
+                            clicked => { root.confirm-lock = true; }
+                        }
+                        if root.confirm-lock: ActionButton {
+                            text: "Cancel";
+                            enabled: !root.busy;
+                            clicked => { root.confirm-lock = false; }
+                        }
+                        if root.confirm-lock: ActionButton {
+                            text: "Confirm lock";
+                            kind: "danger";
+                            enabled: !root.busy;
+                            clicked => {
+                                root.confirm-lock = false;
+                                root.lock-offering();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
