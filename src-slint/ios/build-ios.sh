@@ -10,7 +10,7 @@ esac
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$DERIVED_FILE_DIR/cargo"
 export IPHONEOS_DEPLOYMENT_TARGET="$IPHONEOS_DEPLOYMENT_TARGET"
-export SLINT_EMBED_RESOURCES=embed-files
+export SLINT_EMBED_RESOURCES=true
 export CARGO_PROFILE_RELEASE_DEBUG=1
 
 cargo build --locked --release --manifest-path "$SRCROOT/../Cargo.toml" \
