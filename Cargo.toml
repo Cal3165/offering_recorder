@@ -11,7 +11,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.94"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -26,7 +26,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tracing-appender = "0.2"
-sqlx = { version = "0.8", features = ["sqlite", "chrono", "uuid", "runtime-tokio", "migrate"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["sqlite", "chrono", "uuid", "runtime-tokio", "migrate", "macros"] }
 tauri = { version = "2", features = [] }
 
 [profile.release]

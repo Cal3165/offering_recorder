@@ -243,8 +243,9 @@ mod tests {
             .iter()
             .filter(|c| !registered.contains(c))
             .collect();
-        assert!(
-            missing.is_empty(),
+        assert_eq!(
+            missing.len(),
+            0,
             "api.ts invokes unregistered commands: {missing:?}"
         );
 
@@ -264,8 +265,9 @@ mod tests {
             .filter(|c| !referenced.contains(c))
             .filter(|c| !allowlisted_without_ui.contains(&c.as_str()))
             .collect();
-        assert!(
-            dead.is_empty(),
+        assert_eq!(
+            dead.len(),
+            0,
             "registered commands without api.ts bindings: {dead:?}"
         );
         let _ = bytes;
@@ -593,8 +595,9 @@ mod tests {
                 None => mismatches.push(format!("{cmd}: no Rust command found")),
             }
         }
-        assert!(
-            mismatches.is_empty(),
+        assert_eq!(
+            mismatches.len(),
+            0,
             "IPC arg-key drift (api.ts vs commands/*.rs):\n{}",
             mismatches.join("\n")
         );
@@ -869,8 +872,9 @@ mod tests {
             }
         }
 
-        assert!(
-            mismatches.is_empty(),
+        assert_eq!(
+            mismatches.len(),
+            0,
             "nested IPC shape drift:\n{}",
             mismatches.join("\n")
         );

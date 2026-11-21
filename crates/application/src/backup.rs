@@ -313,11 +313,11 @@ mod tests {
     fn keep_two_floor_holds_when_everything_is_expired() {
         let now = Utc::now();
         let backups = vec![fake_backup(1, Some(1)), fake_backup(2, Some(1))];
-        assert!(select_prunable_backups(&backups, now).is_empty());
+        assert_eq!(select_prunable_backups(&backups, now), [] as [&Backup; 0]);
         let single = vec![fake_backup(5, Some(1))];
-        assert!(select_prunable_backups(&single, now).is_empty());
+        assert_eq!(select_prunable_backups(&single, now), [] as [&Backup; 0]);
         let empty: Vec<Backup> = vec![];
-        assert!(select_prunable_backups(&empty, now).is_empty());
+        assert_eq!(select_prunable_backups(&empty, now), [] as [&Backup; 0]);
     }
 
     #[test]
@@ -329,7 +329,7 @@ mod tests {
             fake_backup(20, None),      // no retention bound: keep forever
             fake_backup(30, Some(-30)), // retention still in force (future date)
         ];
-        assert!(select_prunable_backups(&backups, now).is_empty());
+        assert_eq!(select_prunable_backups(&backups, now), [] as [&Backup; 0]);
     }
 
     #[test]

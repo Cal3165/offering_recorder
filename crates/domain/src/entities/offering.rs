@@ -498,7 +498,7 @@ mod tests {
     fn create_draft_offering() {
         let o = make_offering();
         assert_eq!(o.status, OfferingStatus::Draft);
-        assert!(o.donations.is_empty());
+        assert_eq!(o.donations.len(), 0);
         assert!(o.counter_signature.is_none());
         assert!(o.checker_signature.is_none());
         assert!(o.can_edit());

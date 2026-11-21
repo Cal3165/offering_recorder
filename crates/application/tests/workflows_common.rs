@@ -520,7 +520,7 @@ async fn nil_collection_can_be_signed_and_locked() {
         .unwrap()
         .unwrap();
     assert!(stored.is_locked());
-    assert!(stored.donations().is_empty());
+    assert_eq!(stored.donations(), []);
 }
 
 #[tokio::test]

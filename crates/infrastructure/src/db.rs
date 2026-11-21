@@ -73,11 +73,11 @@ mod tests {
     use std::collections::HashSet;
 
     async fn table_columns(pool: &SqlitePool, table: &str) -> HashSet<String> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(pool)
-                .await
-                .unwrap();
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info(?)")
+            .bind(table)
+            .fetch_all(pool)
+            .await
+            .unwrap();
         rows.into_iter().map(|(n,)| n).collect()
     }
 

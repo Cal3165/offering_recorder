@@ -87,7 +87,8 @@ async fn load_items_batch(
         let query = format!(
             "SELECT * FROM bank_deposit_items WHERE deposit_id IN ({placeholders}) ORDER BY deposit_id"
         );
-        let mut q = sqlx::query(&query);
+        // The interpolated fragment contains only bind placeholders.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(query));
         for id in chunk {
             q = q.bind(id);
         }
@@ -222,7 +223,13 @@ impl BankDepositRepository for SqliteBankDepositRepository {
             // timestamp → Conflict (optimistic-concurrency, unchanged). The
             // check runs inside this transaction: a second connection would
             // block on the open write's table locks.
-            if super::row_exists(&mut tx, "bank_deposits", deposit.id).await? {
+            if super::row_exists(
+                &mut tx,
+                "SELECT 1 FROM bank_deposits WHERE id = ?",
+                deposit.id,
+            )
+            .await?
+            {
                 return Err(RepoError::Conflict(
                     "deposit was modified by another operation; reload and retry".into(),
                 ));

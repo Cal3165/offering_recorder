@@ -296,7 +296,7 @@ async fn duplicate_search_requires_donor_permission() {
         .search_for_duplicates(&admin, &duplicate_probe_input())
         .await
         .unwrap();
-    assert!(found.is_empty());
+    assert_eq!(found, [] as [offering_domain::Donor; 0]);
 }
 
 #[tokio::test]
@@ -363,7 +363,7 @@ async fn gift_aid_role_can_list_but_not_edit_community_buildings() {
     let (services, admin) = bootstrap_admin().await;
     let gift_aid = user_with_roles(&services, &admin, "bld_ga", vec![Role::GiftAid]).await;
     let listed = services.community_buildings.list(&gift_aid).await.unwrap();
-    assert!(listed.is_empty());
+    assert_eq!(listed, [] as [offering_domain::CommunityBuilding; 0]);
 
     let err = services
         .community_buildings

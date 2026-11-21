@@ -753,10 +753,7 @@ pub async fn sign_verify_and_lock(
         .validate_offering(counter, offering_id)
         .await
         .unwrap();
-    assert!(
-        issues.is_empty(),
-        "expected no validation issues: {issues:?}"
-    );
+    assert_eq!(issues.len(), 0, "expected no validation issues: {issues:?}");
     let signed_counter = services
         .offerings
         .counter_sign(counter, offering_id, None)
@@ -861,7 +858,7 @@ pub async fn amend_attendance_and_bank(
         .available_offerings_for_deposit(admin)
         .await
         .unwrap();
-    assert!(candidates.is_empty());
+    assert_eq!(candidates.len(), 0);
     let events = services.auth.list_users(admin).await.unwrap();
     assert_eq!(events.len(), 3);
 }

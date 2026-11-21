@@ -239,7 +239,7 @@ mod tests {
         let banker_id = Uuid::new_v4();
         let date = Utc::now();
         let d = BankDeposit::create(banker_id, date, Some("REF001".to_string())).unwrap();
-        assert!(d.items.is_empty());
+        assert_eq!(d.items.len(), 0);
         assert!(d.expected_cash().unwrap().is_zero());
         assert!(d.expected_total().unwrap().is_zero());
     }

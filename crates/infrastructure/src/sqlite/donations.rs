@@ -91,7 +91,8 @@ impl SqliteDonationRepository {
             let query = format!(
                 "SELECT donation_id, denomination, count FROM donation_cash_denominations WHERE donation_id IN ({placeholders})"
             );
-            let mut q = sqlx::query(&query);
+            // The interpolated fragment contains only bind placeholders.
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(query));
             for id in chunk {
                 q = q.bind(id);
             }

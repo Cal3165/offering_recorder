@@ -108,7 +108,8 @@ async fn load_cash_totals_batch(
         let query = format!(
             "SELECT offering_id, denomination, count FROM offering_cash_denominations WHERE offering_id IN ({placeholders})"
         );
-        let mut q = sqlx::query(&query);
+        // The interpolated fragment contains only bind placeholders.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(query));
         for id in chunk {
             q = q.bind(id);
         }
@@ -137,7 +138,8 @@ async fn load_donations_batch(
         let query = format!(
             "SELECT * FROM donations WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
         );
-        let mut q = sqlx::query(&query);
+        // The interpolated fragment contains only bind placeholders.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(query));
         for id in chunk {
             q = q.bind(id);
         }
@@ -165,7 +167,8 @@ async fn load_cash_breakdowns_batch(
         let query = format!(
             "SELECT donation_id, denomination, count FROM donation_cash_denominations WHERE donation_id IN ({placeholders})"
         );
-        let mut q = sqlx::query(&query);
+        // The interpolated fragment contains only bind placeholders.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(query));
         for id in chunk {
             q = q.bind(id);
         }
@@ -342,7 +345,13 @@ impl OfferingRepository for SqliteOfferingRepository {
             // timestamp → Conflict (optimistic-concurrency, unchanged). The
             // check runs inside this transaction: a second connection would
             // block on the open write's table locks.
-            if super::row_exists(&mut tx, "offerings", offering.id()).await? {
+            if super::row_exists(
+                &mut tx,
+                "SELECT 1 FROM offerings WHERE id = ?",
+                offering.id(),
+            )
+            .await?
+            {
                 return Err(RepoError::Conflict(
                     "offering was modified by another operation; reload and retry".into(),
                 ));
@@ -450,7 +459,8 @@ impl OfferingRepository for SqliteOfferingRepository {
 
         let (limit, offset) = super::page_binds(limit, offset);
 
-        let mut query = sqlx::query(&sql);
+        // Optional filters append static SQL fragments with bind placeholders.
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(mid) = meeting_id {
             query = query.bind(mid);
         }
@@ -478,7 +488,8 @@ impl OfferingRepository for SqliteOfferingRepository {
         let sql = format!(
             "SELECT * FROM offerings WHERE status IN ({placeholders}) ORDER BY created_at DESC, id DESC LIMIT ?"
         );
-        let mut query = sqlx::query(&sql);
+        // The interpolated fragment contains only bind placeholders.
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for st in statuses {
             query = query.bind(super::to_json(&st)?);
         }

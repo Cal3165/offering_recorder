@@ -32,8 +32,10 @@ jobs:
   # breaks the build even without a code change.
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-audit --version 0.23.0 --locked
+      - run: cargo audit --file Cargo.lock

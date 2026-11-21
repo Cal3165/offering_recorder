@@ -135,7 +135,8 @@ async fn load_amendments_for_offerings(
         let query = format!(
             "SELECT * FROM amendments WHERE offering_id IN ({placeholders}) ORDER BY offering_id, created_at"
         );
-        let mut q = sqlx::query(&query);
+        // The interpolated fragment contains only bind placeholders.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(query));
         for id in chunk {
             q = q.bind(id);
         }
@@ -174,7 +175,8 @@ impl ReportRepository for SqliteReportRepository {
         }
         sql.push_str(" GROUP BY d.donation_type");
 
-        let mut query = sqlx::query(&sql);
+        // Optional filters append static SQL fragments with bind placeholders.
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         query = query.bind(start_str).bind(end_exclusive);
         if let Some(mid) = meeting_id {
             query = query.bind(mid);
@@ -217,7 +219,8 @@ impl ReportRepository for SqliteReportRepository {
             declaration_covers_donation_sql()
         );
 
-        let rows = sqlx::query(&sql)
+        // The interpolated eligibility predicate is a static SQL fragment.
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(start_str)
             .bind(end_exclusive)
             .fetch_all(&self.pool.get())
@@ -346,7 +349,8 @@ impl ReportRepository for SqliteReportRepository {
             declaration_covers_donation_sql()
         );
 
-        let rows = sqlx::query(&sql)
+        // The interpolated eligibility predicate is a static SQL fragment.
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&start_str)
             .bind(&end_exclusive)
             .fetch_all(&self.pool.get())
@@ -460,7 +464,8 @@ impl ReportRepository for SqliteReportRepository {
             let audit_sql = format!(
                 "SELECT * FROM audit_events WHERE entity_id IN ({placeholders}) ORDER BY timestamp"
             );
-            let mut audit_query = sqlx::query(&audit_sql);
+            // The interpolated fragment contains only bind placeholders.
+            let mut audit_query = sqlx::query(sqlx::AssertSqlSafe(audit_sql));
             for id in chunk {
                 audit_query = audit_query.bind(id);
             }

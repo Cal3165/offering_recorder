@@ -188,13 +188,11 @@ impl BackupManager {
         let staging = TempFileGuard::new(backup_dir, "backup_staging")?;
         let staging_str = staging.path().to_string_lossy().to_string();
 
-        sqlx::query(&format!(
-            "VACUUM INTO '{}'",
-            staging_str.replace('\'', "''")
-        ))
-        .execute(pool)
-        .await
-        .map_err(InfraError::Database)?;
+        sqlx::query("VACUUM INTO ?")
+            .bind(staging_str)
+            .execute(pool)
+            .await
+            .map_err(InfraError::Database)?;
 
         if passphrase.trim().is_empty() {
             fs::rename(staging.path(), &plain_path)?;
@@ -537,8 +535,9 @@ mod tests {
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("enc"))
             })
             .collect();
-        assert!(
-            leftovers.is_empty(),
+        assert_eq!(
+            leftovers.len(),
+            0,
             "plaintext database copies must not survive an encrypted backup: {leftovers:?}"
         );
 
@@ -681,8 +680,9 @@ mod tests {
         let safety_copies: Vec<_> = std::fs::read_dir(&safety)
             .map(|rd| rd.filter_map(std::result::Result::ok).collect())
             .unwrap_or_default();
-        assert!(
-            safety_copies.is_empty(),
+        assert_eq!(
+            safety_copies.len(),
+            0,
             "no safety copy may be taken when validation fails first"
         );
 

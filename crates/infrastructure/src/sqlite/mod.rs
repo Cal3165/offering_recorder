@@ -170,17 +170,16 @@ pub const IN_CHUNK_SIZE: usize = 500;
 /// Must run on the SAME connection as the failed write (pass `&mut *tx`):
 /// a second pooled connection blocks on the open write transaction's table
 /// locks (shared-cache in-memory databases hang; file databases would wait
-/// out the busy timeout). Table names are caller constants, never user input.
+/// out the busy timeout). The caller supplies a static existence query with one bound ID.
 /// # Errors
 ///
 /// Returns [`RepoError`] if the existence check itself fails.
 pub async fn row_exists(
     conn: &mut sqlx::sqlite::SqliteConnection,
-    table: &str,
+    query: &'static str,
     id: uuid::Uuid,
 ) -> Result<bool, RepoError> {
-    let query = format!("SELECT 1 AS one FROM {table} WHERE id = ?");
-    let row = sqlx::query(&query)
+    let row = sqlx::query(query)
         .bind(id)
         .fetch_optional(conn)
         .await

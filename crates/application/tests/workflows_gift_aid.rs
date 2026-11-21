@@ -544,7 +544,7 @@ async fn list_active_by_donor_uses_serialized_status() {
         .list_active_by_donor(donor.id, None, None)
         .await
         .unwrap();
-    assert!(active.is_empty(), "ended declaration must not be active");
+    assert_eq!(active.len(), 0, "ended declaration must not be active");
     assert_eq!(
         store
             .gift_aid

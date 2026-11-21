@@ -147,7 +147,13 @@ impl AmendmentRepository for SqliteAmendmentRepository {
             // timestamp → Conflict (optimistic-concurrency, unchanged). No
             // open transaction here, so a fresh connection is safe.
             let mut conn = self.pool.get().acquire().await.map_err(map_db_err)?;
-            if super::row_exists(&mut conn, "amendments", amendment.id()).await? {
+            if super::row_exists(
+                &mut conn,
+                "SELECT 1 FROM amendments WHERE id = ?",
+                amendment.id(),
+            )
+            .await?
+            {
                 return Err(RepoError::Conflict(
                     "amendment was modified by another operation; reload and retry".into(),
                 ));

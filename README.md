@@ -139,7 +139,7 @@ That writes `.ppm` files; convert them with ImageMagick
 
 ### Prerequisites
 
-- Rust stable ≥ 1.85 (`rustup update stable`)
+- Rust stable ≥ 1.94 (`rustup update stable`)
 - Bun ≥ 1.x (canonical JS package manager — `bun.lock` is authoritative)
 - Tauri system deps (see [Tauri prerequisites](https://tauri.app/start/prerequisites/))
 - Optional: `sqlx-cli` for migration work (`cargo install sqlx-cli --no-default-features --features sqlite`)

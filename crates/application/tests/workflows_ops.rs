@@ -146,8 +146,8 @@ async fn retention_report_counts_records_and_never_expires_current() {
     assert_eq!(report.gift_aid_declarations.total, 0);
     assert_eq!(report.bank_deposits.total, 1);
     // Current records must still be within retention.
-    assert!(report.expired.is_empty());
-    assert!(report.expiring.is_empty());
+    assert_eq!(report.expired.len(), 0);
+    assert_eq!(report.expiring.len(), 0);
     assert_eq!(report.donations.within, 1);
 
     // Report is also audited.
@@ -262,8 +262,9 @@ async fn deposit_report_respects_date_range() {
         )
         .await
         .unwrap();
-    assert!(
-        outside.is_empty(),
+    assert_eq!(
+        outside.len(),
+        0,
         "deposit must be excluded outside the range"
     );
 }
