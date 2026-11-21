@@ -99,7 +99,7 @@ pub fn encrypt_file(src: &Path, dst: &Path, passphrase: &str) -> InfraResult<()>
     let key = derive_key(passphrase, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key).expect("32-byte key");
     let sealed = cipher
-        .encrypt(Nonce::from_slice(&nonce), plain.as_ref())
+        .encrypt(&Nonce::from(nonce), plain.as_ref())
         .map_err(|_| InfraError::Message("encryption failed".into()))?;
 
     let mut out = Vec::with_capacity(SALT_LEN + NONCE_LEN + sealed.len());
@@ -140,15 +140,13 @@ pub fn decrypt_file(src: &Path, passphrase: &str) -> InfraResult<Vec<u8>> {
     }
     let (salt, rest) = data.split_at(SALT_LEN);
     let (nonce, sealed) = rest.split_at(NONCE_LEN);
+    let nonce = <[u8; NONCE_LEN]>::try_from(nonce)
+        .map_err(|_| InfraError::Message("invalid encrypted backup nonce".into()))?;
     let key = derive_key(passphrase, salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key).expect("32-byte key");
-    cipher
-        .decrypt(Nonce::from_slice(nonce), sealed)
-        .map_err(|_| {
-            InfraError::Message(
-                "failed to decrypt backup (wrong passphrase or corrupt file)".into(),
-            )
-        })
+    cipher.decrypt(&Nonce::from(nonce), sealed).map_err(|_| {
+        InfraError::Message("failed to decrypt backup (wrong passphrase or corrupt file)".into())
+    })
 }
 
 /// Whether `path` looks like a sealed (`salt || nonce || ciphertext`) backup.
