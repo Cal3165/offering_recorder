@@ -4,10 +4,14 @@ targets:
     type: application
     platform: iOS
     deploymentTarget: "15.0"
-    sources: []
+    sources:
+      - path: Assets.xcassets
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.caleb.offeringrecorder.slint
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_USER_SCRIPT_SANDBOXING: "NO"
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -15,6 +19,12 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Offering Recorder (Slint)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -23,7 +33,7 @@ targets:
               - UISceneConfigurationName: Slint
                 UISceneDelegateClassName: SlintWindowSceneDelegate
     postCompileScripts:
-      - script: bash "${SRCROOT}/build-simulator.sh"
+      - script: bash "${SRCROOT}/build-ios.sh"
         outputFiles:
           - "$(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)"
         basedOnDependencyAnalysis: false

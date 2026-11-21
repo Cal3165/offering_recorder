@@ -171,18 +171,72 @@ Open a **Build artifacts** run in GitHub Actions and download its artifacts. The
 | Windows x64 | Slint executable archive and Tauri NSIS installer |
 | macOS Apple Silicon and Intel | Slint executable archives and Tauri disk images |
 | Android ARM64 | Slint and Tauri debug APKs for testing |
-| iOS ARM64 | Slint Apple Silicon simulator app and unsigned Tauri device archive |
+| iOS ARM64 | Slint Apple Silicon simulator app, unsigned Slint and Tauri device archives, and an opt-in signed Slint IPA for TestFlight |
 | Web | Static Svelte assets. App workflows still require Tauri's Rust backend. |
 
 CI packages Tauri with the bundle identifier `com.caleb.offeringrecorder`. Its app data directory can differ from local development installations. The workflow uploads build artifacts to Actions.
 
-### Slint mobile builds
+### Install on Android
 
-The Android APK is a native application. Install it on an ARM64 device with
-`adb install offering-recorder-slint.apk`. On an Apple Silicon Mac, extract the
-iOS artifact and install the app into a booted simulator with
-`xcrun simctl install booted OfferingRecorderSlint.app`. The Slint iOS artifact
-targets the simulator. Physical iPhones require a device build and signing.
+Download `slint-android-arm64-debug` from the completed workflow run and extract
+`offering-recorder-slint.apk`. On an ARM64 phone running Android 8 or later,
+open the APK in Files and allow installation from that source if prompted.
+
+To install over USB, enable USB debugging, connect the phone, and accept its
+debugging prompt. From the directory containing the APK, run these commands
+with Android SDK Platform-Tools installed. [Android Platform-Tools](https://developer.android.com/tools/releases/platform-tools)
+
+```sh
+adb devices
+adb install -r offering-recorder-slint.apk
+```
+
+Debug builds from different CI runs can have different signing keys. If Android
+rejects an update because the signatures differ, export a backup from the old
+build before uninstalling it. Uninstalling removes the app’s local data.
+
+### Install on iPhone with TestFlight
+
+Use the signed TestFlight build to install on a physical iPhone running iOS 15 or
+later without a local Mac. The regular workflow produces
+`slint-ios-arm64-device-unsigned`, which contains an Xcode archive for signing
+and packaging. iOS requires a signed build for device installation.
+
+1. In the Apple Developer portal, register the explicit App ID
+   `com.caleb.offeringrecorder.slint`. Use it to create the iOS app record in
+   App Store Connect. Create an Apple Distribution certificate with its private
+   key exported as a password-protected `.p12`, and an App Store Connect
+   provisioning profile for this App ID and certificate.
+2. Create an App Store Connect team API key with upload access. In the GitHub
+   repository, go to **Settings → Secrets and variables → Actions** and add
+   the following repository secrets. To encode each file as a single line on
+   Linux, use `base64 -w0 path/to/file`. [GitHub signing setup](https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications) · [Apple build uploads](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds/)
+
+   | Secret | Value |
+   | --- | --- |
+   | `IOS_CERTIFICATE_BASE64` | Base64-encoded distribution certificate and private key in the `.p12` |
+   | `IOS_CERTIFICATE_PASSWORD` | Password used when exporting the `.p12` |
+   | `IOS_PROFILE_BASE64` | Base64-encoded App Store Connect `.mobileprovision` |
+   | `ASC_API_KEY_BASE64` | Base64-encoded App Store Connect API key `.p8` |
+   | `ASC_KEY_ID` | App Store Connect API key ID |
+   | `ASC_ISSUER_ID` | App Store Connect team issuer ID |
+
+3. Open **Actions → Build artifacts → Run workflow**, choose `main`, and enable
+   `upload_testflight`. The runner signs and exports the IPA, uploads it as
+   `slint-ios-arm64-app-store-ipa`, and submits the build to App Store Connect
+   for processing. [Build artifacts workflow](https://github.com/Cal3165/offering_recorder/actions/workflows/artifacts.yml)
+4. After processing, open **App Store Connect → TestFlight**. Resolve any
+   outstanding compliance questions, add the build to an internal testing
+   group, and invite your testers. Open the invitation on the iPhone and
+   install the build in Apple’s TestFlight app. [Apple TestFlight overview](https://developer.apple.com/testflight/)
+
+### Run in the iOS Simulator
+
+On an Apple Silicon Mac, download and extract `slint-ios-arm64-simulator`.
+Boot a simulator and run `xcrun simctl install booted OfferingRecorderSlint.app`
+from the extracted app’s parent directory.
+
+### Import and export files on mobile
 
 The app stores its SQLite database inside its private mobile container. In
 **Donors → Import donors from CSV**, use **Choose CSV…** to select a document.

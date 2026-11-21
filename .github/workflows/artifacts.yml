@@ -5,6 +5,11 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      upload_testflight:
+        description: Sign the Slint iPhone build and upload it to TestFlight (main only)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -181,3 +186,74 @@ jobs:
           name: slint-ios-arm64-simulator
           path: src-slint/ios/slint-ios-arm64-simulator.zip
           if-no-files-found: error
+
+  slint-ios-device:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: src-slint/ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - run: command -v xcodegen || brew install xcodegen
+      - run: xcodegen generate
+      - name: Build unsigned iPhone archive
+        run: |
+          xcodebuild -project OfferingRecorderSlint.xcodeproj -scheme OfferingRecorderSlint \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/slint-phone-build" \
+            -archivePath "$RUNNER_TEMP/OfferingRecorderSlint.xcarchive" \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO archive
+          archive="$RUNNER_TEMP/OfferingRecorderSlint.xcarchive"
+          test -x "$archive/Products/Applications/OfferingRecorderSlint.app/OfferingRecorderSlint"
+          ditto -c -k --keepParent "$archive" slint-ios-arm64-device-unsigned.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slint-ios-arm64-device-unsigned
+          path: src-slint/ios/slint-ios-arm64-device-unsigned.zip
+          if-no-files-found: error
+
+  slint-ios-testflight:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.upload_testflight
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: src-slint/ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - run: command -v xcodegen || brew install xcodegen
+      - run: xcodegen generate
+      - name: Sign and export iPhone IPA
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_BASE64: ${{ secrets.IOS_PROFILE_BASE64 }}
+        run: bash sign-device.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slint-ios-arm64-app-store-ipa
+          path: ${{ runner.temp }}/slint-ios-export/*.ipa
+          if-no-files-found: error
+      - name: Upload to App Store Connect for TestFlight
+        env:
+          ASC_API_KEY_BASE64: ${{ secrets.ASC_API_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          test -n "${ASC_API_KEY_BASE64:?App Store Connect API key required}"
+          [[ "$ASC_KEY_ID" =~ ^[A-Z0-9]+$ ]]
+          test -n "${ASC_ISSUER_ID:?App Store Connect issuer ID required}"
+          umask 077
+          key_dir="$(mktemp -d "$RUNNER_TEMP/asc-keys.XXXXXX")"
+          key_file="$key_dir/AuthKey_$ASC_KEY_ID.p8"
+          trap 'rm -f "$key_file"; rmdir "$key_dir"' EXIT
+          printf '%s' "$ASC_API_KEY_BASE64" | base64 -D > "$key_file"
+          export API_PRIVATE_KEYS_DIR="$key_dir"
+          ipa=("$RUNNER_TEMP"/slint-ios-export/*.ipa)
+          test "${#ipa[@]}" -eq 1 && test -f "${ipa[0]}"
+          xcrun altool --upload-app -f "${ipa[0]}" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
