@@ -1,13 +1,62 @@
 name: ci
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
   schedule:
     # Weekly advisory re-check (supports the `audit` job below).
     - cron: "0 6 * * 1"
+permissions:
+  contents: read
+
 jobs:
+  changes:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.paths.outputs.rust }}
+      frontend: ${{ steps.paths.outputs.frontend }}
+      slint: ${{ steps.paths.outputs.slint }}
+      audit: ${{ steps.paths.outputs.audit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: paths
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          rust=false frontend=false slint=false audit=false
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || "$GITHUB_REF_TYPE" == tag ]] ||
+             ! git diff --no-renames --name-only -z "$BASE" HEAD > "$RUNNER_TEMP/changed-files"; then
+            rust=true frontend=true slint=true audit=true
+          else
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                .github/workflows/*|.cargo/*|rust-toolchain*)
+                  rust=true frontend=true slint=true audit=true ;;
+                Cargo.toml|Cargo.lock|*/Cargo.toml|*/Cargo.lock)
+                  rust=true slint=true audit=true ;;
+                crates/*|migrations/*)
+                  rust=true slint=true ;;
+                src-slint/*)
+                  slint=true ;;
+                src-tauri/*)
+                  rust=true ;;
+                src/*|static/*|package.json|bun.lock|*.config.*|tsconfig.json)
+                  rust=true frontend=true ;;
+              esac
+            done < "$RUNNER_TEMP/changed-files"
+          fi
+          printf '%s\n' "rust=$rust" "frontend=$frontend" "slint=$slint" "audit=$audit" >> "$GITHUB_OUTPUT"
   rust:
-    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -17,21 +66,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
       - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
   frontend:
-    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run build
-  # Phase 8.3: fail CI on known-vulnerable dependencies (RustSec advisory DB).
-  # Runs on a schedule as well as per-push so a newly published advisory
-  # breaks the build even without a code change.
+  slint:
+    needs: changes
+    if: needs.changes.outputs.slint == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Slint build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libwayland-dev libxkbcommon-dev
+      - run: cargo check --locked --all-targets --manifest-path src-slint/Cargo.toml
+
   audit:
-    runs-on: ubuntu-latest
+    needs: changes
+    if: "!cancelled() && (github.event_name == 'schedule' || needs.changes.outputs.audit == 'true')"
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -39,3 +102,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install cargo-audit --version 0.23.0 --locked
       - run: cargo audit --file Cargo.lock
+      - run: cargo audit --file src-slint/Cargo.lock

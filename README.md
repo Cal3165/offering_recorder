@@ -163,7 +163,15 @@ Desktop dev/build: `bunx tauri dev` / `bunx tauri build`
 
 ## CI downloads
 
-Open a **Build artifacts** run in GitHub Actions and download its artifacts. The workflow runs on pull requests, pushes to `main`, version tags, and manual dispatch.
+Open a **Build artifacts** run in GitHub Actions and download its artifacts.
+Version tags (`v*`) build the full matrix. For a one-off build, use
+**Actions → Build artifacts → Run workflow**. Enabling `upload_testflight`
+on `main` runs the TestFlight job by itself.
+
+Pull requests targeting `main` and pushes to `main` run the CI checks
+affected by their changes. Documentation-only changes skip the build jobs.
+The scheduled run audits both Rust lockfiles weekly. Use **Actions → ci →
+Run workflow** to run the full set of checks on demand.
 
 | Target | Artifact |
 | --- | --- |
@@ -175,6 +183,22 @@ Open a **Build artifacts** run in GitHub Actions and download its artifacts. The
 | Web | Static Svelte assets. App workflows still require Tauri's Rust backend. |
 
 CI packages Tauri with the bundle identifier `com.caleb.offeringrecorder`. Its app data directory can differ from local development installations. The workflow uploads build artifacts to Actions.
+
+### Cut a release
+
+Update the application versions for the release, commit them on `main`, then
+push a matching version tag. For example:
+
+```sh
+git tag -a v0.1.0 -m "Offering Recorder v0.1.0"
+git push origin v0.1.0
+```
+
+Once the checks and platform builds pass, the tag workflow creates a draft
+under **Releases** with one ZIP per artifact and a `SHA256SUMS.txt` file.
+Review the notes and packages before publishing the draft. Android APKs are
+debug builds. The unsigned iPhone archive requires signing, and TestFlight
+distribution is a separate manual run.
 
 ### Install on Android
 

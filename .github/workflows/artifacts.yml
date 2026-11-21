@@ -1,9 +1,7 @@
 name: Build artifacts
 on:
   push:
-    branches: [main]
     tags: ['v*']
-  pull_request:
   workflow_dispatch:
     inputs:
       upload_testflight:
@@ -16,6 +14,7 @@ permissions:
 
 jobs:
   slint-desktop:
+    if: github.event_name == 'push' || !inputs.upload_testflight
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +45,7 @@ jobs:
           if-no-files-found: error
 
   tauri-desktop:
+    if: github.event_name == 'push' || !inputs.upload_testflight
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +75,7 @@ jobs:
           if-no-files-found: error
 
   tauri-android:
+    if: github.event_name == 'push' || !inputs.upload_testflight
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -96,6 +97,7 @@ jobs:
           if-no-files-found: error
 
   tauri-ios:
+    if: github.event_name == 'push' || !inputs.upload_testflight
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -119,6 +121,7 @@ jobs:
           if-no-files-found: error
 
   web-frontend:
+    if: github.event_name == 'push' || !inputs.upload_testflight
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -132,6 +135,7 @@ jobs:
           if-no-files-found: error
 
   slint-android:
+    if: github.event_name == 'push' || !inputs.upload_testflight
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -163,6 +167,7 @@ jobs:
           if-no-files-found: error
 
   slint-ios:
+    if: github.event_name == 'push' || !inputs.upload_testflight
     runs-on: macos-15
     defaults:
       run:
@@ -191,6 +196,7 @@ jobs:
           if-no-files-found: error
 
   slint-ios-device:
+    if: github.event_name == 'push' || !inputs.upload_testflight
     runs-on: macos-15
     defaults:
       run:
@@ -260,3 +266,53 @@ jobs:
           ipa=("$RUNNER_TEMP"/slint-ios-export/*.ipa)
           test "${#ipa[@]}" -eq 1 && test -f "${ipa[0]}"
           xcrun altool --upload-app -f "${ipa[0]}" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+
+  release-checks:
+    if: github.ref_type == 'tag' && github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+
+  draft-release:
+    if: github.ref_type == 'tag' && github.event_name == 'push'
+    needs:
+      - release-checks
+      - slint-desktop
+      - tauri-desktop
+      - tauri-android
+      - tauri-ios
+      - web-frontend
+      - slint-android
+      - slint-ios
+      - slint-ios-device
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+      - name: Prepare release assets and checksums
+        run: |
+          mkdir release
+          for package in packages/*/; do
+            name="$(basename "$package")"
+            (cd "$package" && zip -q -0 -r "$GITHUB_WORKSPACE/release/$name.zip" .)
+          done
+          (cd release && sha256sum -- *.zip > SHA256SUMS.txt)
+      - name: Create or refresh draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"; then
+            if [[ "$draft" != true ]]; then
+              echo "Release $TAG is already published"
+              exit 0
+            fi
+          else
+            gh release create "$TAG" --verify-tag --draft --generate-notes
+          fi
+          gh release upload "$TAG" release/* --clobber
