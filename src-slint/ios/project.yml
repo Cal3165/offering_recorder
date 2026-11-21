@@ -1,0 +1,29 @@
+name: OfferingRecorderSlint
+targets:
+  OfferingRecorderSlint:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources: []
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.caleb.offeringrecorder.slint
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Offering Recorder (Slint)
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Slint
+                UISceneDelegateClassName: SlintWindowSceneDelegate
+    postCompileScripts:
+      - script: bash "${SRCROOT}/build-simulator.sh"
+        outputFiles:
+          - "$(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)"
+        basedOnDependencyAnalysis: false

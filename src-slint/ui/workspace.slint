@@ -28,6 +28,7 @@ export struct DashboardMetricRow {
 
 component WorkspaceFieldControl inherits VerticalLayout {
     in property <WorkspaceField> field;
+    in property <bool> native-documents;
     in property <int> field-index;
     in property <bool> working;
     callback field-changed(int, string);
@@ -59,7 +60,7 @@ component WorkspaceFieldControl inherits VerticalLayout {
     }
     if root.field.is-file: HorizontalLayout {
         spacing: 8px;
-        LineEdit {
+        if !root.native-documents: LineEdit {
             horizontal-stretch: 1;
             min-width: 64px;
             property <string> saved-value: root.field.value;
@@ -72,8 +73,13 @@ component WorkspaceFieldControl inherits VerticalLayout {
                 if (self.text != self.saved-value) { self.text = self.saved-value; }
             }
         }
+        if root.native-documents && root.field.value != "": Text {
+            text: "CSV selected";
+            vertical-alignment: center;
+            color: Theme.text-muted;
+        }
         ActionButton {
-            text: "Browse…";
+            text: root.native-documents ? "Choose CSV…" : "Browse…";
             enabled: !root.working;
             clicked => { root.browse-input(root.field-index); }
         }
@@ -148,6 +154,7 @@ component WorkspaceFieldControl inherits VerticalLayout {
 }
 
 export component WorkspacePanel inherits VerticalLayout {
+    in property <bool> native-documents;
     in property <bool> working;
     in property <bool> wide: true;
     in property <[string]> actions;
@@ -242,6 +249,7 @@ export component WorkspacePanel inherits VerticalLayout {
         if root.cash-amendment-mode: VerticalLayout {
             spacing: 10px;
             if root.fields.length > 0: WorkspaceFieldControl {
+                native-documents: root.native-documents;
                 field: root.fields[0];
                 field-index: 0;
                 working: root.working;
@@ -276,6 +284,7 @@ export component WorkspacePanel inherits VerticalLayout {
                 font-weight: 600;
             }
             if root.fields.length > 1: WorkspaceFieldControl {
+                native-documents: root.native-documents;
                 field: root.fields[root.fields.length - 1];
                 field-index: root.fields.length - 1;
                 working: root.working;
@@ -296,6 +305,7 @@ export component WorkspacePanel inherits VerticalLayout {
         if !root.cash-amendment-mode && (!root.wide || root.fields.length <= 1): VerticalLayout {
             spacing: 10px;
             for field[index] in root.fields: WorkspaceFieldControl {
+                native-documents: root.native-documents;
                 field: field;
                 field-index: index;
                 working: root.working;
@@ -320,6 +330,7 @@ export component WorkspacePanel inherits VerticalLayout {
                     padding-bottom: 10px;
                     spacing: 12px;
                     WorkspaceFieldControl {
+                        native-documents: root.native-documents;
                         horizontal-stretch: 1;
                         field: root.fields[row-idx];
                         field-index: row-idx;
@@ -337,6 +348,7 @@ export component WorkspacePanel inherits VerticalLayout {
                         browse-input(i) => { root.browse-input(i); }
                     }
                     if row-idx + 1 < root.fields.length: WorkspaceFieldControl {
+                        native-documents: root.native-documents;
                         horizontal-stretch: 1;
                         field: root.fields[row-idx + 1];
                         field-index: row-idx + 1;
@@ -477,7 +489,13 @@ export component WorkspacePanel inherits VerticalLayout {
             font-size: root.result-monospace ? 12px : 13px;
             wrap: root.result-monospace ? TextWrap.no-wrap : TextWrap.word-wrap;
         }
-        if root.result-exportable: HorizontalLayout {
+        if root.result-exportable && root.native-documents: ActionButton {
+            text: "Save to Files…";
+            kind: "primary";
+            enabled: !root.working;
+            clicked => { root.browse-export(); }
+        }
+        if root.result-exportable && !root.native-documents: HorizontalLayout {
             spacing: 8px;
             LineEdit {
                 horizontal-stretch: 1;

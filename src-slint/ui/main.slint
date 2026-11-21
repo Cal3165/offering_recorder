@@ -21,6 +21,7 @@ export struct DonationDraft {
 }
 
 export component RecorderWindow inherits Window {
+    in property <bool> native-documents;
     title: "Offering Recorder — Slint";
     preferred-width: 1060px;
     preferred-height: 820px;
@@ -170,6 +171,10 @@ export component RecorderWindow inherits Window {
     callback lock-offering;
 
     VerticalLayout {
+        padding-top: root.safe-area-insets.top;
+        padding-bottom: max(root.safe-area-insets.bottom, root.virtual-keyboard-size.height);
+        padding-left: root.safe-area-insets.left;
+        padding-right: root.safe-area-insets.right;
         spacing: 0;
 
         // Top app bar
@@ -261,73 +266,78 @@ export component RecorderWindow inherits Window {
         }
 
         // Bootstrap / Sign-in screen
-        if root.ready && !root.signed-in: VerticalLayout {
+        if root.ready && !root.signed-in: sign-in-scroll := ScrollView {
             vertical-stretch: 1;
-            alignment: center;
-            padding: 18px;
-            HorizontalLayout {
+            horizontal-scrollbar-policy: always-off;
+            content-width: self.visible-width;
+            VerticalLayout {
+                min-height: sign-in-scroll.visible-height;
                 alignment: center;
-                Card {
-                    horizontal-stretch: 1;
-                    max-width: 430px;
-                    SectionTitle { text: root.bootstrap ? "Set up administrator account" : "Sign in"; }
-                    Text {
-                        text: root.bootstrap
-                            ? "Create the first administrator for this local Slint database. Keep your password safe."
-                            : "Native Slint edition with its own local database alongside Tauri.";
-                        color: Theme.text-muted;
-                        wrap: word-wrap;
-                    }
-                    if root.bootstrap: Field {
-                        label: "Display name *";
-                        placeholder: "e.g. Jane Smith";
-                        value <=> root.display-name;
-                        editable: !root.busy;
-                        accepted => {
-                            if (!root.busy) {
-                                root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                padding: 18px;
+                HorizontalLayout {
+                    alignment: center;
+                    Card {
+                        horizontal-stretch: 1;
+                        max-width: 430px;
+                        SectionTitle { text: root.bootstrap ? "Set up administrator account" : "Sign in"; }
+                        Text {
+                            text: root.bootstrap
+                                ? "Create the first administrator for this local Slint database. Keep your password safe."
+                                : "Native Slint edition with its own local database alongside Tauri.";
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+                        if root.bootstrap: Field {
+                            label: "Display name *";
+                            placeholder: "e.g. Jane Smith";
+                            value <=> root.display-name;
+                            editable: !root.busy;
+                            accepted => {
+                                if (!root.busy) {
+                                    root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                                }
                             }
                         }
-                    }
-                    Field {
-                        label: "Username *";
-                        placeholder: "e.g. admin";
-                        value <=> root.username;
-                        editable: !root.busy;
-                        accepted => {
-                            if (!root.busy) {
-                                root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                        Field {
+                            label: "Username *";
+                            placeholder: "e.g. admin";
+                            value <=> root.username;
+                            editable: !root.busy;
+                            accepted => {
+                                if (!root.busy) {
+                                    root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                                }
                             }
                         }
-                    }
-                    Field {
-                        label: root.bootstrap ? "Password * (at least 8 characters)" : "Password *";
-                        value <=> root.password;
-                        secret: true;
-                        editable: !root.busy;
-                        accepted => {
-                            if (!root.busy && !root.bootstrap) {
-                                root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                        Field {
+                            label: root.bootstrap ? "Password * (at least 8 characters)" : "Password *";
+                            value <=> root.password;
+                            secret: true;
+                            editable: !root.busy;
+                            accepted => {
+                                if (!root.busy && !root.bootstrap) {
+                                    root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                                }
                             }
                         }
-                    }
-                    if root.bootstrap: Field {
-                        label: "Confirm password *";
-                        value <=> root.confirm-password;
-                        secret: true;
-                        editable: !root.busy;
-                        accepted => {
-                            if (!root.busy) {
-                                root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                        if root.bootstrap: Field {
+                            label: "Confirm password *";
+                            value <=> root.confirm-password;
+                            secret: true;
+                            editable: !root.busy;
+                            accepted => {
+                                if (!root.busy) {
+                                    root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                                }
                             }
                         }
-                    }
-                    ActionButton {
-                        text: root.bootstrap ? "Create administrator" : "Sign in";
-                        kind: "primary";
-                        enabled: !root.busy;
-                        clicked => {
-                            root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                        ActionButton {
+                            text: root.bootstrap ? "Create administrator" : "Sign in";
+                            kind: "primary";
+                            enabled: !root.busy;
+                            clicked => {
+                                root.sign-in(root.username, root.password, root.confirm-password, root.display-name);
+                            }
                         }
                     }
                 }
@@ -370,6 +380,7 @@ export component RecorderWindow inherits Window {
             horizontal-scrollbar-policy: always-off;
             content-width: self.visible-width;
             WorkspacePanel {
+                native-documents: root.native-documents;
                 working: root.busy;
                 wide: root.width >= 680px;
                 actions: root.workspace-actions;

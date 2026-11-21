@@ -113,8 +113,8 @@ check required fields first. Result files are written with `0600` permissions an
 never overwrite an existing file. Browse buttons use `zenity` or `kdialog` when
 installed, and you can always type a path.
 
-Verified on Linux (`x86_64-unknown-linux-gnu`). Windows, macOS, mobile and
-browser builds have not been tried.
+Verified on Linux (`x86_64-unknown-linux-gnu`) and with the ARM64 Android APK
+on an Android 16 emulator. Windows, macOS, iOS, and browser builds remain unverified.
 
 ### Slint checks
 
@@ -160,6 +160,35 @@ cargo fmt --check
 
 Desktop dev/build: `bunx tauri dev` / `bunx tauri build`
 (or `bun run tauri dev` via the `tauri` script).
+
+## CI downloads
+
+Open a **Build artifacts** run in GitHub Actions and download its artifacts. The workflow runs on pull requests, pushes to `main`, version tags, and manual dispatch.
+
+| Target | Artifact |
+| --- | --- |
+| Linux x64 | Slint executable archive and Tauri Debian package |
+| Windows x64 | Slint executable archive and Tauri NSIS installer |
+| macOS Apple Silicon and Intel | Slint executable archives and Tauri disk images |
+| Android ARM64 | Slint and Tauri debug APKs for testing |
+| iOS ARM64 | Slint Apple Silicon simulator app and unsigned Tauri device archive |
+| Web | Static Svelte assets. App workflows still require Tauri's Rust backend. |
+
+CI packages Tauri with the bundle identifier `com.caleb.offeringrecorder`. Its app data directory can differ from local development installations. The workflow uploads build artifacts to Actions.
+
+### Slint mobile builds
+
+The Android APK is a native application. Install it on an ARM64 device with
+`adb install offering-recorder-slint.apk`. On an Apple Silicon Mac, extract the
+iOS artifact and install the app into a booted simulator with
+`xcrun simctl install booted OfferingRecorderSlint.app`. The Slint iOS artifact
+targets the simulator. Physical iPhones require a device build and signing.
+
+The app stores its SQLite database inside its private mobile container. In
+**Donors → Import donors from CSV**, use **Choose CSV…** to select a document.
+On an exportable result, use **Save to Files…** to choose a destination.
+The native picker handles the selected document. Slint keeps temporary copies
+in private app storage during the transfer.
 
 ## Architecture
 

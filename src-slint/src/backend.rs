@@ -1,7 +1,8 @@
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::process::Command;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    process::Command,
     sync::Arc,
 };
 
@@ -70,6 +71,8 @@ pub struct View {
     pub workspace_form: Option<Arc<Form>>,
     pub workspace_document: Option<Arc<ResultDocument>>,
     pub workspace_confirm_ready: bool,
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    imported_csv: Option<Arc<tempfile::TempDir>>,
     pub jump_to_offering: bool,
     pub landing_section: Option<i32>,
 }
@@ -277,6 +280,10 @@ impl Backend {
                 if is_return {
                     self.view.workspace_form = None;
                     self.view.workspace_document = None;
+                    #[cfg(any(target_os = "android", target_os = "ios"))]
+                    {
+                        self.view.imported_csv = None;
+                    }
                 }
                 if ViewPermission::ReadMeetings.check(&actor).is_ok() {
                     self.view.meetings = meetings.list_active_meetings(&actor).await?;
@@ -456,6 +463,10 @@ async fn workspace_request(
         } => {
             let fresh = fields.is_none();
             if fresh {
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                {
+                    view.imported_csv = None;
+                }
                 view.workspace_form = None;
                 view.workspace_document = None;
             }
@@ -572,6 +583,11 @@ async fn workspace_request(
                 return Ok("Opened offering.");
             }
             view.workspace_document = result.document;
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            if op_id == Some("donor_import") {
+                view.imported_csv = None;
+                fields.remove("file");
+            }
             workspace::sanitize_after_run(section, operation, &mut fields);
             if let Ok(form) =
                 workspace::configure(&services, actor, section, operation, Some(fields), "").await
@@ -579,6 +595,56 @@ async fn workspace_request(
                 view.workspace_form = Some(Arc::new(form));
             }
             Ok("")
+        }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        Request::PickCsv {
+            section,
+            operation,
+            mut fields,
+        } => {
+            if !offering_application::permissions::can_manage_migration(actor) {
+                return Err(offering_application::error::unauthorized("import donors"));
+            }
+            if !workspace::catalog::operation(section, operation)
+                .is_some_and(|op| op.id == "donor_import")
+            {
+                return Err(validation("Open the donor CSV import form first."));
+            }
+            let parent = database
+                .parent()
+                .ok_or_else(|| validation("App storage unavailable."))?;
+            let Some(stage) = crate::documents::import_csv(parent)? else {
+                return Ok("");
+            };
+            fields.insert(
+                "file".into(),
+                stage
+                    .path()
+                    .join("Imported donors.csv")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            let form = workspace::configure(&services, actor, section, operation, Some(fields), "")
+                .await?;
+            view.imported_csv = Some(Arc::new(stage));
+            view.workspace_form = Some(Arc::new(form));
+            Ok("CSV selected.")
+        }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        Request::ExportDocument => {
+            let document = view
+                .workspace_document
+                .as_deref()
+                .filter(|document| document.exportable)
+                .ok_or_else(|| validation("Generate an exportable result before saving it."))?;
+            let parent = database
+                .parent()
+                .ok_or_else(|| validation("App storage unavailable."))?;
+            if crate::documents::export(parent, document)? {
+                Ok("Result saved.")
+            } else {
+                Ok("")
+            }
         }
         Request::Export(path) => {
             let trimmed = path.trim();
@@ -588,13 +654,15 @@ async fn workspace_request(
             let document = view
                 .workspace_document
                 .as_deref()
-                .ok_or_else(|| validation("Generate a result before saving it."))?;
+                .filter(|document| document.exportable)
+                .ok_or_else(|| validation("Generate an exportable result before saving it."))?;
             workspace::export(document, Path::new(trimmed))?;
             Ok("Result saved.")
         }
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn browse_file(save: bool, extension: &str) -> AppResult<Option<String>> {
     let filter = if extension.is_empty() {
         "*".to_owned()

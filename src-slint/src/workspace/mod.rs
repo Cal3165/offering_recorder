@@ -51,6 +51,14 @@ pub enum Request {
         fields: Values,
         preset: String,
     },
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    PickCsv {
+        section: i32,
+        operation: i32,
+        fields: Values,
+    },
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    ExportDocument,
     Export(String),
 }
 
