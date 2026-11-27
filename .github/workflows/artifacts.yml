@@ -38,7 +38,7 @@ jobs:
       - name: Archive executable
         shell: bash
         run: tar -czf slint-${{ matrix.target }}.tar.gz -C src-slint/target/${{ matrix.target }}/release ${{ matrix.binary }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: slint-${{ matrix.target }}
           path: slint-${{ matrix.target }}.tar.gz
@@ -68,7 +68,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
       - run: bun install --frozen-lockfile
       - run: bun run tauri build --ci --config .github/tauri-artifacts.json --target ${{ matrix.target }} --bundles ${{ matrix.bundle }} -- --locked
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tauri-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/bundle/${{ matrix.bundle }}/*.${{ matrix.extension }}
@@ -90,7 +90,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run tauri android init --ci --config .github/tauri-artifacts.json --skip-targets-install
       - run: bun run tauri android build --ci --config .github/tauri-artifacts.json --debug --apk --target aarch64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tauri-android-arm64-debug
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
@@ -114,7 +114,7 @@ jobs:
           archive="$(find src-tauri/gen/apple/build -type d -name '*.xcarchive' -prune -print -quit)"
           test -n "$archive"
           ditto -c -k --keepParent "$archive" tauri-ios-arm64-unsigned.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tauri-ios-arm64-unsigned
           path: tauri-ios-arm64-unsigned.zip
@@ -128,7 +128,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: svelte-static-frontend
           path: build/
@@ -160,7 +160,7 @@ jobs:
       - run: cargo install --locked cargo-apk2 --version 1.5.0
       - run: cargo fetch --locked --target aarch64-linux-android
       - run: cargo apk2 build --lib --target aarch64-linux-android
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: slint-android-arm64-debug
           path: src-slint/target/debug/apk/**/offering-recorder-slint.apk
@@ -189,7 +189,7 @@ jobs:
           app="$RUNNER_TEMP/slint-ios/Build/Products/Release-iphonesimulator/OfferingRecorderSlint.app"
           test -x "$app/OfferingRecorderSlint"
           ditto -c -k --keepParent "$app" slint-ios-arm64-simulator.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: slint-ios-arm64-simulator
           path: src-slint/ios/slint-ios-arm64-simulator.zip
@@ -218,7 +218,7 @@ jobs:
           archive="$RUNNER_TEMP/OfferingRecorderSlint.xcarchive"
           test -x "$archive/Products/Applications/OfferingRecorderSlint.app/OfferingRecorderSlint"
           ditto -c -k --keepParent "$archive" slint-ios-arm64-device-unsigned.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: slint-ios-arm64-device-unsigned
           path: src-slint/ios/slint-ios-arm64-device-unsigned.zip
@@ -243,7 +243,7 @@ jobs:
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
           IOS_PROFILE_BASE64: ${{ secrets.IOS_PROFILE_BASE64 }}
         run: bash sign-device.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: slint-ios-arm64-app-store-ipa
           path: ${{ runner.temp }}/slint-ios-export/*.ipa
